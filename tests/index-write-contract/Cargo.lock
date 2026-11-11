@@ -761,10 +761,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "crisp-index-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "sha2",
+]
+
+[[package]]
 name = "crisp-search-query"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "levenshtein_automata",
  "tantivy 0.22.1",
 ]
 
@@ -2516,6 +2525,8 @@ dependencies = [
  "arrow",
  "arrow-array",
  "arrow-schema",
+ "async-trait",
+ "crisp-index-protocol",
  "crisp-search-query",
  "deunicode",
  "futures",

@@ -209,6 +209,89 @@ pub fn extract_mbox(path: &Path) -> Result<ExtractedDocument> {
     Ok(doc)
 }
 
+
+/// Parse one message's own body and stage its decoded attachments. Nested
+/// message/rfc822 parts are revisited through the shared container walker.
+pub(crate) fn decode_container(path: &Path, depth: usize, budget: &mut super::container::Budget) -> Result<super::container::DecodedContainer> {
+    use super::container::{DecodedContainer, next_occurrence, stage_entry};
+    use crisp_index_protocol::{ContainerEntryKind, ContainerOmissionReason, normalize_member_name};
+    use std::collections::BTreeMap;
+    let raw = super::html::read_bounded(path, MAX_MESSAGE_BYTES)?;
+    let mut doc = ExtractedDocument { ext: "eml".into(), ..Default::default() };
+    let Some(message) = parser().parse(&raw) else {
+        append(&mut doc.full_text, &String::from_utf8_lossy(&raw))?;
+        return Ok(DecodedContainer { own: doc, entries: Vec::new() });
+    };
+    let root = message.root();
+    if root.headers().is_empty() {
+        append(&mut doc.full_text, &String::from_utf8_lossy(&raw))?;
+        return Ok(DecodedContainer { own: doc, entries: Vec::new() });
+    }
+    for part in message.parts() {
+        budget.discover(depth + 1)?;
+        ensure!(!part.flags().intersects(PartFlags::LIMIT_REACHED | PartFlags::NESTING_LIMIT), "Email MIME structure exceeds the depth, part-count or encoded-message limit");
+        if part.flags().intersects(PartFlags::MISSING_DELIMITER | PartFlags::UNTERMINATED | PartFlags::FALLBACK_DELIMITER) {
+            doc.tags.push("extraction:email-structure-warning".into());
+        }
+    }
+    let headers = root.headers();
+    for (name, label) in [(HeaderName::Subject,"Subject"),(HeaderName::From,"From"),(HeaderName::To,"To"),(HeaderName::Cc,"Cc"),(HeaderName::Date,"Date")] {
+        if let Some(value) = headers.value(name).and_then(|value| value.as_text()) { heading(&mut doc, label, value)?; }
+    }
+    if let Some(value) = headers.value(HeaderName::ListId).and_then(|value| value.as_text()) {
+        ensure!(value.len() <= MAX_HEADER_BYTES, "Email list ID exceeds the header limit");
+        doc.tags.push(format!("list:{}", value.trim().trim_matches(['<','>'])));
+    }
+    append(&mut doc.full_text, "\n")?;
+    for part in root.text_body() { append(&mut doc.full_text, &part_text(part)?)?; append(&mut doc.full_text, "\n")?; }
+    let mut entries = Vec::new(); let mut names = BTreeMap::new();
+    for part in root.attachments() {
+        let fallback = match part.kind() { PartKind::Message(_) => "forwarded.eml", PartKind::Html => "attachment.html", PartKind::Text => "attachment.txt", _ => "attachment.bin" };
+        let raw_name = part.attachment_name().unwrap_or(fallback);
+        let name = match normalize_member_name(raw_name) { Ok(name) => name, Err(_) => { budget.omitted(if raw_name.is_empty() { "[unnamed MIME part]" } else { raw_name }, ContainerOmissionReason::UnsafeName); continue; } };
+        let occurrence = next_occurrence(&mut names, &name);
+        ensure!(part.decoded_len() as u64 <= budget.limits.member_bytes, "Decoded email attachment exceeds the shared member byte limit");
+        let (bytes, problems) = part.decoded_checked();
+        ensure!(problems.is_empty(), "Malformed email attachment transfer encoding: {}", problems.names().collect::<Vec<_>>().join(", "));
+        let mut staged = stage_entry(&mut bytes.as_ref(), name.clone(), ContainerEntryKind::MimePart, part.id() as usize, occurrence, Some(bytes.len() as u64), budget)?;
+        if matches!(part.kind(), PartKind::Message(_)) { staged.kind_hint = Some(crisp_index_protocol::ContainerKind::Email); }
+        if part.is_text() {
+            // Charset conversion belongs to MIME, while the locator hashes the
+            // exact transfer-decoded bytes which the opener will materialize.
+            staged.document = Some(ExtractedDocument { full_text: part_text(part)?, ext: if matches!(part.kind(), PartKind::Html) { "html".into() } else { "txt".into() }, ..Default::default() });
+        }
+        entries.push(staged);
+    }
+    doc.tags.sort(); doc.tags.dedup();
+    Ok(DecodedContainer { own: doc, entries })
+}
+
+pub(crate) fn decode_mailbox(path: &Path, depth: usize, budget: &mut super::container::Budget) -> Result<super::container::DecodedContainer> {
+    use super::container::{DecodedContainer, next_occurrence, stage_entry};
+    use crisp_index_protocol::ContainerEntryKind;
+    use sha2::{Digest, Sha256};
+    let raw = super::html::read_bounded(path, budget.limits.mailbox_bytes as usize)?;
+    let raw = raw.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&raw);
+    let mut entries = Vec::new(); let mut names = std::collections::BTreeMap::new();
+    let mut add = |index: usize, bytes: &[u8]| -> Result<()> {
+        budget.discover(depth + 1)?;
+        // A Message-ID supplies a stable logical name across mailbox reorder;
+        // duplicate/missing IDs remain distinct through their occurrence ordinal.
+        let name = parser().parse(bytes).and_then(|message| message.root().headers().message_id().map(|value| format!("message-{:x}.eml", Sha256::digest(value.as_bytes()))))
+            .unwrap_or_else(|| "message.eml".to_owned());
+        let occurrence = next_occurrence(&mut names, &name);
+        entries.push(stage_entry(&mut &*bytes, name, ContainerEntryKind::MailboxMessage, index, occurrence, Some(bytes.len() as u64), budget)?);
+        Ok(())
+    };
+    if raw.starts_with(b"From ") {
+        for (index, message) in mail_parser::mailbox::mbox::MessageIterator::new(raw).enumerate() {
+            let message = message.with_context(|| format!("Reading mailbox message {}", index + 1))?;
+            add(index, message.contents())?;
+        }
+    } else { add(0, raw)?; }
+    Ok(DecodedContainer { own: ExtractedDocument { ext: "mbox".into(), ..Default::default() }, entries })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

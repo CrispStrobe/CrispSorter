@@ -1,0 +1,334 @@
+{
+  "all_queries_succeeded": false,
+  "completed": true,
+  "cutoff": 100,
+  "documents": 5183,
+  "ingestion_ms": 25997.058484,
+  "lexical_any_term": "Explicit comparison using normalized literal OR terms; separate from the shipped strict lexical query mode.",
+  "modes": [
+    {
+      "failed_queries": [
+        {
+          "error": "'+' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "42"
+        },
+        {
+          "error": "'.' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "171"
+        },
+        {
+          "error": "'.' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "431"
+        },
+        {
+          "error": "'.' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "516"
+        },
+        {
+          "error": "'.' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "521"
+        },
+        {
+          "error": "'/' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "528"
+        },
+        {
+          "error": "'.' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "551"
+        },
+        {
+          "error": "'.' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "768"
+        },
+        {
+          "error": "'.' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "775"
+        },
+        {
+          "error": "'.' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "823"
+        },
+        {
+          "error": "'-' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "993"
+        },
+        {
+          "error": "A field name is required before ':' at byte 64.",
+          "query_id": "1280"
+        },
+        {
+          "error": "'.' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "1395"
+        }
+      ],
+      "latency_ms": {
+        "mean": 130.6056517366667,
+        "p50": 110.467112,
+        "p95": 273.99363500000004,
+        "p99": 466.817879
+      },
+      "metrics": {
+        "average_precision_at_100": 0.027083333333333334,
+        "ndcg_at_10": 0.027487674629135768,
+        "recall_at_100": 0.0275,
+        "reciprocal_rank_at_10": 0.028333333333333332
+      },
+      "mode": "lexical_strict",
+      "queries": 300,
+      "zero_results": 289
+    },
+    {
+      "failed_queries": [],
+      "latency_ms": {
+        "mean": 339.8112905966667,
+        "p50": 290.267701,
+        "p95": 562.915863,
+        "p99": 891.7995199999999
+      },
+      "metrics": {
+        "average_precision_at_100": 0.518081885967843,
+        "ndcg_at_10": 0.5492904125533247,
+        "recall_at_100": 0.8342222222222223,
+        "reciprocal_rank_at_10": 0.5253611111111113
+      },
+      "mode": "lexical_any_term",
+      "queries": 300,
+      "zero_results": 0
+    },
+    {
+      "failed_queries": [],
+      "latency_ms": {
+        "mean": 408.93141746,
+        "p50": 368.452368,
+        "p95": 587.374803,
+        "p99": 1432.995822
+      },
+      "metrics": {
+        "average_precision_at_100": 0.6030740834806816,
+        "ndcg_at_10": 0.6450816521455768,
+        "recall_at_100": 0.925,
+        "reciprocal_rank_at_10": 0.6047248677248677
+      },
+      "mode": "dense",
+      "queries": 300,
+      "zero_results": 0
+    },
+    {
+      "failed_queries": [
+        {
+          "error": "'+' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "42"
+        },
+        {
+          "error": "'.' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "171"
+        },
+        {
+          "error": "'.' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "431"
+        },
+        {
+          "error": "'.' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "516"
+        },
+        {
+          "error": "'.' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "521"
+        },
+        {
+          "error": "'/' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "528"
+        },
+        {
+          "error": "'.' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "551"
+        },
+        {
+          "error": "'.' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "768"
+        },
+        {
+          "error": "'.' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "775"
+        },
+        {
+          "error": "'.' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "823"
+        },
+        {
+          "error": "'-' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "993"
+        },
+        {
+          "error": "A field name is required before ':' at byte 64.",
+          "query_id": "1280"
+        },
+        {
+          "error": "'.' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "1395"
+        }
+      ],
+      "latency_ms": {
+        "mean": 1343.335378103334,
+        "p50": 632.2662,
+        "p95": 3798.5309049999996,
+        "p99": 5864.993711
+      },
+      "metrics": {
+        "average_precision_at_100": 0.4377529083595064,
+        "ndcg_at_10": 0.46671884698418237,
+        "recall_at_100": 0.6583333333333333,
+        "reciprocal_rank_at_10": 0.43853042328042324
+      },
+      "mode": "hybrid",
+      "queries": 300,
+      "zero_results": 85
+    }
+  ],
+  "policy": "All test queries count in every mean; failed and zero-result queries score zero. One warm run per mode/query after ten unmeasured warmup queries. No test-judgment tuning or query removal.",
+  "preparation": {
+    "completed": true,
+    "corpus": "BEIR SciFact test",
+    "encoding": {
+      "documents": {
+        "inferenceSeconds": 305.9010551820029,
+        "rows": 5183,
+        "sha256": "7841e8d90fdfd595b226876e164389952eff6109b0bb0724f51bf91dd52f0edc",
+        "truncatedRows": 3681
+      },
+      "queries": {
+        "inferenceSeconds": 2.1008611930101324,
+        "rows": 300,
+        "sha256": "d5112a2f0da8ad92aacedbdf3bb5135d74b653e1edf28cc0c54311b4aaff6d1c",
+        "truncatedRows": 0
+      }
+    },
+    "inputs": {
+      "corpus.jsonl": {
+        "bytes": 8106566,
+        "sha256": "dec31c8182f3d744c7d2c09423756fd1d17cbef75808db13ba01cc0aab4d1ac6"
+      },
+      "qrels/test.tsv": {
+        "bytes": 5389,
+        "sha256": "0864bb985e0ca2367ba217977e72004d549054b2b06666ed9d4825ac7c21284c"
+      },
+      "queries.jsonl": {
+        "bytes": 209731,
+        "sha256": "8ff84a7c903f722981cd8d595c022660140c51867b27608a6d4910db86080313"
+      }
+    },
+    "model": {
+      "dimensions": 384,
+      "documentText": "title + newline + body",
+      "id": "sentence-transformers/all-MiniLM-L6-v2",
+      "maximumTokens": 256,
+      "pooling": "attention-masked mean, L2 normalization",
+      "provider": "CPUExecutionProvider",
+      "revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+      "sha256": "6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452",
+      "threads": 2,
+      "tokenizerSha256": "be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037",
+      "warmupSeconds": 0.01173003899930336
+    },
+    "preparedFiles": {
+      "documents.f32": {
+        "bytes": 7961088,
+        "sha256": "7841e8d90fdfd595b226876e164389952eff6109b0bb0724f51bf91dd52f0edc"
+      },
+      "documents.json": {
+        "bytes": 8613954,
+        "sha256": "0080182564a6b3e6410206a603736f247c43b7e13dc12969365183e0cd1787b0"
+      },
+      "queries.f32": {
+        "bytes": 460800,
+        "sha256": "d5112a2f0da8ad92aacedbdf3bb5135d74b653e1edf28cc0c54311b4aaff6d1c"
+      },
+      "queries.json": {
+        "bytes": 53967,
+        "sha256": "18230768a021861470fd4a8f7a12d71fa6a15b689818d94bf755fc34ad064cfa"
+      }
+    },
+    "runtime": {
+      "logicalCpus": 9,
+      "machine": "x86_64",
+      "numpy": "2.5.4",
+      "onnxruntime": "1.23.2",
+      "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+      "python": "3.12.14",
+      "tokenizers": "0.22.2"
+    },
+    "schema": "crispsorter-native-retrieval-input-v1",
+    "scope": "Public English scientific-abstract retrieval; not a user-corpus, OCR, multilingual, or full-desktop qualification"
+  },
+  "queries": 300,
+  "query_trace_sha256": "4d0d442a047b3f46faa425805b44c51581909ef1c10ea5b0db758a66ba7c7d50",
+  "revision": "529c98850fcd73284c9c90cb6d5816f28775606b",
+  "schema": "crispsorter-native-retrieval-result-v1",
+  "scope": "Production server index, CPU model inference prepared separately. Native retrieval latency excludes embedding, HTTP, and UI. Public-corpus judgments are not a user-corpus or full-desktop qualification.",
+  "vector_index": "Exact vector scan; no approximate vector index is built for this corpus",
+  "execution": {
+    "revision": "529c98850fcd73284c9c90cb6d5816f28775606b",
+    "dirtyWorkingTree": [],
+    "sourceSha256": {
+      "crates/crisp-search-query/Cargo.toml": "ad14533a5802424834011f1b0a0496ecf9280eb50fa2a6bdffdc034b1bdb2d6e",
+      "crates/crisp-search-query/src/lib.rs": "e5419c9b79b8962f29195dd126407d02c51ea69bb57d6c375160bd09b4ee9872",
+      "crisp-index-protocol/Cargo.toml": "381f9b6717246570fd397709e3f7dec495fbe1f8ae43183516c63ac51d7b18cb",
+      "crisp-index-protocol/src/complete.rs": "76150c6cbe675b4b618b8ea1bd70feefb7908cd4a892e5597a6017ccee6b6151",
+      "crisp-index-protocol/src/lib.rs": "b17645960b09479d4b4405fe00dbff0f7b051e6d349f29d18d1eddb9eff5418c",
+      "crisp-index-protocol/src/passage.rs": "548873428de6d33a7e5f54f13b4de7fa67573cfeee4a9157c9ae13021cc9185b",
+      "crisp-index-protocol/src/sync.rs": "4c940161f897436ee0e7acecded830257fe0d0a3fda1a986105d87f60a3c6db7",
+      "crisp-index-server/src/auth.rs": "229550ed63e9ccd85900cb2a1e7e170cb4754b355e0fe4e9fb6a39a5964815e4",
+      "crisp-index-server/src/complete_search.rs": "4d86d96f63a70b2d10f3b011fcb7b7a9eab5e3fe2cd9df3e246edcbe11db919a",
+      "crisp-index-server/src/embedder.rs": "ad72949be1375c69e2b4fb5fb97d509383cd7aca4c8f06c59c5015ce02092012",
+      "crisp-index-server/src/fts.rs": "37f21f114851b6c051b469139f9fbf301a2e50c697c4163d7613e79b4af2cf62",
+      "crisp-index-server/src/index.rs": "64c3b18fab2dbbe3fbfce3b9ddd8016aad67159bba3076b57125b0380182b771",
+      "crisp-index-server/src/index_contract_tests.rs": "c3d81120121d31c7c61e7cde780204a1dd56acbd901e07fde0a531f43add6263",
+      "crisp-index-server/src/main.rs": "c4881163b58ae526885c8dbe1eea8a2cf32730c4566d6a59a7a18939f4669ee0",
+      "crisp-index-server/src/queue.rs": "5480ecfbce24e4d198d421fa10960819a443429777226ad90d0839c04063686b",
+      "crisp-index-server/src/routes/admin.rs": "994b2b039e0ed18d6571fab9d448002312df099b2190666007466632fa42dc2d",
+      "crisp-index-server/src/routes/capabilities.rs": "d1effdf83a6566b428366e0738504a252a4410a73abf92d93db7a9c22a7ebe53",
+      "crisp-index-server/src/routes/complete.rs": "4c7b9e08e5505d9d0dbb04b97b9e15a310f3c6cb17b57174a5051a9d57f5a5d6",
+      "crisp-index-server/src/routes/docs.rs": "1b3b482838afb410fd949cfb99f076a5dda7787607852b18655da7f6a54d715d",
+      "crisp-index-server/src/routes/health.rs": "0b162a1b35bed955cfaa3f8aad231cbbd4be35f782a0a1396d394d558dd0372c",
+      "crisp-index-server/src/routes/ingest.rs": "f12a6174e4e74bd51ced17ad0ce41f35e57752ef7c068b0d364527541ea1cfb0",
+      "crisp-index-server/src/routes/mod.rs": "5410ea2d2e1759b51b3d3c303595ea3cdc1cd8b80dca74a27919037ffa5e8da4",
+      "crisp-index-server/src/routes/passages.rs": "8022dd6bf663df5a381dcaaf74415c1220863efefb4cc8fd8612acf220ab0774",
+      "crisp-index-server/src/routes/search.rs": "99f1779b69d0a2ecdf5145571a4c645ad291c08fca148a8487d66e468e2d80e4",
+      "crisp-index-server/src/routes/stats.rs": "70451ba762e464940c70830118f90d0057fe0d3bc58a8b6d4002ac3f75d676ee",
+      "crisp-index-server/src/routes/sync.rs": "3dbcf5d4746c5f13afcd2de50a1eabce90b2b8869c75b965e934fb797e41f542",
+      "crisp-index-server/src/routes/tasks.rs": "ff3842fce5263c5d5ebdb85d28c0fd852ecd19aea1acbb506ac2eb68c30603f3",
+      "crisp-index-server/src/state.rs": "1e83e7548208450bb29d16ddf1594ead17c9189aaa2f340f88f06aba7c11ad52",
+      "crisp-index-server/src/sync_cursor.rs": "af60c512aa01e09b52647d831b6264064f2e2026e40eda899566d485bf90e780",
+      "crisp-index-server/src/sync_cursor_contract_tests.rs": "ec33578ae42b8a2abf59b8324a2e1f9fcb028dc94f526c11ea491fd3b87e2e08",
+      "shared/source_identity.rs": "b99c2b12403684e150a65b46a0d7b403b52a7fbb16c4eedcf0e6e67c3e7011fa",
+      "shared/source_paths.rs": "0cb388d7518aec29d2589b69d48d157b2d804155325410f070ae2118d7a0db3e",
+      "shared/stored_passage.rs": "e8987699733ccd58623a15a6a72e6d5f6e7ab81f3d2b61825465d17c3fab46dd",
+      "tests/server-search-contract/Cargo.lock": "cb6ea7c337b096da37039f59a77f937589bf30b7d45c4f02134187745cf492e0",
+      "tests/server-search-contract/Cargo.toml": "240ec9685ed9eebf87ecd493c28a900bd0abce5e1983e7f05d873b77f9e165fb",
+      "tests/server-search-contract/adapters.rs": "63dbe5aa0454828b68a2921818ff15a67d9b062eb88198abdfe44998b966a086",
+      "tests/server-search-contract/build.rs": "82b67df4a9f511a46c17f167c7db486684d68722df5553d743e62c52864d1c27",
+      "tests/server-search-contract/complete_contract.rs": "9beac06301e6cd74cfe41a4a51c3519a2102d50afc89e7d531e0df4ba67bbc80",
+      "tests/server-search-contract/desktop.rs": "10dcec701beaf6021175e4dee9bf6d47b8867f40e60f147c8e0aad74a4ede048",
+      "tests/server-search-contract/http_contract.rs": "f3d325199338c6d55bcd3a38631b5ae3155c50726815dcc5d2c35fe7918ff5d9",
+      "tests/server-search-contract/lib.rs": "b656d6e183bbdc7ebb9309e6136bda0e712699bb10296cf22d04840d36652860",
+      "tests/server-search-contract/passage_contract.rs": "5dc7581e450858f915fbb2ede72c06e3c39a85a6c88c943f36b5cd6ade2df1f2",
+      "tests/server-search-contract/remote_client_complete_contract.rs": "23a65cc67c367117e3ddad340e812e247167088efbf8e647541259a840cf4681",
+      "tests/server-search-contract/retrieval_benchmark.rs": "cbbeb0bcaf016fcd2e72e73eb5ec39639b9b399295a0f9eb89f5c206faaaafa3",
+      "tests/server-search-contract/sync_contract.rs": "191e5697e6b411194cf5dfccab2d5f7dfae78ee4f98c83f4d8b460a6dbbae6d4"
+    },
+    "executableSha256": "0d22a110671e11baabc708e9710b4fac4c28ba673414484b2b62197bf2e01430",
+    "buildProfile": "dev",
+    "buildSeconds": 193.49533265799982,
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.1\nLLVM version: 23.1.1",
+    "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+    "machine": "x86_64",
+    "logicalCpus": 9,
+    "scope": "Focused production native search/index harness; full desktop, network, and model-adapter integration are separate gates."
+  },
+  "original_result_sha256": "a03a712bd719097be74c688b514cd15e11baaf4f5004e2e0a78c2404aa6225c6",
+  "receipt_note": "Summary excludes individual timing batches and raw query/source text; all mode metrics, errors, denominators, source hashes and trace hash are retained. Development-profile timings are diagnostic, not a desktop latency claim.",
+  "observed_native_thread_environment": {
+    "RAYON_NUM_THREADS": "2",
+    "OMP_NUM_THREADS": "2"
+  }
+}

@@ -1,0 +1,467 @@
+{
+  "schema": "crispsorter-system-ocr-result-v1",
+  "completed": true,
+  "all_cases_succeeded": true,
+  "scope": "All six frozen public pages; actual production System Tesseract adapter with explicit installed language packs and same-run word evidence. No default-engine change or full-desktop qualification.",
+  "decision_rule": "Retain every failure, case score and language setting. Report complete-panel success separately from averages over successful cases. Receipt uses word recall because its reference is partial; confidence remains uncalibrated.",
+  "plan_sha256": "95014f73dba552c994581d4aa0cd17b127f5c5f2a06db77b80da1def5e29babf",
+  "source_plan_sha256": "298158bfaf26947d067b79753276126e5c68813443bb7652ed1ea26059627c20",
+  "manifest_sha256": "0857bffc6f4a3616292db255d7f3f34c0b58a52a7286a2791cb00b77499c7700",
+  "scorer_sha256": "ac433da5ea391eeb1dd322b6e269f8efcda1ade3fb94d01f53bddbf0a0048c58",
+  "source_revision": "2acee0b1c920fa3d143f05c8d4022994d8b8c763",
+  "images": [
+    {
+      "id": "en-prose-constitution-13",
+      "sha256": "36c1b61692719239b011442ad4670655374d8c219b333b054fbcb05a46a38a86",
+      "ground_truth_sha256": "0f2941807f6d7cfd468f12f05418ecfbf9c0f7b5857612b8c8ea3ae3c479608e",
+      "image_license": {
+        "license": "Public domain",
+        "usage_terms": "Public domain",
+        "copyrighted": false,
+        "attribution": "Bagehot, Walter, 1826-1877; scan: archive.org"
+      },
+      "ground_truth_license": "CC BY-SA 4.0 (Wikisource contributors; transcription of a public-domain work, see the page history at the revision URL)",
+      "ground_truth_provenance": {
+        "kind": "Wikisource proofread transcription, status Validated (quality 4)",
+        "wiki": "en.wikisource.org",
+        "page": "Page:The English Constitution (1894).djvu/13",
+        "revision_id": 11964236,
+        "revision_timestamp": "2021-12-22T09:13:09Z",
+        "revision_url": "https://en.wikisource.org/w/index.php?oldid=11964236",
+        "derivation": "rendered page HTML -> text (tables row-major, cells space-joined; quality banner, hidden padding and de.wikisource navigation headings/metadata header removed)",
+        "manual_edits": [],
+        "scope": "full page incl. running head/page number"
+      },
+      "primary_metric": "cer_nospace"
+    },
+    {
+      "id": "de-antiqua-kafka-schloss-211",
+      "sha256": "4758ee30dc4d6fa9766e05c81efbbc57a490f4ba0b11b8fa875ba67dfcbad593",
+      "ground_truth_sha256": "491294b7340812acdd0b8541f863adb2a436d14772b75535cd75b6e8733c2616",
+      "image_license": {
+        "license": "Public domain",
+        "usage_terms": "Public domain",
+        "copyrighted": false,
+        "attribution": "Franz Kafka; scan: scan from original book"
+      },
+      "ground_truth_license": "CC BY-SA 4.0 (Wikisource contributors; transcription of a public-domain work, see the page history at the revision URL)",
+      "ground_truth_provenance": {
+        "kind": "Wikisource proofread transcription, status Validated (quality 4)",
+        "wiki": "de.wikisource.org",
+        "page": "Seite:De Kafka Schloß 211.jpg",
+        "revision_id": 3249631,
+        "revision_timestamp": "2018-07-31T13:42:45Z",
+        "revision_url": "https://de.wikisource.org/w/index.php?oldid=3249631",
+        "derivation": "rendered page HTML -> text (tables row-major, cells space-joined; quality banner, hidden padding and de.wikisource navigation headings/metadata header removed)",
+        "manual_edits": [
+          [
+            "append",
+            "[211]"
+          ]
+        ],
+        "scope": "full page; running head/page number added by manual edit where printed"
+      },
+      "primary_metric": "cer_nospace"
+    },
+    {
+      "id": "de-fraktur-grimm-319",
+      "sha256": "83e1cabd6fd70576dc3351c1c5655d40a7056fd49ca6e0e3192dd14abc9d42b5",
+      "ground_truth_sha256": "acbc9daa6c7ed9bd70e75c2c4716d9b5310abb91d46978930d20d4a0ebfb9cb1",
+      "image_license": {
+        "license": "Public domain",
+        "usage_terms": "Public domain",
+        "copyrighted": false,
+        "attribution": "Brüder Grimm; scan: Staatsbibliothek zu Berlin"
+      },
+      "ground_truth_license": "CC BY-SA 4.0 (Wikisource contributors; transcription of a public-domain work, see the page history at the revision URL)",
+      "ground_truth_provenance": {
+        "kind": "Wikisource proofread transcription, status Validated (quality 4)",
+        "wiki": "de.wikisource.org",
+        "page": "Seite:Kinder- und Haus-Märchen 1837 Band 2.djvu/319",
+        "revision_id": 3337041,
+        "revision_timestamp": "2018-08-01T01:21:48Z",
+        "revision_url": "https://de.wikisource.org/w/index.php?oldid=3337041",
+        "derivation": "rendered page HTML -> text (tables row-major, cells space-joined; quality banner, hidden padding and de.wikisource navigation headings/metadata header removed)",
+        "manual_edits": [
+          [
+            "prepend",
+            "— 310 —"
+          ]
+        ],
+        "scope": "full page; running head/page number added by manual edit where printed"
+      },
+      "primary_metric": "cer_nospace"
+    },
+    {
+      "id": "en-table-climatic-26",
+      "sha256": "1e72426a797315540ad1b06f52eaac948fe109c80301738b5c69aa114bda3635",
+      "ground_truth_sha256": "693563fe382e7615649008c28b21580af4bd4aaa387d3e70a9f765b0754c9f26",
+      "image_license": {
+        "license": "Public domain",
+        "usage_terms": "Public domain",
+        "copyrighted": false,
+        "attribution": "Creator:Andrew Ellicott Douglass; scan: The Internet Archive: https://archive.org/details/climaticcyclestr01douguoft"
+      },
+      "ground_truth_license": "CC BY-SA 4.0 (Wikisource contributors; transcription of a public-domain work, see the page history at the revision URL)",
+      "ground_truth_provenance": {
+        "kind": "Wikisource proofread transcription, status Validated (quality 4)",
+        "wiki": "en.wikisource.org",
+        "page": "Page:Climatic Cycles and Tree-Growth - 1919.djvu/26",
+        "revision_id": 7691194,
+        "revision_timestamp": "2018-07-25T01:01:54Z",
+        "revision_url": "https://en.wikisource.org/w/index.php?oldid=7691194",
+        "derivation": "rendered page HTML -> text (tables row-major, cells space-joined; quality banner, hidden padding and de.wikisource navigation headings/metadata header removed)",
+        "manual_edits": [
+          [
+            "insert_before",
+            "1 feet. 6,125",
+            "Group. Altitude. Date of cutting. Cutting season. Remarks."
+          ]
+        ],
+        "scope": "full page incl. running head/page number"
+      },
+      "primary_metric": "cer_nospace"
+    },
+    {
+      "id": "de-degraded-freiligrath-46",
+      "sha256": "1673be87eec8e4dac9d5d2f7a0341e88e6e0498b8044e10dd282220773603bfd",
+      "ground_truth_sha256": "9012215853af8989a2542e0afd9b97fa07992eec9c71d0c5c8ec0005b6cefeb5",
+      "image_license": {
+        "license": "Public domain",
+        "usage_terms": "Public domain",
+        "copyrighted": false,
+        "attribution": "Ferdinand Freiligrath; scan: Lippische Landesbibliothek"
+      },
+      "ground_truth_license": "CC BY-SA 4.0 (Wikisource contributors; transcription of a public-domain work, see the page history at the revision URL)",
+      "ground_truth_provenance": {
+        "kind": "Wikisource proofread transcription, status Validated (quality 4)",
+        "wiki": "de.wikisource.org",
+        "page": "Seite:Ça ira! Freiligrath-1846.pdf/46",
+        "revision_id": 3414080,
+        "revision_timestamp": "2018-08-01T10:47:13Z",
+        "revision_url": "https://de.wikisource.org/w/index.php?oldid=3414080",
+        "derivation": "rendered page HTML -> text (tables row-major, cells space-joined; quality banner, hidden padding and de.wikisource navigation headings/metadata header removed)",
+        "manual_edits": [
+          [
+            "drop_line",
+            "5"
+          ],
+          [
+            "drop_line",
+            "10"
+          ],
+          [
+            "prepend",
+            "44"
+          ]
+        ],
+        "scope": "full page; running head/page number added by manual edit where printed"
+      },
+      "primary_metric": "cer_nospace"
+    },
+    {
+      "id": "receipt-cord-test-29",
+      "sha256": "1f065c268473d727282005e57441c55c3249afe0da54f3bc08823d0cbe730610",
+      "ground_truth_sha256": "c93f40e7e20a131c1d3e13f4632e557e16bc497d9d79a08e33a49af542ec8bf6",
+      "image_license": {
+        "license": "CC BY 4.0",
+        "attribution": "CORD: A Consolidated Receipt Dataset for Post-OCR Parsing, Park et al., NAVER CLOVA (naver-clova-ix/cord-v2)"
+      },
+      "ground_truth_license": "CC BY 4.0",
+      "ground_truth_provenance": {
+        "kind": "CORD-v2 valid_line word annotations",
+        "dataset": "naver-clova-ix/cord-v2",
+        "revision": "7f0115a4b758a71d6473b8d085751692da2fef98",
+        "derivation": "words grouped by row_id, rows sorted by mean quad y, words by x, space-joined",
+        "manual_edits": [],
+        "scope": "PARTIAL: only annotated fields (menu/subtotal/total); store header is blurred in the image and not annotated, separators/dashes not annotated. Use word recall as the primary metric."
+      },
+      "primary_metric": "word_recall"
+    }
+  ],
+  "runs": [
+    {
+      "id": "en-prose-constitution-13",
+      "language": "eng",
+      "primary_metric": "cer_nospace",
+      "exit_code": 0,
+      "timed_out": false,
+      "wall_seconds": 3.0108386520005297,
+      "launcher_peak_rss_mb": 1311.38671875,
+      "cer": 0.0096,
+      "cer_nospace": 0.0092,
+      "wer": 0.0,
+      "word_recall": 1.0,
+      "len_ratio": 1.005,
+      "prediction_sha256": "9cc51d9406b18862262f5ec3aed793f3eba342aeaffd82cb441599bac02bf131",
+      "native_wall_seconds": 2.634009835,
+      "diagnostics": {
+        "alignment_verified": true,
+        "confidence_source": "tesseract_tsv_word",
+        "elapsed_ms": 2549,
+        "confidence_calibrated": false,
+        "internal_cleanup": false,
+        "word_offset_unit": "utf16",
+        "page_segmentation_mode": 3,
+        "engine": "system_tesseract",
+        "coordinate_space": "prepared_image_pixels",
+        "language": "eng",
+        "word_count": 174,
+        "engine_version": "tesseract 5.5.0"
+      },
+      "warnings": [],
+      "regions": 5,
+      "evidenced_words": 174,
+      "words_with_confidence": 174,
+      "confidence_calibrated": false
+    },
+    {
+      "id": "de-antiqua-kafka-schloss-211",
+      "language": "deu",
+      "primary_metric": "cer_nospace",
+      "exit_code": 0,
+      "timed_out": false,
+      "wall_seconds": 3.0013234060006653,
+      "launcher_peak_rss_mb": 1311.38671875,
+      "cer": 0.0105,
+      "cer_nospace": 0.0115,
+      "wer": 0.0328,
+      "word_recall": 0.9781,
+      "len_ratio": 0.998,
+      "prediction_sha256": "40c29661834753e6140aece75b9f7ba31d960d17309022ee791291853d6b368d",
+      "native_wall_seconds": 2.65172408,
+      "diagnostics": {
+        "alignment_verified": true,
+        "confidence_source": "tesseract_tsv_word",
+        "elapsed_ms": 2609,
+        "confidence_calibrated": false,
+        "internal_cleanup": false,
+        "word_offset_unit": "utf16",
+        "page_segmentation_mode": 3,
+        "engine": "system_tesseract",
+        "coordinate_space": "prepared_image_pixels",
+        "language": "deu",
+        "word_count": 188,
+        "engine_version": "tesseract 5.5.0"
+      },
+      "warnings": [],
+      "regions": 2,
+      "evidenced_words": 188,
+      "words_with_confidence": 188,
+      "confidence_calibrated": false
+    },
+    {
+      "id": "de-fraktur-grimm-319",
+      "language": "deu_latf",
+      "primary_metric": "cer_nospace",
+      "exit_code": 0,
+      "timed_out": false,
+      "wall_seconds": 2.0051951030000055,
+      "launcher_peak_rss_mb": 1311.38671875,
+      "cer": 0.0418,
+      "cer_nospace": 0.0362,
+      "wer": 0.1074,
+      "word_recall": 0.9195,
+      "len_ratio": 0.995,
+      "prediction_sha256": "502d963254154e5c73cee8d491897c6d4e1a3209799a2c68a2f7c57e47ecc20c",
+      "native_wall_seconds": 1.784324254,
+      "diagnostics": {
+        "alignment_verified": true,
+        "confidence_source": "tesseract_tsv_word",
+        "elapsed_ms": 1499,
+        "confidence_calibrated": false,
+        "internal_cleanup": false,
+        "word_offset_unit": "utf16",
+        "page_segmentation_mode": 3,
+        "engine": "system_tesseract",
+        "coordinate_space": "prepared_image_pixels",
+        "language": "deu_latf",
+        "word_count": 155,
+        "engine_version": "tesseract 5.5.0"
+      },
+      "warnings": [],
+      "regions": 2,
+      "evidenced_words": 155,
+      "words_with_confidence": 155,
+      "confidence_calibrated": false
+    },
+    {
+      "id": "en-table-climatic-26",
+      "language": "eng",
+      "primary_metric": "cer_nospace",
+      "exit_code": 0,
+      "timed_out": false,
+      "wall_seconds": 8.012019698000586,
+      "launcher_peak_rss_mb": 1311.38671875,
+      "cer": 0.0334,
+      "cer_nospace": 0.0337,
+      "wer": 0.0447,
+      "word_recall": 0.9592,
+      "len_ratio": 0.976,
+      "prediction_sha256": "4018c8e6bfb8245dcb6c8ee7a5facf870166dacf7c678ff82fd2bc2e7e28b73a",
+      "native_wall_seconds": 7.311108894,
+      "diagnostics": {
+        "alignment_verified": true,
+        "confidence_source": "tesseract_tsv_word",
+        "elapsed_ms": 7226,
+        "confidence_calibrated": false,
+        "internal_cleanup": false,
+        "word_offset_unit": "utf16",
+        "page_segmentation_mode": 3,
+        "engine": "system_tesseract",
+        "coordinate_space": "prepared_image_pixels",
+        "language": "eng",
+        "word_count": 495,
+        "engine_version": "tesseract 5.5.0"
+      },
+      "warnings": [],
+      "regions": 8,
+      "evidenced_words": 495,
+      "words_with_confidence": 495,
+      "confidence_calibrated": false
+    },
+    {
+      "id": "de-degraded-freiligrath-46",
+      "language": "deu_latf",
+      "primary_metric": "cer_nospace",
+      "exit_code": 0,
+      "timed_out": false,
+      "wall_seconds": 2.0050480239988246,
+      "launcher_peak_rss_mb": 1311.38671875,
+      "cer": 0.0639,
+      "cer_nospace": 0.0515,
+      "wer": 0.1519,
+      "word_recall": 0.8987,
+      "len_ratio": 1.029,
+      "prediction_sha256": "2bf1a84011eb9466cb95cdc4b5dce7d05ba781309952be418cf299560cd380f0",
+      "native_wall_seconds": 1.785600319,
+      "diagnostics": {
+        "alignment_verified": true,
+        "confidence_source": "tesseract_tsv_word",
+        "elapsed_ms": 1571,
+        "confidence_calibrated": false,
+        "internal_cleanup": false,
+        "word_offset_unit": "utf16",
+        "page_segmentation_mode": 3,
+        "engine": "system_tesseract",
+        "coordinate_space": "prepared_image_pixels",
+        "language": "deu_latf",
+        "word_count": 89,
+        "engine_version": "tesseract 5.5.0"
+      },
+      "warnings": [],
+      "regions": 8,
+      "evidenced_words": 89,
+      "words_with_confidence": 89,
+      "confidence_calibrated": false
+    },
+    {
+      "id": "receipt-cord-test-29",
+      "language": "eng+ind",
+      "primary_metric": "word_recall",
+      "exit_code": 0,
+      "timed_out": false,
+      "wall_seconds": 1.000890295001227,
+      "launcher_peak_rss_mb": 1311.38671875,
+      "cer": 0.6202,
+      "cer_nospace": 0.6256,
+      "wer": 0.7368,
+      "word_recall": 0.2632,
+      "len_ratio": 0.419,
+      "prediction_sha256": "cf7571ecfff351c9bc4be182bdb2d003a1c1b3e94e4d9fa26071408dd67208d8",
+      "native_wall_seconds": 0.732357019,
+      "diagnostics": {
+        "alignment_verified": true,
+        "confidence_source": "tesseract_tsv_word",
+        "elapsed_ms": 664,
+        "confidence_calibrated": false,
+        "internal_cleanup": false,
+        "word_offset_unit": "utf16",
+        "page_segmentation_mode": 3,
+        "engine": "system_tesseract",
+        "coordinate_space": "prepared_image_pixels",
+        "language": "eng+ind",
+        "word_count": 20,
+        "engine_version": "tesseract 5.5.0"
+      },
+      "warnings": [],
+      "regions": 3,
+      "evidenced_words": 20,
+      "words_with_confidence": 20,
+      "confidence_calibrated": false
+    }
+  ],
+  "packs": [
+    {
+      "name": "deu.traineddata",
+      "revision": "87416418657359cb625c412a48b6e1d6d41c29bd",
+      "url": "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/87416418657359cb625c412a48b6e1d6d41c29bd/deu.traineddata",
+      "bytes": 1525436,
+      "gitBlobSha1": "97ed7b2b60f2771c07040660ef0f6daf596dc7bf",
+      "sha256": "19d219bbb6672c869d20a9636c6816a81eb9a71796cb93ebe0cb1530e2cdb22d"
+    },
+    {
+      "name": "deu_latf.traineddata",
+      "revision": "87416418657359cb625c412a48b6e1d6d41c29bd",
+      "url": "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/87416418657359cb625c412a48b6e1d6d41c29bd/deu_latf.traineddata",
+      "bytes": 6423052,
+      "gitBlobSha1": "11a641044a93413454f75fbb8e05b085bd0b9d8d",
+      "sha256": "7cd1b541e9d3884b9546a7d292c4f349cdb45ff646b4b43166dfc5099a8ad1a1"
+    },
+    {
+      "name": "eng.traineddata",
+      "revision": "87416418657359cb625c412a48b6e1d6d41c29bd",
+      "url": "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/87416418657359cb625c412a48b6e1d6d41c29bd/eng.traineddata",
+      "bytes": 4113088,
+      "gitBlobSha1": "bbef4675053b5b468cdb477053e28b1c698ba08e",
+      "sha256": "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2"
+    },
+    {
+      "name": "ind.traineddata",
+      "revision": "87416418657359cb625c412a48b6e1d6d41c29bd",
+      "url": "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/87416418657359cb625c412a48b6e1d6d41c29bd/ind.traineddata",
+      "bytes": 1122661,
+      "gitBlobSha1": "3013f50cd2af9aceca00e865ed889144865f0848",
+      "sha256": "69786901da87ab8766c1ea7fbb10b28f2110c14da3f6c8f2735df131fba95d88"
+    },
+    {
+      "name": "osd.traineddata",
+      "revision": "87416418657359cb625c412a48b6e1d6d41c29bd",
+      "url": "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/87416418657359cb625c412a48b6e1d6d41c29bd/osd.traineddata",
+      "bytes": 10562727,
+      "gitBlobSha1": "527457ca8f8fe1fda7c2f88bce3c0e4be12be9d0",
+      "sha256": "9cf5d576fcc47564f11265841e5ca839001e7e6f38ff7f7aacf46d15a96b00ff"
+    }
+  ],
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "logical_cpus": 9,
+  "python": "3.12.14",
+  "omp_thread_limit": 2,
+  "case_timeout_seconds": 180,
+  "application_revision": "3050e3120ea103f731dd3eeea1583f98aa6dcfc3",
+  "adapter_sha256": "ba18e7cf6ff20e5d30e3e4ae4521e5b203657764e0606caf5b200d46a14d1a82",
+  "wrapper_sha256": "27b7e9a937593f4be8175a6f243643eb5e0442013960ca5477098bbdf2e22583",
+  "inputs_verified": true,
+  "capabilities": {
+    "available": true,
+    "version": "tesseract 5.5.0",
+    "languages": [
+      "deu",
+      "deu_latf",
+      "eng",
+      "ind"
+    ],
+    "reason": null
+  },
+  "executable_sha256": "06fba79ce418708dd201c051ea63b2d2e81b00bbbf6a02327248337cd70db869",
+  "successful_cases": 6,
+  "original_result_sha256": "75758717a2ce2e9b0abf74fe3cca8635d04949b2c28eeeb1989bb1531723d067",
+  "receipt_note": "Source images, references, predictions and diagnostic full_text/stderr are excluded. launcher_peak_rss_mb includes inherited process memory and is not isolated engine memory. Native adapter was modified after application_revision; adapter_sha256 identifies the tested source.",
+  "before_fix": {
+    "result_sha256": "ce10a2646819394a0a5d0eded52609a915f52c2b28bc88d99407196ecdc8db30",
+    "completed": true,
+    "attempted": 6,
+    "successful": 0,
+    "failure": "Standalone language-pack directory omitted optional named output config files; all six runs failed without TSV output. Explicit output parameters correct this."
+  }
+}

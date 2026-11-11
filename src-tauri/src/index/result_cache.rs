@@ -190,6 +190,7 @@ pub fn hash_filters(filters: &super::schema::SearchFilters) -> u64 {
     filters.colbert_rerank.hash(&mut h);
     filters.url_domain.hash(&mut h);
     filters.tag.hash(&mut h);
+    filters.query_intent.as_deref().unwrap_or("advanced").hash(&mut h);
     filters.fuzzy.hash(&mut h);
     filters.synonyms.hash(&mut h);
     filters.doc_id_scope.hash(&mut h);

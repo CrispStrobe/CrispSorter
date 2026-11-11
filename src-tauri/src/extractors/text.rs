@@ -65,6 +65,7 @@ pub fn extract(path: &Path) -> Result<ExtractedDocument> {
         source_url,
         tags,
         audio_pcm: None,
+        ..Default::default()
     })
 }
 

@@ -72,13 +72,13 @@ pub async fn index_search(
     if query.trim().is_empty() || query.len() > 8192 {
         return Err("Enter a search query of at most 8192 bytes".into());
     }
-    if mode != "vector" { super::fts_query::has_explicit_syntax(&query).map_err(|e| e.to_string())?; }
     // PLAN P7.4.4 — flag the foreground search so the bg_ingest worker
     // pauses while we run. RAII drops at function return.
     let _fg = crate::bg_ingest::ForegroundGuard::new(state.foreground_active.clone());
 
     let lock = state.index.lock().await;
     let config_enabled = lock.config.enabled;
+    let remote_backend = matches!(lock.config.backend_type, super::BackendType::Remote);
 
     let mut filters = search_filters.unwrap_or_default();
     // Keep older callers working while the UI sends the complete filter set.
@@ -88,16 +88,20 @@ pub async fn index_search(
     if let Some(value) = doc_id_scope { filters.doc_id_scope = value; }
     filters.tag = tag.or(filters.tag);
     validate_search_filters(&filters)?;
+    if mode != "vector" { filters.query_plan(&query).map_err(|e| e.to_string())?; }
     let limit = limit.clamp(1, 500);
     let catalog_eligible = filters.to_lance_sql().is_none()
-        && mode != "vector" && !super::fts_query::has_explicit_syntax(&query).map_err(|e| e.to_string())?;
-    let mounted_ids: Option<std::collections::HashSet<String>> = if include_unmounted.unwrap_or(false) { None } else {
+        && mode != "vector" && filters.query_intent.as_deref().unwrap_or("advanced") == "advanced"
+        && !super::fts_query::has_explicit_syntax(&query).map_err(|e| e.to_string())?;
+    let mounted_ids: Option<std::collections::HashSet<String>> = if remote_backend || include_unmounted.unwrap_or(false) { None } else {
         Some(tokio::task::spawn_blocking(crate::volume::list_mounted_volumes).await
             .map_err(|e| format!("list_mounted_volumes join: {e}"))?.into_iter().map(|volume| volume.id).collect())
     };
     // Filter before the candidate limit so offline hits do not crowd out
-    // available documents. Keep the remote legacy fallback below as well.
-    if lock.engine.is_some() {
+    // available local documents. Desktop mount IDs cannot establish whether
+    // a remote server's source volumes are available. Explicit remote volume
+    // constraints remain in search_filters and are negotiated by the client.
+    if !remote_backend && lock.engine.is_some() {
         filters.mounted_volume_ids = mounted_ids.as_ref().map(|ids| {
             let mut ids: Vec<String> = ids.iter().cloned().collect(); ids.sort(); ids
         });
@@ -110,7 +114,7 @@ pub async fn index_search(
     // replace) the catalog channel below.
     let mut results: Vec<SearchResult> = if !config_enabled {
         Vec::new()
-    } else if let Some(engine) = lock.engine.clone() {
+    } else if let Some(engine) = lock.engine.clone().filter(|_| !remote_backend) {
         // ── Local path: SearchEngine wraps FTS + ANN + RRF ────────────
         drop(lock);
         match mode.as_str() {
@@ -120,8 +124,8 @@ pub async fn index_search(
         }
         .map_err(|e| e.to_string())?
     } else {
-        // The older remote-index protocol only carries owner/language/year.
-        // Refuse unsupported filters instead of returning unfiltered matches.
+        // Only transmit predicates represented by the remote schema. Extended
+        // metadata predicates also require a capability and response receipt.
         ensure_remote_search_filters_supported(&filters)?;
         // ── Remote path: embed query locally, then call backend ───────
         let backend = lock
@@ -161,7 +165,7 @@ pub async fn index_search(
                         config.remote_url.clone().ok_or("remote_url must be set for Remote backend")?,
                         config.remote_api_key.clone().unwrap_or_default(), &proxy,
                     ).map_err(|e| e.to_string())?;
-                    remote.query_language_version(&query, true).await.map_err(|e| e.to_string())?;
+                    remote.query_language_version(&filters.query_plan(&query).map_err(|e| e.to_string())?.lexical_query, true).await.map_err(|e| e.to_string())?;
                     let embedding = embed_query(Some(embedder), &query).await?;
                     backend
                         .search_hybrid(&query, &embedding, &filters, limit)
@@ -216,34 +220,16 @@ pub async fn index_search(
 }
 
 /// Validate ranges at the IPC boundary as well as in the form.
-fn validate_search_filters(filters: &super::SearchFilters) -> Result<(), String> {
-    if !filters.tags.is_empty() {
-        return Err("The legacy 'tags' list is not supported for search. Use the singular 'tag' filter for one exact tag.".into());
-    }
-    for year in [filters.year_min, filters.year_max].into_iter().flatten() {
-        if !(1..=9999).contains(&year) { return Err("Publication years must be between 1 and 9999.".into()); }
-    }
-    if matches!((filters.year_min, filters.year_max), (Some(min), Some(max)) if min > max) {
-        return Err("The minimum publication year must not exceed the maximum.".into());
-    }
-    for seconds in [filters.audio_duration_min_seconds, filters.audio_duration_max_seconds].into_iter().flatten() {
-        if !seconds.is_finite() || seconds < 0.0 { return Err("Audio duration must be a non-negative number of seconds.".into()); }
-    }
-    if matches!((filters.audio_duration_min_seconds, filters.audio_duration_max_seconds), (Some(min), Some(max)) if min > max) {
-        return Err("The minimum audio duration must not exceed the maximum.".into());
-    }
-    Ok(())
+pub(crate) fn validate_search_filters(filters: &super::SearchFilters) -> Result<(), String> {
+    filters.validate()
 }
 
 fn ensure_remote_search_filters_supported(filters: &super::SearchFilters) -> Result<(), String> {
-    let mut unsupported = filters.clone();
-    unsupported.owner_id = None;
-    unsupported.language = None;
-    unsupported.year_min = None;
-    unsupported.year_max = None;
-    if unsupported.to_lance_sql().is_some() || !unsupported.tags.is_empty() || unsupported.fuzzy || unsupported.synonyms
-        || unsupported.colbert_rerank || unsupported.omni_search {
-        return Err("This remote index supports only language and publication-year filters. Clear the other search options or switch to the local index.".into());
+    // Every metadata predicate is negotiated with the server by RemoteClient.
+    // Fuzzy/synonym expansion uses the same lexical transformation as local
+    // search. These local model channels still have no remote wire contract.
+    if filters.colbert_rerank || filters.omni_search {
+        return Err("Remote search does not support the local token reranker or cross-modal model channel. Disable those options or choose the local index.".into());
     }
     Ok(())
 }
@@ -545,6 +531,40 @@ pub struct DocumentIngestInput {
     #[serde(default)]
     pub source_fingerprint: Option<String>,
     pub tags: Vec<String>,
+    #[serde(default, flatten)]
+    pub metadata: super::ingest_metadata::IngestMetadata,
+    #[serde(default)]
+    pub own_text: Option<String>,
+    #[serde(default)]
+    pub container_source: Option<crisp_index_protocol::ContainerSourceReceipt>,
+    #[serde(default)]
+    pub container_coverage: Option<crisp_index_protocol::ContainerCoverage>,
+    #[serde(default)]
+    pub members: Vec<super::container_ingest::MemberInput>,
+}
+
+fn raw_from_input(input: DocumentIngestInput) -> Result<RawDocument,String> {
+    let container = match (input.container_source,input.container_coverage) {
+        (Some(source),Some(coverage)) => {
+            if input.own_text.is_none() { return Err("Container indexing requires the root's own text separately from its aggregate preview".into()); }
+            Some(super::container_ingest::ContainerDocument::Root {
+                source,coverage,members:input.members.into_iter().map(super::container_ingest::MemberInput::into_raw)
+                    .collect::<anyhow::Result<Vec<_>>>().map_err(|error|error.to_string())?,
+            })
+        }
+        (None,None) if input.members.is_empty() => None,
+        _ => return Err("Container members require both a source fingerprint receipt and extraction coverage".into()),
+    };
+    Ok(RawDocument {
+        full_text:input.own_text.unwrap_or(input.full_text),full_text_md:input.full_text_md,headings:input.headings,
+        title:input.title,author:input.author,year:input.year,filename:input.filename,ext:input.ext,language:input.language,
+        source_hash:input.source_hash,location_uri:input.location_uri,owner_id:input.owner_id,tags:input.tags,
+        volume_id:input.metadata.volume_id,parent_dir:input.metadata.parent_dir,
+        translated_text:input.metadata.text_translated,translated_to_lang:input.metadata.text_translated_lang,
+        audio_duration_seconds:input.metadata.audio_duration_seconds,image_camera_make:input.metadata.image_camera_make,
+        image_camera_model:input.metadata.image_camera_model,url:input.metadata.url,container,
+        ..Default::default()
+    })
 }
 
 fn source_receipt(input: &DocumentIngestInput) -> Result<Option<(std::path::PathBuf, String)>, String> {
@@ -660,7 +680,8 @@ pub async fn index_ingest_path(
     // Stat once for mtime (P7.4.3 skip-check) and file size (P9 UX: Übersicht size column).
     let p_meta = std::fs::metadata(&p).ok();
     let raw = RawDocument {
-        full_text: extracted.full_text,
+                container: crate::index::container_extract::from_extraction(&extracted).map_err(|error|error.to_string())?,
+        full_text: crate::index::container_extract::indexed_text(&extracted).to_owned(),
         full_text_md: String::new(),
         headings: extracted.headings,
         title,
@@ -757,18 +778,52 @@ pub async fn index_ingest_batch(
     if inputs.is_empty() {
         return Ok(IngestStats { chunk_count: 0, embed_time_ms: 0, write_time_ms: 0, doc_ids: Vec::new() });
     }
-    if inputs.iter().any(|input| input.full_text.trim().is_empty()) {
+    if inputs.iter().any(|input| input.own_text.as_deref().unwrap_or(&input.full_text).trim().is_empty() && input.container_source.is_none()) {
         return Err("No searchable text was extracted. Retry extraction or use metadata indexing.".into());
     }
     let sources: Vec<_> = inputs.iter().map(source_receipt)
         .collect::<Result<Vec<_>, _>>()?.into_iter().flatten().collect();
     for input in &mut inputs {
+        input.metadata.validate().map_err(|error| error.to_string())?;
         if let Some(fingerprint) = &input.source_fingerprint {
             input.source_hash = fingerprint.to_ascii_lowercase();
         }
     }
+    // Enrich real host paths outside the async executor. These source volume
+    // IDs are retained remotely as provenance, never treated as server mount
+    // liveness. Explicit extractor metadata stays authoritative.
+    inputs = tokio::task::spawn_blocking(move || {
+        for input in &mut inputs {
+            let path = if input.location_uri.starts_with("crisp+local://") {
+                match super::location::FileLocation::from_uri(&input.location_uri) {
+                    Ok(super::location::FileLocation::Local { path, .. }) => Some(path),
+                    _ => None,
+                }
+            } else if !input.location_uri.contains("://") {
+                Some(std::path::PathBuf::from(&input.location_uri))
+            } else { None };
+            if let Some(path) = path.filter(|path| path.is_absolute()) {
+                if input.metadata.parent_dir.is_none() {
+                    input.metadata.parent_dir = path.parent().map(|parent| parent.to_string_lossy().into_owned());
+                }
+                if input.metadata.volume_id.is_none() {
+                    input.metadata.volume_id = crate::volume::volume_id_for_path(&path);
+                }
+            }
+            if input.metadata.url.is_none() && (input.location_uri.starts_with("https://") || input.location_uri.starts_with("http://")) {
+                input.metadata.url = Some(input.location_uri.clone());
+            }
+        }
+        inputs
+    }).await.map_err(|error| format!("Reading source metadata: {error}"))?;
+    // Derived paths and URLs obey the same limits as extractor-supplied values.
+    for input in &inputs {
+        input.metadata.validate().map_err(|error| error.to_string())?;
+    }
     let progress_filename = if inputs.len() == 1 { inputs[0].filename.clone() }
         else { format!("(batch of {})", inputs.len()) };
+    let total = inputs.len();
+    let mut raws = inputs.into_iter().map(raw_from_input).collect::<Result<Vec<_>,_>>()?;
 
     let lock = state.index.lock().await;
 
@@ -781,7 +836,6 @@ pub async fn index_ingest_batch(
 
     if let Some(pipeline) = pipeline {
         use tauri::Emitter;
-        let total = inputs.len();
 
         macro_rules! emit_batch {
             ($step:expr, $msg:expr) => {
@@ -799,52 +853,6 @@ pub async fn index_ingest_batch(
         }
 
         emit_batch!("embedding", "Embedding & writing batch …");
-
-        let raws: Vec<RawDocument> = inputs
-            .into_iter()
-            .map(|input| RawDocument {
-                full_text: input.full_text,
-                full_text_md: input.full_text_md,
-                headings: input.headings,
-                title: input.title,
-                author: input.author,
-                year: input.year,
-                filename: input.filename,
-                ext: input.ext,
-                language: input.language,
-                source_hash: input.source_hash,
-                location_uri: input.location_uri,
-                owner_id: input.owner_id,
-                tags: input.tags,
-                // Same rationale as index_ingest_document: frontend ingest
-                // is path-less / mtime-less; bg_ingest skip-on-mtime
-                // treats None as "re-ingest" which is the safe default.
-                mtime_unix: None,
-                images_indexed: false,
-                file_size: None,
-                volume_id: None,
-                parent_dir: None,
-                // Frontend-driven batch ingest doesn't run the extractor's
-                // MT pass — Phase 8 on-demand handles per-result translation.
-                translated_text: None,
-                translated_to_lang: None,
-                audio_duration_seconds: None,
-                audio_codec: None,
-                audio_sample_rate_hz: None,
-                audio_channels: None,
-                audio_bitrate_kbps: None,
-                image_camera_make: None,
-                image_camera_model: None,
-                image_lens_model: None,
-                image_taken_at_unix: None,
-                image_iso: None,
-                multivec_packed: None,
-                multivec_n_tokens: None,
-                url: None,
-                embedding_omni: None,
-                embedding_vit: None,
-            })
-            .collect();
 
         let result = pipeline
             .ingest_documents_batch_verified(raws, sources)
@@ -869,7 +877,6 @@ pub async fn index_ingest_batch(
     drop(lock);
 
     use tauri::Emitter;
-    let total = inputs.len();
     macro_rules! emit_batch_remote {
         ($step:expr, $msg:expr) => {
             let _ = app.emit(
@@ -897,54 +904,21 @@ pub async fn index_ingest_batch(
     let embed_start = std::time::Instant::now();
     let mut chunks: Vec<RemoteIngestChunk> = Vec::new();
 
-    for input in inputs {
-        let raw = RawDocument {
-            full_text: input.full_text,
-            full_text_md: input.full_text_md,
-            headings: input.headings,
-            title: input.title,
-            author: input.author,
-            year: input.year,
-            filename: input.filename,
-            ext: input.ext,
-            language: input.language,
-            source_hash: input.source_hash,
-            location_uri: input.location_uri,
-            owner_id: input.owner_id,
-            tags: input.tags,
-            mtime_unix: None,
-            images_indexed: false,
-            file_size: None,
-            volume_id: None,
-            parent_dir: None,
-            // Remote-batch ingest doesn't run the extractor's MT pass.
-            translated_text: None,
-            translated_to_lang: None,
-            audio_duration_seconds: None,
-            audio_codec: None,
-            audio_sample_rate_hz: None,
-            audio_channels: None,
-            audio_bitrate_kbps: None,
-            image_camera_make: None,
-            image_camera_model: None,
-            image_lens_model: None,
-            image_taken_at_unix: None,
-            image_iso: None,
-            multivec_packed: None,
-            multivec_n_tokens: None,
-            url: None,
-            embedding_omni: None,
-            embedding_vit: None,
-        };
+    let grouped_container_upload=raws.iter().any(|raw|raw.container.is_some());
+    super::container_ingest::expand_roots(&mut raws).map_err(|error|error.to_string())?;
+    for raw in raws {
         let doc_id = super::ingest::doc_id_for(&raw);
         let cfg = super::ingest::IngestConfig::default();
-        let text_chunks = super::embedder::chunk_text(
+        let mut text_chunks = super::embedder::chunk_text(
             &raw.full_text,
             cfg.chunk_max_words,
             cfg.chunk_stride,
             &[],
         );
-        let dense = if let Some(ref embedder) = embedder {
+        if text_chunks.is_empty() && raw.container.is_some() {
+            text_chunks.push(super::embedder::TextChunk { text:String::new(),start_char:0,end_char:0,chunk_index:0 });
+        }
+        let dense = if let Some(ref embedder) = embedder.as_ref().filter(|_|!raw.full_text.trim().is_empty()) {
             let texts: Vec<String> = text_chunks.iter().map(|c| c.text.clone()).collect();
             Some({
                 use super::embedder::EmbedRole;
@@ -955,10 +929,15 @@ pub async fn index_ingest_batch(
         } else {
             None
         };
+        let (container_member,container_source,container_coverage)=match &raw.container {
+            Some(super::container_ingest::ContainerDocument::Root {source,coverage,..})=>(None,Some(source.clone()),Some(coverage.clone())),
+            Some(super::container_ingest::ContainerDocument::Member {locator,coverage})=>(Some(locator.clone()),None,coverage.clone()),
+            None=>(None,None,None),
+        };
         for (i, tc) in text_chunks.iter().enumerate() {
             chunks.push(RemoteIngestChunk {
                 doc_id: doc_id.clone(),
-                source_identity_version: Some(1),
+                source_identity_version: container_member.is_none().then_some(1),
                 chunk_index: tc.chunk_index,
                 chunk_total: Some(i32::try_from(text_chunks.len()).map_err(|_| "Too many document chunks")?),
                 chunk_start_char: Some(i32::try_from(tc.start_char).map_err(|_| "Document offset exceeds supported range")?),
@@ -988,6 +967,16 @@ pub async fn index_ingest_batch(
                 owner_id: raw.owner_id.clone(),
                 source_hash: raw.source_hash.clone(),
                 tags: raw.tags.clone(),
+                parent_dir: raw.parent_dir.clone(),
+                volume_id: raw.volume_id.clone(),
+                url: raw.url.clone(),
+                text_translated: if tc.chunk_index == 0 { raw.translated_text.clone() } else { None },
+                text_translated_lang: if tc.chunk_index == 0 { raw.translated_to_lang.clone() } else { None },
+                audio_duration_seconds: raw.audio_duration_seconds,
+                image_camera_make: raw.image_camera_make.clone(),
+                image_camera_model: raw.image_camera_model.clone(),
+                doc_status: None,
+                container_member:container_member.clone(),container_source:container_source.clone(),container_coverage:container_coverage.clone(),
             });
         }
     }
@@ -1002,7 +991,7 @@ pub async fn index_ingest_batch(
         &proxy,
     )
     .map_err(|e| e.to_string())?;
-    let batch = RemoteIngestBatch { chunks };
+    let batch = RemoteIngestBatch { chunks,container_group_version:grouped_container_upload.then_some(crisp_index_protocol::CONTAINER_MEMBERS_VERSION) };
     verify_remote_sources(sources).await?;
     let accepted = remote.ingest_batch(&batch).await.map_err(|e| e.to_string())?;
     {
@@ -1695,7 +1684,8 @@ pub async fn index_audio_promote_l3(
     let p_meta = std::fs::metadata(&path).ok();
 
     let raw = RawDocument {
-        full_text: extracted.full_text.clone(),
+                container: crate::index::container_extract::from_extraction(&extracted).map_err(|error|error.to_string())?,
+        full_text: crate::index::container_extract::indexed_text(&extracted).to_owned(),
         full_text_md: extracted.full_text.clone(),
         headings: extracted.headings.clone(),
         title: path.file_stem().map(|s| s.to_string_lossy().into_owned()),
@@ -1831,7 +1821,8 @@ pub async fn index_image_promote_l3(
     let p_meta = std::fs::metadata(&path).ok();
 
     let raw = RawDocument {
-        full_text: extracted.full_text.clone(),
+                container: crate::index::container_extract::from_extraction(&extracted).map_err(|error|error.to_string())?,
+        full_text: crate::index::container_extract::indexed_text(&extracted).to_owned(),
         full_text_md: extracted.full_text.clone(),
         headings: extracted.headings.clone(),
         title: path.file_stem().map(|s| s.to_string_lossy().into_owned()),
@@ -3228,6 +3219,7 @@ pub async fn index_l1_only_scan(
         };
 
         let raw = crate::index::ingest::RawDocument {
+                container: None,
             full_text: String::new(),
             full_text_md: String::new(),
             headings: Vec::new(),
@@ -3459,7 +3451,8 @@ async fn promote_path(
 
     let bg_meta = restored_path.metadata().ok();
     let raw = crate::index::ingest::RawDocument {
-        full_text: extracted.full_text,
+                container: crate::index::container_extract::from_extraction(&extracted).map_err(|error|error.to_string())?,
+        full_text: crate::index::container_extract::indexed_text(&extracted).to_owned(),
         full_text_md: String::new(),
         headings: extracted.headings,
         title: original.as_ref().and_then(|row| row.title.clone()),
@@ -4777,6 +4770,7 @@ pub async fn ocr_workbench_reingest(
 
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     let raw = RawDocument {
+                container: None,
         full_text: text.clone(),
         full_text_md: text,
         headings: Vec::new(),
@@ -5315,6 +5309,8 @@ mod source_receipt_boundary_tests {
             location_uri: location_uri.into(), owner_id: "local".into(),
             source_hash: "legacy-text-derived-id".into(),
             source_fingerprint: fingerprint.map(str::to_owned), tags: Vec::new(),
+            metadata: Default::default(),
+            own_text: None, container_source: None, container_coverage: None, members: Vec::new(),
         }
     }
 
@@ -5379,10 +5375,12 @@ mod search_filter_boundary_tests {
 
     #[test]
     fn search_ranges_fail_closed() {
-        let tag_error = validate_search_filters(&SearchFilters {
-            tags: vec!["invoice".into()], ..Default::default()
-        }).unwrap_err();
-        assert!(tag_error.contains("singular 'tag'"));
+        assert!(validate_search_filters(&SearchFilters {
+            tags: vec!["invoice".into(), "reviewed".into()], ..Default::default()
+        }).is_ok());
+        assert!(validate_search_filters(&SearchFilters {
+            tags: vec![" ".into()], ..Default::default()
+        }).is_err());
         assert!(validate_search_filters(&SearchFilters {
             year_min: Some(2025), year_max: Some(2020), ..Default::default()
         }).is_err());
@@ -5399,18 +5397,23 @@ mod search_filter_boundary_tests {
     }
 
     #[test]
-    fn remote_index_refuses_filters_missing_from_its_wire_protocol() {
+    fn remote_index_defers_metadata_capabilities_and_refuses_unmapped_model_channels() {
         assert!(ensure_remote_search_filters_supported(&SearchFilters {
             language: Some("de".into()), year_min: Some(2000), year_max: Some(2025),
+            ext: vec!["pdf".into()], tag: Some("invoice".into()),
+            source_hash_prefix: Some("abc".into()), doc_id_scope: vec!["one".into()],
             ..Default::default()
         }).is_ok());
         for filters in [
-            SearchFilters { ext: vec!["pdf".into()], ..Default::default() },
-            SearchFilters { tag: Some("invoice".into()), ..Default::default() },
-            SearchFilters { synonyms: true, ..Default::default() },
-            SearchFilters { doc_id_scope: vec!["one".into()], ..Default::default() },
-        ] {
-            assert!(ensure_remote_search_filters_supported(&filters).is_err());
-        }
+            SearchFilters { parent_dir_prefix: Some("/docs".into()), ..Default::default() },
+            SearchFilters { prefer_translated_lang: Some("en".into()), ..Default::default() },
+            SearchFilters { synonyms: true, fuzzy: true, ..Default::default() },
+            SearchFilters { doc_status: Some("reviewed".into()), ..Default::default() },
+            SearchFilters { tags: vec!["required".into()], mounted_volume_ids: Some(vec![]), ..Default::default() },
+        ] { assert!(ensure_remote_search_filters_supported(&filters).is_ok()); }
+        for filters in [
+            SearchFilters { colbert_rerank: true, ..Default::default() },
+            SearchFilters { omni_search: true, ..Default::default() },
+        ] { assert!(ensure_remote_search_filters_supported(&filters).is_err()); }
     }
 }

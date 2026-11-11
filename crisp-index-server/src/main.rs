@@ -16,6 +16,7 @@
 ///   GET  /v1/stats                — row/doc count (auth required)
 ///   POST /v1/ingest               — store a pre-embedded chunk (auth required)
 ///   POST /v1/search               — text / vector / hybrid search (auth required)
+///   POST /v1/passages/read        — exact stored passage inspection (auth required)
 ///   DELETE /v1/docs/:id           — delete all chunks for a document (auth required)
 ///   POST /v1/docs/:id/location    — update stored location URI (auth required)
 ///   POST /v1/admin/build-ivf-pq   — build IVF-PQ index (auth required)
@@ -27,6 +28,8 @@ mod queue;
 mod routes;
 #[path = "../../shared/source_identity.rs"]
 mod source_identity;
+#[path = "../../shared/source_paths.rs"]
+mod source_paths;
 mod state;
 
 use std::sync::Arc;
@@ -92,11 +95,12 @@ async fn main() -> Result<()> {
     std::fs::create_dir_all(&data_dir)?;
 
     // Initialise indexes.
-    tracing::info!("Opening VectorStore at {:?} (dims={})", data_dir, dims);
-    let vector = Arc::new(VectorStore::open_or_create(&data_dir, dims).await?);
-
+    // Claim the process lease before any optional column migration can change
+    // a store still being served by another process.
     tracing::info!("Opening FtsStore");
     let fts = Arc::new(FtsStore::open_or_create(&data_dir.join("fts-v2"))?);
+    tracing::info!("Opening VectorStore at {:?} (dims={})", data_dir, dims);
+    let vector = Arc::new(VectorStore::open_or_create(&data_dir, dims).await?);
 
     let search_index = Arc::new(SearchIndex::new(vector, fts));
     search_index.ensure_ready().await?;
@@ -139,9 +143,19 @@ async fn main() -> Result<()> {
         .route("/capabilities", get(routes::capabilities::capabilities))
         .route("/stats", get(routes::stats::stats))
         .route("/ingest", post(routes::ingest::ingest))
+        .route("/ingest/containers", post(routes::ingest::ingest_containers)
+            .layer(axum::extract::DefaultBodyLimit::max(64*1024*1024)))
+        .route("/members/read",post(routes::members::read_member))
         .route("/ingest/batch", post(routes::ingest::ingest_batch))
         .route("/tasks/{task_id}", get(routes::tasks::task_status))
         .route("/search", post(routes::search::search))
+        .route("/search/generation", post(routes::complete::generation))
+        .route("/search/complete", post(routes::complete::summary))
+        .route("/search/complete/page", post(routes::complete::page))
+        .route("/search/complete/destination", post(routes::complete::destination))
+        .route("/search/complete/{request_id}", delete(routes::complete::cancel))
+        .route("/passages/read", post(routes::passages::read_passage))
+        .route("/passages/explain", post(routes::explanations::explain))
         .route("/docs/{doc_id}", delete(routes::docs::delete_doc))
         .route(
             "/docs/location/by-uri",

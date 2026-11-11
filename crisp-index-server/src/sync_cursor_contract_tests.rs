@@ -23,6 +23,7 @@ fn wire(owner: &str, id: &str, text: &str) -> IngestChunk {
         location_uri: format!("test://{owner}/{id}"),
         source_hash: format!("{owner}/{id}"),
         tags: vec![],
+        ..Default::default()
     }
 }
 
@@ -40,7 +41,7 @@ async fn sync_cursor_orders_timestamp_ties_and_pins_snapshot_across_writes() {
     let index = open(dir.path()).await;
     index
         .ingest_batch(&IngestBatch {
-            chunks: vec![
+            container_group_version: None, chunks: vec![
                 wire("b", "same", "one"),
                 wire("a", "z", "two"),
                 wire("a", "same", "three"),
@@ -80,7 +81,7 @@ async fn sync_cursor_orders_timestamp_ties_and_pins_snapshot_across_writes() {
     // in the next cycle, without shifting the in-flight immutable page order.
     index
         .ingest_batch(&IngestBatch {
-            chunks: vec![wire("a", "before", "new"), wire("a", "early", "updated")],
+            container_group_version: None, chunks: vec![wire("a", "before", "new"), wire("a", "early", "updated")],
         })
         .await
         .unwrap();
@@ -137,7 +138,7 @@ async fn sync_cursor_orders_timestamp_ties_and_pins_snapshot_across_writes() {
     // Snapshot checkout used an independent table handle; live writes remain possible.
     index
         .ingest_batch(&IngestBatch {
-            chunks: vec![wire("a", "still-writable", "live")],
+            container_group_version: None, chunks: vec![wire("a", "still-writable", "live")],
         })
         .await
         .unwrap();
@@ -149,7 +150,7 @@ async fn sync_cursor_validates_boundaries_and_uses_exact_has_more() {
     let index = open(dir.path()).await;
     index
         .ingest_batch(&IngestBatch {
-            chunks: vec![wire("a", "one", "hello"), wire("a", "two", "world")],
+            container_group_version: None, chunks: vec![wire("a", "one", "hello"), wire("a", "two", "world")],
         })
         .await
         .unwrap();
@@ -207,7 +208,7 @@ async fn sync_pages_freeze_deletion_horizon_and_newer_reingest_suppresses_tombst
     let index = open(dir.path()).await;
     index
         .ingest_batch(&IngestBatch {
-            chunks: vec![
+            container_group_version: None, chunks: vec![
                 wire("a", "first", "first"),
                 wire("a", "middle", "middle"),
                 wire("a", "third", "third"),
@@ -247,7 +248,7 @@ async fn sync_pages_freeze_deletion_horizon_and_newer_reingest_suppresses_tombst
     assert!(current.deletions[0].indexed_at > cursor.tombstone_horizon);
     index
         .ingest_batch(&IngestBatch {
-            chunks: vec![wire("a", "middle", "restored")],
+            container_group_version: None, chunks: vec![wire("a", "middle", "restored")],
         })
         .await
         .unwrap();
@@ -260,7 +261,7 @@ async fn sync_pages_freeze_deletion_horizon_and_newer_reingest_suppresses_tombst
     assert!(restored.rows.iter().any(|row| row.doc_id == "middle"));
     index
         .ingest_batch(&IngestBatch {
-            chunks: vec![wire("b", "middle", "other owner")],
+            container_group_version: None, chunks: vec![wire("b", "middle", "other owner")],
         })
         .await
         .unwrap();

@@ -84,6 +84,22 @@ API keys you enter in the Settings tab are stored in the **OS keychain** (macOS 
 
 ## Features
 
+- **Document search workspace** — exact and proximity query builder, saved search
+  views, keyboard result/preview navigation, independent passage find, stored
+  chunk navigation, source citations, and reproducible result reports. Local
+  full-text searches support complete match counts, matching facets, and streamed
+  CSV/JSON exports beyond the interactive result window. Retrieval preserves
+  owner identity, document diversity, and late passages; remote structured
+  filters and stored evidence use capability negotiation. See the
+  [capability and verification guide](docs/search-workspace-completion.md).
+- **Bounded ZIP content indexing** — nested member text through existing
+  document/OCR extractors, explicit coverage notes, shared expansion limits, and
+  source fingerprints. One archive remains one indexed source with labeled
+  member sections; skipped member names are not claims of extracted content.
+- **Native mail and presentation intake** — foreground EML, MBOX, and PPTX
+  extraction reads bounded source snapshots outside the webview, retains source
+  fingerprints, and records text-only and attachment coverage limits.
+
 - **OCR document workspace** — multi-document projects with automatic recovery, page preparation, confidence-colored word review, multiline editing and passage split/merge, previewed partial re-OCR, vocabulary and correction rules, logical document structure and per-passage formatting, saved whole-page text drafts with previewed changes, batch pause/resume, independently editable table/formula/field results with original-source inspection, previewed table row/column and cell repair, continuation-table joins with explicit mapping and preserved inputs, and checked searchable/editable exports. Structured Word export preserves reviewed headings, lists, styles, columns and pictures, with explicit table/formula selection and placement. Excel export creates explicitly selected, named and ordered worksheets with literal values and merged cells, including saved tables whose source is now historical. See [the workspace guide](docs/ocr-workspace.md) and the [scoped implementation roadmap](docs/ocr-roadmap.md) for current format limitations, remaining work, and acceptance gates.
 
 - **Four-tier OCR** (in quality order):

@@ -34,9 +34,10 @@ test.beforeEach(async ({ page }) => {
                 root.__passageRequests = [...(root.__passageRequests || []), args];
                 return { text: `Passage for ${args.docId}. warranty first. Warranty second. <img src=x onerror=alert(1)>`, start_char: 200, end_char: 300, offset_unit: 'utf8_bytes', truncated: false };
             }
-            if (command === 'plugin:fs|write_file') {
-                root.__writtenReports = [...(root.__writtenReports || []), new TextDecoder().decode(new Uint8Array(args))];
-                return;
+            if (command === 'index_write_search_report') {
+                root.__writtenReports = [...(root.__writtenReports || []), args.content];
+                root.__reportProtectedSources = args.protectedSourceUris;
+                return args.path;
             }
             return original(command, args, options);
         };
@@ -73,6 +74,7 @@ test('exports selected results with the executed query after the search box chan
     expect(report.coverage.completeMatchSet).toBe(false);
     expect(report.documents.map((document: any) => document.docId)).toEqual(['a']);
     expect(report.documents[0].sourceHash).toBe('a'.repeat(64));
+    expect(await page.evaluate(() => (window as any).__reportProtectedSources)).toEqual(['/a.txt']);
 });
 
 test('failed report writing keeps results and selection and offers a working retry', async ({ page }) => {
@@ -82,7 +84,7 @@ test('failed report writing keeps results and selection and offers a working ret
         const root = window as any, original = root.__TAURI_INTERNALS__.invoke;
         let fail = true;
         root.__TAURI_INTERNALS__.invoke = (command: string, ...args: any[]) => {
-            if (command === 'plugin:fs|write_file' && fail) { fail = false; return Promise.reject(new Error('Fixture disk full')); }
+            if (command === 'index_write_search_report' && fail) { fail = false; return Promise.reject(new Error('Fixture disk full')); }
             return original(command, ...args);
         };
     });

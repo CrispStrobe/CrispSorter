@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, ensure, Result};
 use serde::{Deserialize, Serialize};
 /// Tantivy full-text index — create, write, search.
 ///
@@ -23,14 +23,15 @@ use std::{
     path::Path,
 };
 use tantivy::{
-    collector::{Count, DocSetCollector, TopDocs},
-    query::{BooleanQuery, Occur, Query, TermQuery, TermSetQuery},
+    collector::{Count, TopDocs},
+    query::{BooleanQuery, EnableScoring, Occur, Query, TermQuery, TermSetQuery},
     schema::OwnedValue,
     schema::{
         Field, IndexRecordOption, Schema, SchemaBuilder, TextFieldIndexing, TextOptions, STORED,
         STRING,
     },
-    Index, IndexReader, IndexWriter, ReloadPolicy, Score, TantivyDocument, Term,
+    tokenizer::{PreTokenizedString, Token},
+    DocAddress, DocSet, Index, IndexReader, IndexWriter, ReloadPolicy, Score, TantivyDocument, Term, TERMINATED,
 };
 
 use super::fts_query::{fold_accents, simple_tokenize, text_analyzer, translate, SearchFields};
@@ -165,6 +166,23 @@ impl FtsIndex {
         }
     }
 
+    /// Explain one exact current document against actual postings. The caller
+    /// keeps the paired text/vector read lease while reading its source passage.
+    pub fn explain_passage(&self, query: &str, owner_id: &str, doc_id: &str, text: &str,
+        edges: crisp_search_query::explanation::PassageEdges)
+        -> Result<crisp_search_query::explanation::QueryEvidence> {
+        self.reader.reload()?;
+        let searcher = self.reader.searcher();
+        let identity = BooleanQuery::new(vec![
+            (Occur::Must, Box::new(TermQuery::new(Term::from_field_text(self.fields.doc_id, doc_id), IndexRecordOption::Basic))),
+            (Occur::Must, Box::new(TermQuery::new(Term::from_field_text(self.fields.owner_id, owner_id), IndexRecordOption::Basic))),
+        ]);
+        let addresses = searcher.search(&identity, &TopDocs::with_limit(2))?;
+        ensure!(addresses.len() == 1,
+            "This document has missing or ambiguous full-text postings; refresh its index before explaining it");
+        crisp_search_query::explanation::explain(query, &searcher, &self.search_fields(), addresses[0].1, text, edges)
+    }
+
     /// Browse actual indexed words in lexical order. Counts use live documents
     /// and a union of all text fields, so the same word in a title and body is
     /// counted once. The owner filter is honored before returning vocabulary.
@@ -278,13 +296,52 @@ impl FtsIndex {
 
     /// Add a document to an open writer. Call `writer.commit()` when done.
     pub fn add_document(&self, writer: &mut IndexWriter, input: TantivyInput) -> Result<()> {
+        self.add_document_with_segments(writer, input, None)
+    }
+
+    /// Preserve discontinuous source regions without inventing adjacent terms.
+    pub fn add_document_segments(&self, writer: &mut IndexWriter, input: TantivyInput, segments: &[String]) -> Result<()> {
+        self.add_document_with_segments(writer, input, Some(segments))
+    }
+
+    fn add_document_with_segments(&self, writer: &mut IndexWriter, input: TantivyInput, segments: Option<&[String]>) -> Result<()> {
         let mut doc = TantivyDocument::default();
         doc.add_text(self.fields.doc_id, input.doc_id);
         doc.add_text(self.fields.owner_id, input.owner_id);
         doc.add_text(self.fields.language, input.language);
         doc.add_text(self.fields.title, input.title);
         doc.add_text(self.fields.headings, input.headings);
-        doc.add_text(self.fields.body, input.body);
+        if let Some(segments) = segments {
+            let mut text = String::new();
+            let mut tokens = Vec::<Token>::new();
+            let mut base_position = 0usize;
+            let mut analyzer = text_analyzer();
+            for body in segments {
+                ensure!(text.len().saturating_add(body.len()).saturating_add(1) <= 64 * 1024 * 1024,
+                    "Document exceeds the 64 MiB full-text reconstruction limit");
+                if !text.is_empty() { text.push('\n'); }
+                let base_offset = text.len();
+                let mut stream = analyzer.token_stream(body);
+                let mut last_position = base_position;
+                while stream.advance() {
+                    let mut token = stream.token().clone();
+                    token.position = token.position.checked_add(base_position)
+                        .ok_or_else(|| anyhow!("Document token position overflow"))?;
+                    token.offset_from += base_offset;
+                    token.offset_to += base_offset;
+                    last_position = token.position;
+                    tokens.push(token);
+                }
+                // The grammar caps proximity at 1024 intervening words.
+                base_position = last_position.checked_add(2048)
+                    .ok_or_else(|| anyhow!("Document token position overflow"))?;
+                ensure!(base_position < u32::MAX as usize, "Document has too many token positions");
+                text.push_str(body);
+            }
+            doc.add_pre_tokenized_text(self.fields.body, PreTokenizedString { text, tokens });
+        } else {
+            doc.add_text(self.fields.body, input.body);
+        }
 
         // body_translated is only written when both the on-disk schema
         // exposes the field AND the caller supplied a translation.  Legacy
@@ -348,6 +405,7 @@ impl FtsIndex {
             searcher,
             query: effective_query,
             doc_id: self.fields.doc_id,
+            owner_id: self.fields.owner_id,
         })
     }
 }
@@ -358,6 +416,7 @@ pub struct PreparedFtsSearch {
     searcher: tantivy::Searcher,
     query: Box<dyn Query>,
     doc_id: Field,
+    owner_id: Field,
 }
 
 impl PreparedFtsSearch {
@@ -368,6 +427,17 @@ impl PreparedFtsSearch {
     /// Apply the same parsed query and owner restriction to every retrieval
     /// channel using this frozen snapshot, including all candidate batches.
     pub fn matching_doc_ids(&self, ids: &[String]) -> Result<HashSet<String>> {
+        self.matching_doc_ids_with_owner(ids, None)
+    }
+
+    /// Verify metadata rows against their exact owner as well as the frozen
+    /// lexical condition. Equal legacy document IDs must not borrow a match
+    /// from another owner's source.
+    pub fn matching_doc_ids_for_owner(&self, ids: &[String], owner: &str) -> Result<HashSet<String>> {
+        self.matching_doc_ids_with_owner(ids, Some(owner))
+    }
+
+    fn matching_doc_ids_with_owner(&self, ids: &[String], owner: Option<&str>) -> Result<HashSet<String>> {
         if ids.len() > 1024 {
             bail!("At most 1024 document candidates can be verified at once.");
         }
@@ -376,16 +446,29 @@ impl PreparedFtsSearch {
         }
         let ids_query =
             TermSetQuery::new(ids.iter().map(|id| Term::from_field_text(self.doc_id, id)));
-        let query = BooleanQuery::new(vec![
+        let mut clauses = vec![
             (Occur::Must, self.query.box_clone()),
             (Occur::Must, Box::new(ids_query)),
-        ]);
-        let docs = self.searcher.search(&query, &DocSetCollector)?;
-        let mut result = HashSet::with_capacity(docs.len());
-        for address in docs {
-            let doc: TantivyDocument = self.searcher.doc(address)?;
-            if let Some(id) = owned_str(&doc, self.doc_id) {
-                result.insert(id);
+        ];
+        if let Some(owner) = owner {
+            clauses.push((Occur::Must, Box::new(TermQuery::new(
+                Term::from_field_text(self.owner_id, owner), IndexRecordOption::Basic,
+            ))));
+        }
+        let query = BooleanQuery::new(clauses);
+        // Stream addresses instead of collecting every duplicate legacy FTS
+        // row. The output can never exceed the bounded candidate ID batch.
+        let weight = query.weight(EnableScoring::disabled_from_searcher(&self.searcher))?;
+        let mut result = HashSet::with_capacity(ids.len());
+        for (ordinal, segment) in self.searcher.segment_readers().iter().enumerate() {
+            let mut scorer = weight.scorer(segment, 1.0)?;
+            let mut address = scorer.doc();
+            while address != TERMINATED {
+                if segment.alive_bitset().map_or(true, |alive| alive.is_alive(address)) {
+                    let doc: TantivyDocument = self.searcher.doc(DocAddress::new(ordinal as u32, address))?;
+                    if let Some(id) = owned_str(&doc, self.doc_id) { result.insert(id); }
+                }
+                address = scorer.advance();
             }
         }
         Ok(result)
@@ -402,7 +485,8 @@ impl PreparedFtsSearch {
         for (score, doc_addr) in top_docs {
             let doc: TantivyDocument = self.searcher.doc(doc_addr)?;
             let doc_id = owned_str(&doc, self.doc_id).unwrap_or_default();
-            hits.push(FtsHit { doc_id, score });
+            let owner_id = owned_str(&doc, self.owner_id).unwrap_or_default();
+            hits.push(FtsHit { doc_id, owner_id, score });
         }
         Ok(hits)
     }
@@ -419,7 +503,18 @@ pub struct VocabularyTerm {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FtsHit {
     pub doc_id: String,
+    #[serde(default)]
+    pub owner_id: String,
     pub score: Score,
+}
+
+/// An unambiguous in-memory document key; stored IDs remain unchanged.
+pub fn document_key(owner_id: &str, doc_id: &str) -> String {
+    format!("{}:{owner_id}{doc_id}", owner_id.len())
+}
+
+impl FtsHit {
+    pub fn key(&self) -> String { document_key(&self.owner_id, &self.doc_id) }
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────

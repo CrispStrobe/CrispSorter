@@ -6,6 +6,10 @@
 //! the left operand before the right, with at most N intervening indexed words.
 //! Proximity operands support words, exact phrases, and OR alternatives. An
 //! unsupported shape is an error; it is never silently changed into an AND.
+pub mod explanation;
+pub mod query_plan;
+pub mod synonyms;
+
 use anyhow::{anyhow, bail, Result};
 use std::collections::BTreeSet;
 use tantivy::{
@@ -408,6 +412,44 @@ pub fn has_explicit_syntax(query: &str) -> Result<bool> {
         Kind::End => false,
         _ => true,
     }))
+}
+
+/// Positive, literal source-body terms for choosing an initial stored passage.
+/// This is a display heuristic, not an explanation of phrase/proximity or
+/// expanded matches. Operators, exclusions, and non-body field constraints do
+/// not become snippet keywords; fuzzy/wildcard terms have no invented literal.
+pub fn literal_body_terms(query: &str) -> Result<Vec<String>> {
+    let fields = SearchFields {
+        title: Field::from_field_id(0), body: Field::from_field_id(1),
+        headings: Field::from_field_id(2), body_translated: Some(Field::from_field_id(3)),
+    };
+    fn collect(expr: &Expr, body: Field, scope: Option<Field>, positive: bool, terms: &mut BTreeSet<String>) -> Result<()> {
+        match expr {
+            Expr::Not(inner) => collect(inner, body, scope, !positive, terms)?,
+            Expr::Scope(field, inner) => collect(inner, body, Some(*field), positive, terms)?,
+            Expr::And(parts) | Expr::Or(parts) => {
+                for part in parts { collect(part, body, scope, positive, terms)?; }
+            }
+            Expr::Near(left, right, _, _) => {
+                collect(left, body, scope, positive, terms)?;
+                collect(right, body, scope, positive, terms)?;
+            }
+            Expr::Word(word) if positive && scope.is_none_or(|field| field == body) => {
+                if let WordPattern::Exact(tokens) = WordPattern::parse(word)? {
+                    terms.extend(tokens.into_iter().map(|(_, text)| text));
+                }
+            }
+            Expr::Phrase(text) if positive && scope.is_none_or(|field| field == body) => {
+                terms.extend(simple_tokenize(text));
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    let expr = parse_query(query, &fields)?;
+    let mut terms = BTreeSet::new();
+    collect(&expr, fields.body, None, true, &mut terms)?;
+    Ok(terms.into_iter().collect())
 }
 
 fn union(queries: Vec<Box<dyn Query>>) -> Box<dyn Query> {

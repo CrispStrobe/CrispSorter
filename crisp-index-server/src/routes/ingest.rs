@@ -18,6 +18,9 @@ pub async fn ingest(
     State(state): State<Arc<SharedState>>,
     Json(chunk): Json<IngestChunk>,
 ) -> (StatusCode, Json<Value>) {
+    if chunk.container_member.is_some()||chunk.container_source.is_some()||chunk.container_coverage.is_some() {
+        return (StatusCode::CONFLICT,Json(json!({"error":"Container documents must be submitted as one complete root/member group"})));
+    }
     if let Err(error) = crate::index::validate_chunk_shape(&chunk) {
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -83,7 +86,7 @@ pub async fn ingest(
     if let Err(error) = state
         .index
         .ingest_batch(&IngestBatch {
-            chunks: vec![chunk],
+            container_group_version: None, chunks: vec![chunk],
         })
         .await
     {
@@ -114,6 +117,30 @@ pub async fn ingest_batch(
     State(state): State<Arc<SharedState>>,
     Json(batch): Json<IngestBatch>,
 ) -> (StatusCode, Json<Value>) {
+    if batch.container_group_version.is_some() {
+        return (StatusCode::CONFLICT,Json(json!({"error":"Use the versioned /v1/ingest/containers endpoint for root/member groups"})));
+    }
+    enqueue_batch(state,batch).await
+}
+
+/// A separate endpoint keeps older servers from accepting only part of the
+/// typed group contract while ignoring unfamiliar JSON fields.
+pub async fn ingest_containers(
+    State(state):State<Arc<SharedState>>,Json(batch):Json<IngestBatch>,
+)->(StatusCode,axum::http::HeaderMap,Json<Value>){
+    let mut headers=axum::http::HeaderMap::new();
+    if batch.container_group_version!=Some(crisp_index_protocol::CONTAINER_MEMBERS_VERSION) {
+        return (StatusCode::CONFLICT,headers,Json(json!({"error":"Unsupported container group version"})));
+    }
+    let (status,body)=enqueue_batch(state,batch).await;
+    if status.is_success(){headers.insert(crisp_index_protocol::CONTAINER_MEMBERS_VERSION_HEADER,axum::http::HeaderValue::from_static("1"));}
+    (status,headers,body)
+}
+
+async fn enqueue_batch(state:Arc<SharedState>,batch:IngestBatch)->(StatusCode,Json<Value>){
+    if let Err(error)=crate::index::validate_container_batch(&batch) {
+        return (StatusCode::UNPROCESSABLE_ENTITY,Json(json!({"error":error.to_string()})));
+    }
     if batch.chunks.is_empty() || batch.chunks.len() > 4096 {
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -150,7 +177,7 @@ pub async fn ingest_batch(
                 Json(serde_json::to_value(err).unwrap_or(json!({}))),
             );
         }
-        if chunk.embedding.is_empty() && !state.config.server_embed_enabled {
+        if chunk.embedding.is_empty() && !state.config.server_embed_enabled && !crate::index::metadata_only_container(chunk) {
             let err = ErrorResponse {
                 error: "embedding missing and SERVER_EMBED is off".to_owned(),
             };

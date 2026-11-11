@@ -302,6 +302,11 @@ test('field review preserves evidence, finds exact values, exports and stages so
     await expect(fields.locator('blockquote')).toHaveText('Acme Incorporated');
     await fields.getByRole('button', { name: 'Find matching documents', exact: true }).click();
     await expect.poll(() => page.evaluate(() => (window as any).__fixtureCalls.filter((c: any) => c.command === 'index_query_documents' && c.args.filter.tags?.includes('field:vendor:ACME')).length)).toBe(1);
+    await expect(page.getByRole('complementary', { name: 'Document preview' })).toHaveCount(0);
+    await page.locator('.result-card[data-document-id="warranty"]').getByTitle('Vorschau (Preview)', { exact: true }).click();
+    await fields.locator('summary').click();
+    await expect(fields.getByLabel('Normalized value')).toHaveValue('ACME');
+    await expect(fields).toContainText('corrected');
     await fields.getByRole('button', { name: 'Export CSV', exact: true }).click();
     await expect.poll(() => page.evaluate(() => (window as any).__fixtureCalls.filter((c: any) => c.command === 'plugin:fs|write_text_file').length)).toBe(2);
     await fields.getByRole('button', { name: 'Use approved fields for sorting', exact: true }).click();

@@ -1,8 +1,12 @@
 pub mod admin;
 pub mod capabilities;
+pub mod complete;
 pub mod docs;
+pub mod explanations;
 pub mod health;
 pub mod ingest;
+pub mod members;
+pub mod passages;
 pub mod search;
 pub mod stats;
 pub mod sync;

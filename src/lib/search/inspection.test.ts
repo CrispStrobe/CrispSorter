@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { normalizeSearchRecipe } from './recipe';
 import { buildSearchReport, groupResults, highlightedSnippet, occurrenceRanges, plainSnippet,
-    queryTerms, searchReportCsv, searchReportHtml, sortGroups, type InspectableHit } from './inspection';
+    queryTerms, resultIdentity, searchReportCsv, searchReportHtml, sortGroups, type InspectableHit } from './inspection';
 
 const hit = (doc_id: string, patch: Partial<InspectableHit> = {}): InspectableHit => ({
     doc_id, chunk_index: 0, score: .04, location_uri: `/library/${doc_id}.txt`,
@@ -16,6 +16,19 @@ describe('result inspection', () => {
         expect(group.chunks.map(item => item.chunk_index)).toEqual([0, 2]);
         expect(group.best.chunk_index).toBe(2);
         expect(JSON.stringify(rows)).toBe(before);
+    });
+    it('keeps identical document IDs and passage indices from different owners separate', () => {
+        const rows = [hit('shared', { owner_id: 'alice', snippet: 'Alice source', score: .8 }),
+            hit('shared', { owner_id: 'bob', snippet: 'Bob source', score: .9 }),
+            hit('shared', { owner_id: 'alice', chunk_index: 2, snippet: 'Later Alice source', score: .1 })];
+        const groups = groupResults(rows);
+        expect(groups).toHaveLength(2);
+        expect(groups[0].chunks.map(row => row.snippet)).toEqual(['Alice source', 'Later Alice source']);
+        expect(groups[1].chunks.map(row => row.snippet)).toEqual(['Bob source']);
+        expect(groups.map(group => [group.doc_id, group.owner_id])).toEqual([['shared', 'alice'], ['shared', 'bob']]);
+        expect(new Set(groups.map(group => group.key)).size).toBe(2);
+        expect(resultIdentity(hit('c', { owner_id: 'a:b' }))).not.toBe(resultIdentity(hit('b:c', { owner_id: 'a' })));
+        expect(resultIdentity(hit('legacy'))).toBe(resultIdentity(hit('legacy', { owner_id: '' })));
     });
     it('sorts years in either direction with missing values last and stable ties', () => {
         const groups = groupResults([hit('unknown'), hit('old', { year: 2001 }), hit('new', { year: 2026 })]);
@@ -52,6 +65,18 @@ describe('result inspection', () => {
         expect(queryTerms('title:report AND NOT draft w/5 policy~1')).toEqual(['report', 'policy']);
         expect(queryTerms('"annual report" OR warranty')).toEqual(['annual', 'report', 'warranty']);
         expect(queryTerms('title:"annual report" AND NOT (draft OR obsolete)')).toEqual(['annual', 'report']);
+        expect(queryTerms('text:report OR h:"NOT text" OR body_translated:review')).toEqual(['report', 'not', 'text', 'review']);
+    });
+    it('supports case-sensitive and Unicode whole-word find without changing source offsets', () => {
+        const text = 'War warranty war WAR _war war2 aWar e\u0301 e 東京 東京都';
+        expect(occurrenceRanges(text, ['war'], 1000, { wholeWords: true }).map(range => text.slice(range.start, range.end)))
+            .toEqual(['War', 'war', 'WAR']);
+        expect(occurrenceRanges(text, ['war'], 1000, { wholeWords: true, caseSensitive: true }).map(range => text.slice(range.start, range.end)))
+            .toEqual(['war']);
+        expect(occurrenceRanges(text, ['e'], 1000, { wholeWords: true })).toHaveLength(1);
+        expect(occurrenceRanges(text, ['東京'], 1000, { wholeWords: true })).toHaveLength(1);
+        expect(occurrenceRanges('zero', ['zero'], 0)).toEqual([]);
+        expect(occurrenceRanges('zero', ['zero'], Number.NaN)).toEqual([]);
     });
 });
 
@@ -95,5 +120,35 @@ describe('reproducible result reports', () => {
         recipe.filters.language = 'en'; groups[0].best.snippet = 'mutated';
         expect(value.recipe.filters.language).toBe('de');
         expect(value.documents[0].passages[0].excerpt).toBe('A <literal> & source excerpt.');
+    });
+    it('exports exact owner/document identities in every report format', () => {
+        const value = buildSearchReport({ recipe: normalizeSearchRecipe({ query: 'source' }),
+            groups: groupResults([hit('shared', { owner_id: '<alice>' }), hit('shared', { owner_id: 'bob' })]),
+            executedQuery: 'source', searchedAt: '', exportedAt: '', elapsedMs: 1,
+            sort: 'relevance', displayTags: [], scope: 'displayed', returnedDocuments: 2, returnedPassages: 2 });
+        expect(value.documents.map(doc => doc.ownerId)).toEqual(['<alice>', 'bob']);
+        expect(value.documents.map(doc => doc.documentKey)).toEqual(['["<alice>","shared"]', '["bob","shared"]']);
+        expect(searchReportCsv(value)).toContain('"owner_id","document_key"');
+        expect(searchReportHtml(value)).toContain('Owner: <code>&lt;alice&gt;</code>');
+        expect(searchReportHtml(value)).not.toContain('<alice>');
+    });
+
+    it('retains nested container provenance and byte receipts in each report format', () => {
+        const id = 'a'.repeat(64);
+        const member = { version: 1, rootOwnerId: 'local', rootDocId: 'root', rootLocationUri: '/mail/source.zip',
+            rootSha256: 'b'.repeat(64), entries: [{ kind: 'zip', index: 4, occurrence: 1,
+                name: 'mail/<receipt>.txt', sha256: 'c'.repeat(64), size: 20 }] };
+        const value = buildSearchReport({ recipe: normalizeSearchRecipe({ query: 'source' }),
+            groups: groupResults([hit(id, { owner_id: 'local', location_uri: `crisp+member://v1/${'d'.repeat(64)}/${id}`,
+                source_hash: 'c'.repeat(64), metadata_json: JSON.stringify({ container_member: member }) })]),
+            executedQuery: 'source', searchedAt: '', exportedAt: '', elapsedMs: 1,
+            sort: 'relevance', displayTags: [], scope: 'selected', returnedDocuments: 1, returnedPassages: 1 });
+        expect(value.documents[0].containerMember).toEqual(member);
+        expect(value.documents[0].sourceBreadcrumb).toBe('/mail/source.zip › mail/<receipt>.txt (occurrence 2)');
+        expect(searchReportCsv(value)).toContain('container_member_json');
+        expect(searchReportCsv(value)).toContain('/mail/source.zip');
+        expect(searchReportHtml(value)).toContain('mail/&lt;receipt&gt;.txt (occurrence 2)');
+        expect(searchReportHtml(value)).toContain('Container SHA-256');
+        expect(searchReportHtml(value)).not.toContain('<receipt>');
     });
 });

@@ -27,13 +27,15 @@
     import { i18n } from '$lib/i18n.svelte';
     import DocumentViewer from './viewer/DocumentViewer.svelte';
     import { uriToPath } from './viewer/types';
+    import { localPathFromSearchUri } from '$lib/drives/browser';
     import {
         FolderOpen, Folder, FileText, RefreshCw, Play, Pause, X,
         CheckCircle2, AlertCircle, Loader2, ChevronDown, ChevronRight,
         UploadCloud, Trash2, Database, Search, ExternalLink, HardDrive, CopyCheck,
         Columns2, Eye, RotateCcw, CloudDownload, Images, Tag, AlertTriangle
     } from 'lucide-svelte';
-    import { extractText, AUDIO_EXTENSIONS, MULTIMODAL_EXTENSIONS } from '$lib/extractors/index';
+    import { extractText, usesNativePathExtraction, AUDIO_EXTENSIONS, MULTIMODAL_EXTENSIONS } from '$lib/extractors/index';
+    import { extractionIngestContent, type ContainerIngestContent } from '$lib/extractors/container';
     import IndexSearch from './IndexSearch.svelte';
     import BackgroundIngestStatus from './BackgroundIngestStatus.svelte';
     import TagCloud from './TagCloud.svelte';
@@ -1229,7 +1231,7 @@
             // Documents + images + audio/video — extension whitelist matches
             // the `supported` Set used by the drop handler so picker + drop
             // accept the same files.
-            filters: [{ name: 'Documents, Audio & Video', extensions: [...MULTIMODAL_EXTENSIONS] }]
+            filters: [{ name: 'Documents, Mail, Presentations, ZIP Archives, Audio & Video', extensions: [...MULTIMODAL_EXTENSIONS] }]
         });
         if (!selected) return;
         await addPaths(Array.isArray(selected) ? selected : [selected]);
@@ -1589,7 +1591,7 @@
 
         type PendingWrite = {
             rowId: number;
-            input: {
+            input: Omit<ContainerIngestContent, 'title' | 'author' | 'year'> & {
                 fullText: string; fullTextMd: string; headings: string[];
                 title: string | null; author: string | null; year: number | null;
                 filename: string; ext: string; language: string;
@@ -1627,7 +1629,7 @@
                     try {
                         let bytes: Uint8Array;
                         try {
-                            bytes = await readFile(qf.filePath);
+                            bytes = usesNativePathExtraction(filename) ? new Uint8Array(0) : await readFile(qf.filePath);
                         } catch (fsErr: any) {
                             const msg = `Read failed: ${fsErr?.message ?? fsErr}`;
                             logError(`${msg}: ${qf.filePath}`);
@@ -1636,7 +1638,8 @@
                             continue;
                         }
 
-                        const sourceFingerprint = await hashBytes(bytes);
+                        const sourceFingerprint = usesNativePathExtraction(filename)
+                            ? await invoke<string>('file_sha256', { path: qf.filePath }) : await hashBytes(bytes);
                         // Pass `path` so extractText can route audio/video
                         // extensions to the Rust audio_extract_text command
                         // (keeps the PCM buffer in Rust).
@@ -1644,10 +1647,10 @@
                             name: filename,
                             arrayBuffer: bytes.buffer as ArrayBuffer,
                             path: qf.filePath,
-                        });
+                        }, { signal });
                         logInfo(`Extracted ${filename}: ${result.text?.length ?? 0} chars`);
 
-                        if (!result.text?.trim()) {
+                        if (!result.text?.trim() && !result.members?.length) {
                             const message = 'Kein durchsuchbarer Text erkannt. OCR aktivieren oder die Extraktionseinstellungen prüfen und erneut versuchen.';
                             logWarn(`${filename}: ${message}`);
                             errored.push({ rowId: qf.rowId, error: message });
@@ -1660,18 +1663,18 @@
                             throw new Error('Die Quelldatei wurde während der Extraktion verändert. Die vorherige Indexversion bleibt erhalten; bitte erneut versuchen.');
                         }
                         updateEntry(String(qf.rowId), { status: 'embedding' });
-                        const language   = detectLanguage(result.text);
+                        const extractedContent = extractionIngestContent(result, sourceFingerprint, detectLanguage);
+                        const language = extractedContent.language ?? detectLanguage(extractedContent.fullText);
                         const sourceHash = sourceFingerprint;
 
                         pendingWrites.push({
                             rowId: qf.rowId,
                             input: {
-                                fullText:    result.text,
-                                fullTextMd:  result.markdownText ?? '',
-                                headings:    result.headings ?? [],
-                                title:       result.metadata?.title  ?? null,
-                                author:      result.metadata?.author ?? null,
-                                year:        result.metadata?.year   ? Number(result.metadata.year) : null,
+                                ...extractedContent,
+                                fullTextMd:  extractedContent.fullTextMd ?? '',
+                                title:       extractedContent.title ?? null,
+                                author:      extractedContent.author ?? null,
+                                year:        extractedContent.year ?? null,
                                 filename,
                                 ext,
                                 language,
@@ -1679,7 +1682,6 @@
                                 ownerId:     'local',
                                 sourceHash,
                                 sourceFingerprint,
-                                tags:        [],
                             },
                         });
 
@@ -2776,7 +2778,7 @@
             if (!(await ensureIndexReady(true))) return;
 
             const BATCH_SIZE = 16;
-            type L3Input = {
+            type L3Input = Omit<ContainerIngestContent, 'title' | 'author' | 'year'> & {
                 fullText: string; fullTextMd: string; headings: string[];
                 title: string | null; author: string | null; year: number | null;
                 filename: string; ext: string; language: string;
@@ -2804,36 +2806,31 @@
                 if (!row) { fail++; continue; }
                 l3Progress = { done: l3Progress?.done ?? 0, total: ids.length, current: row.filename ?? id.slice(0, 12) };
 
-                // Resolve location_uri to a path. Strip crisp+local://… prefix.
-                let path = String(row.location_uri ?? '');
-                if (path.startsWith('crisp+local://')) {
-                    const after = path.slice('crisp+local://'.length);
-                    const slashIdx = after.indexOf('/');
-                    path = slashIdx >= 0 ? after.slice(slashIdx) : after;
-                }
+                const path = localPathFromSearchUri(String(row.location_uri ?? ''));
                 if (!path) { fail++; continue; }
 
                 try {
-                    const bytes = await readFile(path);
-                    const sourceFingerprint = await hashBytes(bytes);
-                    const ab = bytes.buffer as ArrayBuffer;
                     const filename = row.filename ?? path.split(/[\\/]/).pop() ?? id;
                     const ext = (row.ext ?? filename.split('.').pop() ?? '').toLowerCase();
+                    const bytes = usesNativePathExtraction(filename) ? new Uint8Array(0) : await readFile(path);
+                    const sourceFingerprint = usesNativePathExtraction(filename)
+                        ? await invoke<string>('file_sha256', { path }) : await hashBytes(bytes);
+                    const ab = bytes.buffer as ArrayBuffer;
                     const result = await extractText({
                         name: filename,
                         arrayBuffer: ab,
                         path,
                     });
-                    if (!result.text?.trim()) throw new Error('Kein durchsuchbarer Text erkannt. OCR oder Extraktionseinstellungen prüfen.');
+                    if (!result.text?.trim() && !result.members?.length) throw new Error('Kein durchsuchbarer Text erkannt. OCR oder Extraktionseinstellungen prüfen.');
                     if (await invoke<string>('file_sha256', { path }) !== sourceFingerprint) {
                         throw new Error('Die Quelldatei wurde während der Extraktion verändert. Bitte erneut versuchen.');
                     }
-                    const language = detectLanguage(result.text);
+                    const extractedContent = extractionIngestContent(result, sourceFingerprint, detectLanguage);
+                    const language = extractedContent.language ?? detectLanguage(extractedContent.fullText);
                     const sourceHash = sourceFingerprint;
                     l3Buffer.push({
-                        fullText:    result.text,
-                        fullTextMd:  result.markdownText ?? '',
-                        headings:    result.headings ?? [],
+                        ...extractedContent,
+                        fullTextMd:  extractedContent.fullTextMd ?? '',
                         title:       row.title  ?? null,
                         author:      row.author ?? null,
                         year:        row.year   ?? null,
@@ -2844,7 +2841,6 @@
                         ownerId:     row.owner_id ?? 'local',
                         sourceHash,
                         sourceFingerprint,
-                        tags:        [],
                     });
                     if (l3Buffer.length >= BATCH_SIZE) await flushL3();
                 } catch (e) {
@@ -2927,6 +2923,15 @@
             txt:  'text/plain',
             md:   'text/markdown',
             epub: 'application/epub+zip',
+            zip:  'application/zip',
+            tar:  'application/x-tar',
+            gz:   'application/gzip',
+            gzip: 'application/gzip',
+            tgz:  'application/gzip',
+            '7z': 'application/x-7z-compressed',
+            eml:  'message/rfc822',
+            mbox: 'application/mbox',
+            pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
             html: 'text/html',
             htm:  'text/html',
             webp: 'image/webp',
@@ -3656,7 +3661,7 @@
             <div class="drop-area" class:active={dropActive}>
                 <UploadCloud size={40} style="color:#3b82f6; opacity:0.7;" />
                 <p>Dateien hier ablegen</p>
-                <p class="drop-hint">PDF, DOCX, EPUB, TXT, MD, HTML, Bilder (PNG/JPG/…), Audio (MP3/WAV/FLAC/M4A/…) und Video (MP4/MOV/MKV/…) — oder "Dateien" klicken</p>
+                <p class="drop-hint">PDF, DOCX, EPUB, TXT, MD, HTML, lokale ZIP-Archive, Bilder (PNG/JPG/…), Audio (MP3/WAV/FLAC/M4A/…) und Video (MP4/MOV/MKV/…) — oder "Dateien" klicken</p>
             </div>
         {:else}
             <div class="file-list">

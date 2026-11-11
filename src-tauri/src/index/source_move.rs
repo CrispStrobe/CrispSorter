@@ -326,6 +326,9 @@ impl LocalIndex {
             anyhow::ensure!(conflicts.iter().all(|id| id == &source.doc_id),
                 "The destination already has another indexed identity for this owner; refresh the source selection before changing location metadata");
         }
+        let member_rows=self.prepare_member_location_rows(updates,local_path.map(|(path,volume,_,_)|(path,volume))).await?;
+        let previous=member_rows.iter().filter_map(|batch|ts_ms_col_opt(batch,"indexed_at")).flat_map(|column|column.iter().flatten()).fold(previous,i64::max);
+        let timestamp=move_timestamp(previous)?;
         // A partial-column merge preserves every text/vector/evidence array that
         // is not supplied here and commits all URI variants in one Lance version.
         let mut row_ids = Vec::new();
@@ -359,28 +362,29 @@ impl LocalIndex {
                     let previous = metadata
                         .filter(|column| !column.is_null(row))
                         .map(|column| column.value(row).to_owned());
-                    changed_metadata.push(
+                    changed_metadata.push(Some(
                         changes
                             .get(&previous)
                             .ok_or_else(|| anyhow!("Missing prepared source metadata"))?
                             .clone(),
-                    );
+                    ));
+                } else {
+                    changed_metadata.push(metadata.filter(|column|!column.is_null(row)).map(|column|column.value(row).to_owned()));
                 }
             }
         }
         let count = row_ids.len();
-        let mut names = vec!["id", "doc_id", "owner_id", "location_uri", "indexed_at"];
+        let mut names = vec!["id", "doc_id", "owner_id", "location_uri", "indexed_at","metadata_json"];
         let mut columns: Vec<arrow_array::ArrayRef> = vec![
             Arc::new(StringArray::from(row_ids)),
             Arc::new(StringArray::from(doc_ids)),
             Arc::new(StringArray::from(owner_ids)),
             Arc::new(StringArray::from(locations)),
             Arc::new(TimestampMillisecondArray::from(vec![
-                move_timestamp(
-                    previous
-                )?;
+                timestamp;
                 count
             ])),
+            Arc::new(StringArray::from(changed_metadata)),
         ];
         if let Some((path, volume_id, _, _)) = local_path {
             let path = Path::new(path);
@@ -398,14 +402,12 @@ impl LocalIndex {
                 "parent_dir",
                 "ext",
                 "volume_id",
-                "metadata_json",
             ]);
             columns.extend([
                 Arc::new(StringArray::from(vec![filename; count])) as arrow_array::ArrayRef,
                 Arc::new(StringArray::from(vec![parent; count])),
                 Arc::new(StringArray::from(vec![extension; count])),
                 Arc::new(StringArray::from(vec![volume_id; count])),
-                Arc::new(StringArray::from(changed_metadata)),
             ]);
         }
         let indices = names
@@ -414,7 +416,16 @@ impl LocalIndex {
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let schema = Arc::new(self.schema.project(&indices)?);
         let batch = RecordBatch::try_new(Arc::clone(&schema), columns)?;
-        let reader = arrow_array::RecordBatchIterator::new(vec![Ok(batch)], schema);
+        let mut batches=vec![Ok(batch)];
+        for member in member_rows {
+            let mut columns=Vec::new();
+            for name in &names {
+                columns.push(if *name=="indexed_at" {Arc::new(TimestampMillisecondArray::from(vec![timestamp;member.num_rows()])) as arrow_array::ArrayRef}
+                    else {member.column_by_name(name).ok_or_else(||anyhow!("Missing prepared member move column {name}"))?.clone()});
+            }
+            batches.push(RecordBatch::try_new(schema.clone(),columns));
+        }
+        let reader = arrow_array::RecordBatchIterator::new(batches, schema);
         let mut merge = self.table.merge_insert(&["id", "doc_id", "owner_id"]);
         merge.when_matched_update_all(None);
         if let Some((new_path, _, _, Some(old_path))) = local_path {

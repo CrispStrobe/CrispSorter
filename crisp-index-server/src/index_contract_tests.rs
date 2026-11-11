@@ -1,5 +1,82 @@
 use super::*;
 
+#[tokio::test]
+async fn metadata_upgrade_backfills_decoded_folders_without_changing_core_rows() {
+    let directory=tempfile::tempdir().unwrap();let path=directory.path().join("lance");
+    std::fs::create_dir_all(&path).unwrap();
+    let db=connect(path.to_string_lossy().as_ref()).execute().await.unwrap();
+    let current=build_lance_schema(2);let core=current.index_of("parent_dir").unwrap();
+    let fields=(0..core).collect::<Vec<_>>();let mut batches=Vec::new();
+    for (id,uri) in [("posix","file:///home/me/Space%20Dir/doc.pdf"),("windows",r"C:\Docs\Records\doc.pdf"),("windows-uri","file:///C:/Docs/Space%20Dir/doc.pdf")] {
+        let mut row=wire("owner",id,0,"needle",None,None);row.location_uri=uri.into();
+        batches.push(chunk_to_record_batch(&row,2,&current).unwrap().project(&fields).unwrap());
+    }
+    let old_schema=batches[0].schema();
+    db.create_table(TABLE_NAME,arrow_array::RecordBatchIterator::new(batches.into_iter().map(Ok),old_schema)).execute().await.unwrap();
+    drop(db);
+    let vector=VectorStore::open_or_create(directory.path(),2).await.unwrap();
+    assert_eq!(vector.table.schema().await.unwrap(),current);
+    let keys=["posix","windows","windows-uri"].map(|id|DocumentKey {owner_id:"owner".into(),doc_id:id.into()});
+    for (id,parent) in [("posix","/home/me/Space Dir"),("windows",r"C:\Docs\Records"),("windows-uri",r"C:\Docs\Space Dir")] {
+        let filters=SearchFilters {parent_dir_prefix:Some(parent.into()),..Default::default()};
+        let matched=vector.matching_keys_for_filters(&keys,&filters).await.unwrap();
+        assert_eq!(matched,HashSet::from([DocumentKey {owner_id:"owner".into(),doc_id:id.into()}]),"{parent}");
+    }
+    assert_eq!(vector.count().await.unwrap(),3);
+    let version=vector.table.version().await.unwrap();
+    assert!(VectorStore::open_or_create(directory.path(),3).await.is_err());
+    vector.table.checkout_latest().await.unwrap();assert_eq!(vector.table.version().await.unwrap(),version);
+    let reopened=VectorStore::open_or_create(directory.path(),2).await.unwrap();assert_eq!(reopened.count().await.unwrap(),3);
+}
+
+#[tokio::test]
+async fn translated_schema_upgrade_rebuilds_from_stored_text_and_preserves_previous_generation() {
+    let directory=tempfile::tempdir().unwrap();let index=open(directory.path()).await;
+    let mut row=wire("owner","translated",0,"needle source",Some(1),Some(0));
+    row.text_translated=Some("übersetzungsnadel".into());row.text_translated_lang=Some("de".into());
+    index.ingest_batch(&IngestBatch {container_group_version: None, chunks:vec![row]}).await.unwrap();drop(index);
+    let root=directory.path().join("fts-v2");let state=rusqlite::Connection::open(root.join("state.sqlite")).unwrap();
+    let current:String=state.query_row("SELECT value FROM metadata WHERE key='active_generation'",[],|row|row.get(0)).unwrap();
+    let current_schema=tantivy::Index::open_in_dir(root.join(current)).unwrap().schema();
+    let mut legacy=serde_json::to_value(current_schema).unwrap();
+    legacy.as_array_mut().unwrap().retain(|field|field["name"]!="body_translated");
+    let legacy:tantivy::schema::Schema=serde_json::from_value(legacy).unwrap();
+    let legacy_dir=root.join("generation-legacy");std::fs::create_dir(&legacy_dir).unwrap();
+    let old=tantivy::Index::create_in_dir(&legacy_dir,legacy.clone()).unwrap();
+    old.tokenizers().register("crisp_shared_v1",crisp_search_query::text_analyzer());
+    let mut writer=old.writer(50_000_000).unwrap();let mut old_doc=tantivy::TantivyDocument::default();
+    old_doc.add_text(legacy.get_field("body").unwrap(),"oldsentinel");writer.add_document(old_doc).unwrap();writer.commit().unwrap();writer.wait_merging_threads().unwrap();drop(old);
+    state.execute("UPDATE metadata SET value='generation-legacy' WHERE key='active_generation'",[]).unwrap();
+    state.execute("UPDATE metadata SET value='2' WHERE key='active_schema_version'",[]).unwrap();drop(state);
+    let reopened=open(directory.path()).await;
+    let hits=reopened.search_text("translated:ubersetzungsnadel",&SearchFilters::default(),10).await.unwrap();
+    assert_eq!(hits.len(),1);assert_eq!(hits[0].doc_id,"translated");
+    assert!(reopened.search_text("oldsentinel",&SearchFilters::default(),10).await.unwrap().is_empty());
+    let old=tantivy::Index::open_in_dir(&legacy_dir).unwrap();let reader=old.reader().unwrap();assert_eq!(reader.searcher().num_docs(),1);
+    let state=rusqlite::Connection::open(root.join("state.sqlite")).unwrap();
+    assert_eq!(state.query_row("SELECT value FROM metadata WHERE key='active_schema_version'",[],|row|row.get::<_,String>(0)).unwrap(),"3");
+}
+
+#[tokio::test]
+async fn legacy_chunk_tag_union_is_bounded_before_export_materialization() {
+    let directory=tempfile::tempdir().unwrap();let index=open(directory.path()).await;
+    let chunks=(0..65).map(|n|wire("owner","legacy-tags",n,"needle",None,None)).collect::<Vec<_>>();
+    index.ingest_batch(&IngestBatch {container_group_version: None, chunks:chunks.clone()}).await.unwrap();
+    // Reproduce pre-invariant rows with individually small but different tags.
+    // The lexical text is unchanged; only the stored chunk metadata varies.
+    let schema=build_lance_schema(2);let batches=chunks.into_iter().enumerate().map(|(n,mut row)|{
+        row.tags=(0..100).map(|k|format!("tag{:05}",n*100+k)).collect();chunk_to_record_batch(&row,2,&schema).unwrap()
+    }).collect::<Vec<_>>();
+    index.vector.table.delete("doc_id='legacy-tags'").await.unwrap();
+    index.vector.table.add(arrow_array::RecordBatchIterator::new(batches.into_iter().map(Ok),schema)).execute().await.unwrap();
+    let request=crisp_index_protocol::CompleteSearchRequest {scope:crisp_index_protocol::CompleteSearchScope {version:1,query:"needle".into(),filters:SearchFilters::default()},
+        request_id:uuid::Uuid::new_v4().to_string(),expected_generation:None};
+    let summary=index.complete_summary(request.clone()).await.unwrap();assert_eq!(summary.matching_documents,1);assert_eq!(summary.facets.tags.distinct_values,6500);
+    let error=index.complete_page(crisp_index_protocol::CompletePageRequest {version:1,session_id:summary.session_id,generation:summary.generation,offset:0,limit:1,
+        sort:crisp_index_protocol::CompleteSort::Filename}).await.unwrap_err();
+    assert!(error.to_string().contains("combined tags"),"{error:#}");index.cancel_complete(&request.request_id).unwrap();
+}
+
 fn wire(
     owner: &str,
     id: &str,
@@ -29,6 +106,7 @@ fn wire(
         location_uri: format!("test://{owner}/{id}"),
         source_hash: id.into(),
         tags: Vec::new(),
+        ..Default::default()
     }
 }
 async fn open(path: &Path) -> SearchIndex {
@@ -50,7 +128,7 @@ async fn complete_replacements_remove_tails_and_duplicates_and_preserve_other_ow
     let dir = tempfile::tempdir().unwrap();
     let index = open(dir.path()).await;
     let batch = IngestBatch {
-        chunks: vec![
+        container_group_version: None, chunks: vec![
             wire("a", "same", 0, "alpha beta", Some(2), Some(0)),
             wire("a", "same", 1, "beta gamma", Some(2), Some(6)),
             wire("b", "same", 0, "other owner", Some(1), Some(0)),
@@ -68,7 +146,7 @@ async fn complete_replacements_remove_tails_and_duplicates_and_preserve_other_ow
         1
     );
     let replacement = IngestBatch {
-        chunks: vec![wire("a", "same", 0, "replacement", Some(1), Some(0))],
+        container_group_version: None, chunks: vec![wire("a", "same", 0, "replacement", Some(1), Some(0))],
     };
     index.ingest_batch(&replacement).await.unwrap();
     index.ingest_batch(&replacement).await.unwrap();
@@ -129,7 +207,7 @@ async fn partial_chunk_retry_keeps_siblings_and_invalid_offsets_leave_old_docume
     let index = open(dir.path()).await;
     index
         .ingest_batch(&IngestBatch {
-            chunks: vec![
+            container_group_version: None, chunks: vec![
                 wire("a", "one", 0, "alpha", Some(2), None),
                 wire("a", "one", 1, "beta", Some(2), None),
             ],
@@ -138,7 +216,7 @@ async fn partial_chunk_retry_keeps_siblings_and_invalid_offsets_leave_old_docume
         .unwrap();
     index
         .ingest_batch(&IngestBatch {
-            chunks: vec![wire("a", "one", 1, "gamma", Some(2), None)],
+            container_group_version: None, chunks: vec![wire("a", "one", 1, "gamma", Some(2), None)],
         })
         .await
         .unwrap();
@@ -160,7 +238,7 @@ async fn partial_chunk_retry_keeps_siblings_and_invalid_offsets_leave_old_docume
     invalid.chunk_end_char = Some(2);
     assert!(index
         .ingest_batch(&IngestBatch {
-            chunks: vec![invalid]
+            container_group_version: None, chunks: vec![invalid]
         })
         .await
         .is_err());
@@ -181,7 +259,7 @@ async fn reads_repair_a_vector_commit_that_was_interrupted_before_fts_publicatio
     let index = open(dir.path()).await;
     index
         .ingest_batch(&IngestBatch {
-            chunks: vec![wire("a", "one", 0, "before", Some(1), Some(0))],
+            container_group_version: None, chunks: vec![wire("a", "one", 0, "before", Some(1), Some(0))],
         })
         .await
         .unwrap();
@@ -238,7 +316,7 @@ async fn strict_hybrid_candidates_obey_boolean_phrase_field_and_owner_constraint
     let other = wire("b", "other", 0, "alpha beta", Some(1), Some(0));
     index
         .ingest_batch(&IngestBatch {
-            chunks: vec![yes, no, other],
+            container_group_version: None, chunks: vec![yes, no, other],
         })
         .await
         .unwrap();
@@ -327,7 +405,7 @@ async fn finite_embedding_validation_and_unicode_snippets_are_safe() {
     let text = format!("{} marker", "é".repeat(301));
     index
         .ingest_batch(&IngestBatch {
-            chunks: vec![wire("a", "unicode", 0, &text, Some(1), Some(0))],
+            container_group_version: None, chunks: vec![wire("a", "unicode", 0, &text, Some(1), Some(0))],
         })
         .await
         .unwrap();
@@ -457,7 +535,7 @@ async fn partial_updates_and_scoped_location_moves_advance_a_durable_document_cl
     index.fts.observe_timestamp(future).unwrap();
     index
         .ingest_batch(&IngestBatch {
-            chunks: vec![
+            container_group_version: None, chunks: vec![
                 wire("a", "one", 0, "alpha", Some(2), None),
                 wire("a", "one", 1, "beta", Some(2), None),
             ],
@@ -477,7 +555,7 @@ async fn partial_updates_and_scoped_location_moves_advance_a_durable_document_cl
     assert!(before > future);
     index
         .ingest_batch(&IngestBatch {
-            chunks: vec![wire("a", "one", 1, "gamma", Some(2), None)],
+            container_group_version: None, chunks: vec![wire("a", "one", 1, "gamma", Some(2), None)],
         })
         .await
         .unwrap();
@@ -519,7 +597,7 @@ async fn deletion_receipts_survive_interruption_after_vector_commit() {
     let index = open(dir.path()).await;
     index
         .ingest_batch(&IngestBatch {
-            chunks: vec![
+            container_group_version: None, chunks: vec![
                 wire("a", "gone", 0, "before", Some(1), Some(0)),
                 wire("b", "gone", 0, "retained", Some(1), Some(0)),
             ],
@@ -572,7 +650,7 @@ async fn uncommitted_delete_intents_do_not_emit_false_removals() {
     let index = open(dir.path()).await;
     index
         .ingest_batch(&IngestBatch {
-            chunks: vec![wire("a", "present", 0, "retained", Some(1), Some(0))],
+            container_group_version: None, chunks: vec![wire("a", "present", 0, "retained", Some(1), Some(0))],
         })
         .await
         .unwrap();
@@ -606,7 +684,7 @@ async fn deletion_history_keeps_older_cursor_horizons_after_reingest() {
     let dir = tempfile::tempdir().unwrap();
     let index = open(dir.path()).await;
     let batch = IngestBatch {
-        chunks: vec![wire("a", "repeat", 0, "body", Some(1), Some(0))],
+        container_group_version: None, chunks: vec![wire("a", "repeat", 0, "body", Some(1), Some(0))],
     };
     index.ingest_batch(&batch).await.unwrap();
     index.delete_scoped_doc("repeat", Some("a")).await.unwrap();
@@ -654,7 +732,7 @@ async fn ordinary_sources_keep_identical_bytes_at_distinct_locations_and_refresh
     let other = ordinary("b", "test://first", "same bytes", "shared text");
     index
         .ingest_batch(&IngestBatch {
-            chunks: vec![a.clone(), b.clone(), other],
+            container_group_version: None, chunks: vec![a.clone(), b.clone(), other],
         })
         .await
         .unwrap();
@@ -664,7 +742,7 @@ async fn ordinary_sources_keep_identical_bytes_at_distinct_locations_and_refresh
     assert_eq!(replacement.doc_id, a.doc_id);
     index
         .ingest_batch(&IngestBatch {
-            chunks: vec![replacement],
+            container_group_version: None, chunks: vec![replacement],
         })
         .await
         .unwrap();
@@ -698,13 +776,13 @@ async fn ordinary_refresh_retains_unique_legacy_ids_and_explicit_ids_remain_auth
     legacy.location_uri = "test://legacy".into();
     index
         .ingest_batch(&IngestBatch {
-            chunks: vec![legacy],
+            container_group_version: None, chunks: vec![legacy],
         })
         .await
         .unwrap();
     index
         .ingest_batch(&IngestBatch {
-            chunks: vec![ordinary("a", "test://legacy", "new hash", "after")],
+            container_group_version: None, chunks: vec![ordinary("a", "test://legacy", "new hash", "after")],
         })
         .await
         .unwrap();
@@ -723,7 +801,7 @@ async fn ordinary_refresh_retains_unique_legacy_ids_and_explicit_ids_remain_auth
     explicit.location_uri = "test://legacy".into();
     index
         .ingest_batch(&IngestBatch {
-            chunks: vec![explicit],
+            container_group_version: None, chunks: vec![explicit],
         })
         .await
         .unwrap();
@@ -737,7 +815,7 @@ async fn ordinary_refresh_retains_unique_legacy_ids_and_explicit_ids_remain_auth
     );
     assert!(index
         .ingest_batch(&IngestBatch {
-            chunks: vec![ordinary("a", "test://legacy", "another hash", "ambiguous")]
+            container_group_version: None, chunks: vec![ordinary("a", "test://legacy", "another hash", "ambiguous")]
         })
         .await
         .is_err());
@@ -751,7 +829,7 @@ async fn reusing_a_moved_sources_old_address_allocates_a_distinct_stable_id() {
     let original = ordinary("a", "test://original", "first", "moved body");
     index
         .ingest_batch(&IngestBatch {
-            chunks: vec![original.clone()],
+            container_group_version: None, chunks: vec![original.clone()],
         })
         .await
         .unwrap();
@@ -761,7 +839,7 @@ async fn reusing_a_moved_sources_old_address_allocates_a_distinct_stable_id() {
         .unwrap();
     index
         .ingest_batch(&IngestBatch {
-            chunks: vec![ordinary("a", "test://original", "second", "new body")],
+            container_group_version: None, chunks: vec![ordinary("a", "test://original", "second", "new body")],
         })
         .await
         .unwrap();
@@ -774,7 +852,7 @@ async fn reusing_a_moved_sources_old_address_allocates_a_distinct_stable_id() {
     assert_eq!(new.doc_id.len(), 64);
     index
         .ingest_batch(&IngestBatch {
-            chunks: vec![ordinary("a", "test://original", "third", "updated body")],
+            container_group_version: None, chunks: vec![ordinary("a", "test://original", "third", "updated body")],
         })
         .await
         .unwrap();
@@ -833,7 +911,7 @@ async fn legacy_location_collisions_split_only_the_selected_source() {
     let expected = replacement.doc_id.clone();
     index
         .ingest_batch(&IngestBatch {
-            chunks: vec![replacement],
+            container_group_version: None, chunks: vec![replacement],
         })
         .await
         .unwrap();
@@ -861,7 +939,7 @@ async fn partial_updates_publish_coherent_metadata_and_filtered_vector_results()
     let index = open(dir.path()).await;
     index
         .ingest_batch(&IngestBatch {
-            chunks: vec![
+            container_group_version: None, chunks: vec![
                 wire("a", "one", 0, "alpha", Some(2), None),
                 wire("a", "one", 1, "beta", Some(2), None),
             ],
@@ -874,7 +952,7 @@ async fn partial_updates_publish_coherent_metadata_and_filtered_vector_results()
     update.title = Some("Current title".into());
     index
         .ingest_batch(&IngestBatch {
-            chunks: vec![update],
+            container_group_version: None, chunks: vec![update],
         })
         .await
         .unwrap();
@@ -883,6 +961,7 @@ async fn partial_updates_publish_coherent_metadata_and_filtered_vector_results()
         language: Some("fr".into()),
         year_min: Some(2026),
         year_max: Some(2026),
+        ..Default::default()
     };
     for hits in [
         index
@@ -947,6 +1026,7 @@ async fn legacy_mixed_chunk_metadata_cannot_bypass_canonical_vector_filters() {
         language: Some("fr".into()),
         year_min: Some(2026),
         year_max: Some(2026),
+        ..Default::default()
     };
     for hits in [
         index.search_vector(&[1.0, 0.0], &filters, 1).await.unwrap(),
@@ -965,4 +1045,76 @@ async fn legacy_mixed_chunk_metadata_cannot_bypass_canonical_vector_filters() {
         .await
         .unwrap()
         .is_empty());
+}
+
+#[tokio::test]
+async fn extended_metadata_filters_apply_before_lexical_limits_and_all_retrieval_lanes() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = open(dir.path()).await;
+    let mut chunks: Vec<_> = (0..180).map(|n| wire("a", &format!("early-{n:03}"), 0,
+        "needle", Some(1), None)).collect();
+    let mut target = wire("a", "late", 0, "needle with a longer passage that scores below short rows", Some(1), None);
+    target.ext = "pdf".into();
+    target.tags = vec!["owner's invoice".into()];
+    target.source_hash = "abcdef123456".into();
+    chunks.push(target.clone());
+    let mut other_owner = target.clone();
+    other_owner.owner_id = "b".into();
+    other_owner.location_uri = "test://b/late".into();
+    chunks.push(other_owner);
+    let mut wrong_tag = target.clone();
+    wrong_tag.doc_id = "wrong-tag".into();
+    wrong_tag.location_uri = "test://a/wrong-tag".into();
+    wrong_tag.tags = vec!["owner's invoice draft".into()];
+    chunks.push(wrong_tag);
+    index.ingest_batch(&IngestBatch { container_group_version: None, chunks }).await.unwrap();
+    let filters = SearchFilters {
+        owner_id: Some("a".into()), ext: vec!["PDF".into()],
+        tag: Some("owner's invoice".into()), source_hash_prefix: Some("ABCDEF".into()),
+        doc_id_scope: vec!["late".into()], ..Default::default()
+    };
+    for hits in [
+        index.search_text("needle", &filters, 1).await.unwrap(),
+        index.search_vector(&[1.0, 0.0], &filters, 1).await.unwrap(),
+        index.search_hybrid("needle AND NOT missing", &[1.0, 0.0], &filters, 1).await.unwrap(),
+    ] {
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].doc_id, "late");
+        assert_eq!(hits[0].owner_id, "a");
+    }
+    let tag_only = SearchFilters { owner_id: Some("a".into()), tag: Some("owner's invoice".into()), ..Default::default() };
+    let found = index.search_text("needle", &tag_only, 1).await.unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].doc_id, "late");
+    for invalid in [
+        SearchFilters { source_hash_prefix: Some("%".into()), ..Default::default() },
+        SearchFilters { doc_id_scope: vec!["late".into(); 1001], ..Default::default() },
+    ] {
+        assert!(index.search_text("needle", &invalid, 1).await.is_err());
+        assert!(index.search_vector(&[1.0, 0.0], &invalid, 1).await.is_err());
+    }
+}
+
+#[tokio::test]
+async fn large_scoped_key_sets_remain_exact_across_owners() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = open(dir.path()).await;
+    let mut chunks = Vec::new();
+    let mut keys = Vec::new();
+    for n in 0..256 {
+        let owner = format!("owner'{n:03}");
+        let wanted = format!("doc'{n:03}");
+        let other = format!("doc'{:03}", (n + 1) % 256);
+        keys.push(DocumentKey { owner_id: owner.clone(), doc_id: wanted.clone() });
+        chunks.push(wire(&owner, &wanted, 0, "selected", Some(1), None));
+        chunks.push(wire(&owner, &other, 0, "crossed pair", Some(1), None));
+    }
+    index.ingest_batch(&IngestBatch { container_group_version: None, chunks }).await.unwrap();
+    let batches = index.vector.fetch_by_keys(&keys).await.unwrap();
+    let mut actual = BTreeSet::new();
+    for batch in &batches {
+        actual.extend(stored_chunks(batch).unwrap().into_iter().map(|chunk| chunk.key));
+    }
+    assert_eq!(actual, keys.into_iter().collect());
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 256);
 }

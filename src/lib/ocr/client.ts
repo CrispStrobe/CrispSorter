@@ -200,16 +200,33 @@ export function exportProgressLabel(progress: ExportProgress): string {
 }
 
 /** Explicit adapter makes the complete review workflow testable without model downloads. */
-/** Tesseract needs a concrete language: "automatic" follows the app's own
- *  interface language (German → deu), so German text keeps its umlauts. */
+/** Unconfigured embedded Tesseract follows the app's interface language.
+ *  A configured recognizer or native pipeline keeps its own language. */
 let defaultOcrLanguage = "eng";
 /** Set from the app's interface language by the OCR workspace. */
 export function setDefaultOcrLanguage(language: string): void { defaultOcrLanguage = language; }
-export function recognitionLanguage(engine?: string | null, language?: string | null): string | null {
+export function recognitionLanguage(
+  engine?: string | null,
+  language?: string | null,
+  config?: Record<string, unknown> | null,
+): string | null {
   const automatic = !language || language === "auto";
   const tesseract = !engine || engine === "auto" || engine === "tesseract";
-  if (automatic && tesseract) return defaultOcrLanguage;
-  return language ?? null;
+  // Omitted config is loaded from native app state. Its stages may select a
+  // custom language model, so the client cannot safely invent a language hint.
+  if (!automatic || !tesseract || !config) return language ?? null;
+  const stages = config.stages;
+  if (stages !== undefined && !Array.isArray(stages)) return language ?? null;
+  if (!engine || engine === "auto") {
+    if (stages?.length) return language ?? null;
+  } else {
+    // Match native selection: the first stage for the explicitly chosen engine
+    // supplies its recognizer, even if another later stage uses another model.
+    const configured = stages?.find(stage => stage && typeof stage === "object"
+      && !Array.isArray(stage) && stage.engine === "tesseract");
+    if (configured && typeof configured.rec_model === "string") return language ?? null;
+  }
+  return defaultOcrLanguage;
 }
 
 export interface PrepareOptions {
@@ -470,7 +487,7 @@ export const workspaceClient: WorkspaceClient = {
       ...options,
       config: options.config ?? null,
       engine: options.engine ?? null,
-      language: recognitionLanguage(options.engine, options.language),
+      language: recognitionLanguage(options.engine, options.language, options.config),
       zone: options.zone ?? null,
       cpuPixelBudget: options.cpuPixelBudget ?? null,
     }),

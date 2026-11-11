@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::State;
 use crate::AppState;
-use super::{ingest::chunk_row_id, SearchResult};
+use super::SearchResult;
 
 fn client(endpoint: &str) -> Result<(reqwest::Client, String), String> {
     let url = reqwest::Url::parse(endpoint).map_err(|_| "Enter a valid CrispEmbed server URL")?;
@@ -90,7 +90,7 @@ pub async fn crispembed_rerank_passages(
     let mut fallback = Vec::new();
     let mut bytes = 0;
     for mut candidate in candidates {
-        let key = chunk_row_id(&candidate.doc_id, candidate.chunk_index);
+        let key = super::local_index::passage_key(&candidate.owner_id, &candidate.doc_id, candidate.chunk_index);
         let Some(passage) = passages.get(&key) else { fallback.push(candidate); continue; };
         let vectors = encode(&client, &base, &passage.text, "document").await?;
         bytes += vectors.len() * 128 * std::mem::size_of::<f32>();
@@ -143,7 +143,7 @@ pub async fn crispembed_classify_document(
     let _foreground = crate::bg_ingest::ForegroundGuard::new(state.foreground_active.clone());
     let local = state.index.lock().await.local.clone().ok_or("A local index is required for document decisions")?;
     let mut passages = local.fetch_passages(std::slice::from_ref(&document)).await.map_err(|e| e.to_string())?;
-    let passage = passages.remove(&chunk_row_id(&document.doc_id, document.chunk_index)).ok_or("Process the document text before classifying it")?;
+    let passage = passages.remove(&super::local_index::passage_key(&document.owner_id, &document.doc_id, document.chunk_index)).ok_or("Process the document text before classifying it")?;
     // The upstream profile clips state to 512 model tokens; show exactly the
     // submitted excerpt and do not imply the whole document was evaluated.
     let excerpt: String = passage.text.chars().take(1600).collect();

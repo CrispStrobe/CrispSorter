@@ -12,7 +12,7 @@ spec.loader.exec_module(evaluate)
 
 
 def report(ids):
-    return {"format": "CrispSorter search report", "version": 1, "scope": "displayed", "sort": "relevance", "displayTags": [], "executedQuery": "needle", "coverage": {"requestedLimit": 20}, "recipe": {"mode": "text", "filters": {}}, "documents": [{"docId": doc_id} for doc_id in ids], "elapsedMs": 40}
+    return {"format": "CrispSorter search report", "version": 1, "scope": "displayed", "sort": "relevance", "displayTags": [], "executedQuery": "needle", "coverage": {"requestedLimit": 20, "returnedDocuments": len(ids), "exportedDocuments": len(ids)}, "recipe": {"mode": "text", "filters": {}, "limit": 20, "docIdScope": []}, "documents": [{"docId": doc_id} for doc_id in ids], "elapsedMs": 40}
 
 
 class SearchEvaluationTests(unittest.TestCase):
@@ -51,6 +51,71 @@ class SearchEvaluationTests(unittest.TestCase):
         metrics = evaluate.evaluate_report({"id": "q", "query": "needle", "relevance": {"a": 1}}, report(["unknown", "a"]), 2)
         self.assertEqual(metrics["unjudgedInTopK"], 1)
         self.assertEqual(metrics["precisionAtK"], 0.5)
+
+    def test_incomplete_or_contradictory_report_windows_are_rejected(self):
+        case = {"id": "q", "query": "needle", "relevance": {"a": 1}}
+        for change in [{"returnedDocuments": 2}, {"exportedDocuments": 0}, {"returnedDocuments": True},
+                       {"requestedLimit": 10}, {"requestedLimit": 501}]:
+            saved = report(["a"])
+            saved["coverage"].update(change)
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                evaluate.evaluate_report(case, saved, 10)
+        for key, value in [("coverage", None), ("recipe", []), ("documents", ["a"]),
+                           ("coverage", {"requestedLimit": 20})]:
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                evaluate.evaluate_report(case, {**report(["a"]), key: value}, 10)
+
+    def test_optional_document_scope_is_checked_without_rejecting_additive_view_state(self):
+        case = {"id": "q", "query": "needle", "relevance": {"a": 1}, "docIdScope": ["a"]}
+        saved = report(["a"])
+        with self.assertRaisesRegex(ValueError, "Document scope"):
+            evaluate.evaluate_report(case, saved, 10)
+        saved["recipe"].update(version=3, docIdScope=["a"], view={"compact": True})
+        self.assertEqual(evaluate.evaluate_report(case, saved, 10)["recallAtK"], 1)
+        with self.assertRaisesRegex(ValueError, "Owner scope"):
+            evaluate.evaluate_report({**case, "ownerId": "reader"}, saved, 10)
+        saved["recipe"]["ownerId"] = "reader"
+        self.assertEqual(evaluate.evaluate_report({**case, "ownerId": "reader"}, saved, 10)["recallAtK"], 1)
+
+    def test_query_intent_is_recorded_and_optional_expected_intent_is_enforced(self):
+        case = {"id": "q", "query": "needle", "relevance": {"a": 1}, "queryIntent": "natural"}
+        saved = report(["a"])
+        with self.assertRaisesRegex(ValueError, "Query intent differs"):
+            evaluate.evaluate_report(case, saved, 10)
+        saved["recipe"].update(version=4, queryIntent="natural")
+        self.assertEqual(evaluate.evaluate_report(case, saved, 10)["recallAtK"], 1)
+        saved["recipe"]["queryIntent"] = "guess"
+        with self.assertRaisesRegex(ValueError, "supported query intent"):
+            evaluate.evaluate_report(case, saved, 10)
+
+    def test_fraction_thresholds_and_boolean_empty_expectations_are_validated(self):
+        with self.assertRaisesRegex(ValueError, "boolean"):
+            evaluate.evaluate_report({"id": "q", "query": "needle", "expectEmpty": "false"}, report([]), 10)
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            (base / "run.json").write_text(json.dumps(report(["a"])), encoding="utf-8")
+            manifest = {"corpus": "fixture", "environment": "unit fixture", "queries": [{"id": "q", "query": "needle", "relevance": {"a": 1}}], "experiments": [{"id": "baseline", "reports": {"q": "run.json"}}], "thresholds": {"minMeanRecallAtK": 1.01}}
+            with self.assertRaisesRegex(ValueError, "between 0 and 1"):
+                evaluate.evaluate_manifest(manifest, base)
+
+    def test_owner_aware_reports_do_not_merge_equal_document_ids(self):
+        saved = report(["shared", "shared"])
+        saved["documents"][0]["ownerId"] = "alice"
+        saved["documents"][1]["ownerId"] = "bob"
+        case = {"id": "q", "query": "needle", "identity": "owner-and-document",
+                "relevance": {'["alice","shared"]': 0, '["bob","shared"]': 3},
+                "mustInclude": ['["bob","shared"]']}
+        result = evaluate.evaluate_report(case, saved, 2)
+        self.assertEqual(result["recallAtK"], 1)
+        self.assertEqual(result["reciprocalRank"], 0.5)
+        self.assertEqual(result["constraintFailures"], [])
+        with self.assertRaisesRegex(ValueError, "Duplicate document"):
+            evaluate.evaluate_report({**case, "identity": "document"}, saved, 2)
+        saved["documents"][1]["ownerId"] = "alice"
+        with self.assertRaisesRegex(ValueError, "Duplicate document"):
+            evaluate.evaluate_report(case, saved, 2)
+        with self.assertRaisesRegex(ValueError, "documentKey"):
+            evaluate.evaluate_report({**case, "relevance": {"shared": 3}}, saved, 2)
 
     def test_complete_query_set_and_thresholds_are_required(self):
         with tempfile.TemporaryDirectory() as directory:

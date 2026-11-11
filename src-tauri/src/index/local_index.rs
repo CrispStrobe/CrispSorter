@@ -45,6 +45,9 @@ pub(crate) use occurrence::{OccurrencePlan, SourceOccurrence};
 #[path = "source_move.rs"]
 mod source_move;
 
+#[path = "container_index.rs"]
+mod container_index;
+
 fn replacement_filter(chunks: &[DocumentChunk]) -> Result<String> {
     anyhow::ensure!(!chunks.is_empty(), "A document replacement cannot be empty");
     let mut row_ids = std::collections::BTreeSet::new();
@@ -67,6 +70,25 @@ fn replacement_filter(chunks: &[DocumentChunk]) -> Result<String> {
 
 fn sql_values(values: &[String]) -> String {
     values.iter().map(|s| format!("'{}'", s.replace('\'', "''"))).collect::<Vec<_>>().join(",")
+}
+
+/// Key returned by passage hydration, scoped to the selected source owner.
+pub fn passage_key(owner_id: &str, doc_id: &str, chunk_index: i32) -> String {
+    super::fts_index::document_key(owner_id, &chunk_row_id(doc_id, chunk_index))
+}
+
+fn document_keys_sql(keys: &[(String, String)]) -> String {
+    if keys.is_empty() { return "false".into(); }
+    let mut owners = std::collections::BTreeMap::<&str, Vec<String>>::new();
+    for (owner, doc) in keys { owners.entry(owner).or_default().push(doc.clone()); }
+    let mut parts: Vec<_> = owners.into_iter().map(|(owner, ids)|
+        format!("(owner_id = '{}' AND doc_id IN ({}))", owner.replace('\'', "''"), sql_values(&ids))).collect();
+    while parts.len() > 1 {
+        parts = parts.chunks(2).map(|pair| if pair.len() == 2 {
+            format!("({} OR {})", pair[0], pair[1])
+        } else { pair[0].clone() }).collect();
+    }
+    parts.pop().unwrap_or_else(|| "false".into())
 }
 
 fn import_replacement_ids(chunks: &[DocumentChunk], explicit: &[String]) -> std::collections::BTreeSet<String> {
@@ -101,6 +123,67 @@ impl From<&DocumentChunk> for FtsPiece {
             translated: c.text_translated.clone(), chunk_index: c.chunk_index,
             start: c.chunk_start_char, end: c.chunk_end_char }
     }
+}
+
+/// Reconstruct only verified contiguous text; preserve every other source region
+/// as a separate positional segment for imported documents and archive indexes.
+fn fts_input_from_pieces(doc_id: String, mut pieces: Vec<FtsPiece>) -> Result<Option<super::ingest::TantivyInputOwned>> {
+    pieces.sort_by_key(|piece| piece.chunk_index);
+    let extracted = pieces.iter().any(|piece| piece.chunk_index >= 0);
+    let Some(first) = pieces.iter().find(|piece| piece.chunk_index >= 0).or_else(|| pieces.first()) else { return Ok(None); };
+    let mut input = super::ingest::TantivyInputOwned {
+        doc_id, owner_id: first.owner.clone(), language: first.language.clone(), title: first.title.clone(),
+        headings: String::new(), body: String::new(), body_segments: None, body_translated: None,
+    };
+    anyhow::ensure!(pieces.iter().all(|piece| piece.owner == input.owner_id), "Full-text reconstruction mixed owners");
+    let bytes = pieces.iter().try_fold(0usize, |sum, piece| sum.checked_add(piece.body.len()))
+        .ok_or_else(|| anyhow!("Document size overflow"))?;
+    anyhow::ensure!(bytes <= 64 * 1024 * 1024, "Document exceeds the 64 MiB full-text reconstruction limit");
+    let mut segments = Vec::<String>::new();
+    let mut previous_end = None::<usize>;
+    let mut seen_headings = std::collections::BTreeSet::new();
+    for piece in pieces {
+        if !piece.headings.is_empty() && seen_headings.insert(piece.headings.clone()) {
+            if !input.headings.is_empty() { input.headings.push('\n'); }
+            input.headings.push_str(&piece.headings);
+        }
+        if input.body_translated.is_none() { input.body_translated = piece.translated; }
+        // Metadata-only rows may retain old source offsets but have no text
+        // positions to reconstruct or compare.
+        if piece.body.is_empty() { continue; }
+        let range = match (piece.start, piece.end) {
+            (Some(start), Some(end)) if start >= 0 && end >= start => {
+                anyhow::ensure!((end - start) as usize == piece.body.len(), "Chunk byte offsets disagree with its text length");
+                Some((start as usize, end as usize))
+            }
+            (None, None) => None,
+            _ => anyhow::bail!("Stored chunk has incomplete or invalid source offsets"),
+        };
+        if let (Some(prior_end), Some((start, end))) = (previous_end, range) {
+            if start <= prior_end {
+                let previous = segments.last_mut().context("Missing reconstructed source region")?;
+                let prior_start = prior_end.checked_sub(previous.len()).context("Invalid reconstructed range")?;
+                anyhow::ensure!(start >= prior_start, "Chunk offsets move backwards");
+                let overlap = prior_end.min(end) - start;
+                let prior = previous.get(start - prior_start..start - prior_start + overlap)
+                    .context("Chunk overlap splits a UTF-8 character")?;
+                let incoming = piece.body.get(..overlap).context("Chunk overlap splits a UTF-8 character")?;
+                anyhow::ensure!(prior == incoming, "Overlapping chunks contain inconsistent source text");
+                if end > prior_end {
+                    previous.push_str(&piece.body[overlap..]);
+                    previous_end = Some(end);
+                }
+                continue;
+            }
+        }
+        previous_end = range.map(|(_, end)| end);
+        segments.push(piece.body);
+    }
+    input.body = segments.join("\n");
+    // A single known or unknown region has the same positional behavior as a
+    // whole body. Multiple regions must survive durable journal serialization.
+    if segments.len() > 1 { input.body_segments = Some(segments); }
+    Ok((extracted || !input.body.trim().is_empty()).then_some(input))
 }
 
 /// One row returned by `list_failed_extractions`.
@@ -176,6 +259,8 @@ pub struct IndexedState {
     pub source_hash: Option<String>,
     pub extraction_failed: bool,
     pub extraction_skip: bool,
+    /// Version of independent member publication recorded on container roots.
+    pub container_group_version: u32,
 }
 
 impl LocalIndex {
@@ -218,38 +303,46 @@ impl LocalIndex {
         Ok(())
     }
 
-    /// Hydrate only the requested chunk IDs, without embedding columns.
+    /// Hydrate exact owner/document/chunk identities, without embedding columns.
     pub async fn fetch_passages(
         &self,
         candidates: &[SearchResult],
     ) -> Result<std::collections::HashMap<String, Passage>> {
         let mut passages = std::collections::HashMap::new();
-        if candidates.is_empty() { return Ok(passages); }
-        let ids: Vec<String> = candidates.iter().map(|r| {
-            format!("'{}'", chunk_row_id(&r.doc_id, r.chunk_index).replace('\'', "''"))
-        }).collect();
-        let batches: Vec<RecordBatch> = self.table.query()
-            .only_if(format!("id IN ({})", ids.join(",")))
-            .select(lancedb::query::Select::Columns(vec![
-                "id".into(), "full_text".into(),
-                "chunk_start_char".into(), "chunk_end_char".into(),
-            ]))
-            .limit(candidates.len()).execute().await?.try_collect().await?;
-        for batch in batches {
-            let id = str_col(&batch, "id")?;
-            let text = str_col(&batch, "full_text")?;
-            let start = batch.column_by_name("chunk_start_char")
-                .and_then(|c| c.as_any().downcast_ref::<Int32Array>());
-            let end = batch.column_by_name("chunk_end_char")
-                .and_then(|c| c.as_any().downcast_ref::<Int32Array>());
-            for i in 0..batch.num_rows() {
-                if text.is_null(i) || text.value(i).trim().is_empty() { continue; }
-                passages.insert(id.value(i).to_owned(), Passage {
-                    text: text.value(i).to_owned(),
-                    start_char: start.filter(|c| !c.is_null(i)).map(|c| c.value(i)),
-                    end_char: end.filter(|c| !c.is_null(i)).map(|c| c.value(i)),
-                    offset_unit: "utf8_bytes".into(),
-                });
+        let mut latest = std::collections::HashMap::<String, (i64, u64)>::new();
+        for group in candidates.chunks(256) {
+            let wanted: std::collections::HashSet<_> = group.iter().map(|r| passage_key(&r.owner_id, &r.doc_id, r.chunk_index)).collect();
+            let keys: Vec<_> = group.iter().map(|r| (r.owner_id.clone(), r.doc_id.clone())).collect();
+            let ids: Vec<_> = group.iter().map(|r| chunk_row_id(&r.doc_id, r.chunk_index)).collect();
+            let mut stream = self.table.query()
+                .only_if(format!("({}) AND id IN ({})", document_keys_sql(&keys), sql_values(&ids)))
+                .select(lancedb::query::Select::Columns(["doc_id", "owner_id", "chunk_index", "full_text",
+                    "chunk_start_char", "chunk_end_char", "indexed_at"].into_iter().map(str::to_owned).collect()))
+                .with_row_id().execute().await?;
+            while let Some(batch) = stream.try_next().await? {
+                let docs = str_col(&batch, "doc_id")?;
+                let owners = str_col(&batch, "owner_id")?;
+                let indices = i32_col(&batch, "chunk_index")?;
+                let text = str_col(&batch, "full_text")?;
+                let times = ts_ms_col_opt(&batch, "indexed_at");
+                let row_ids = batch.column_by_name("_rowid").and_then(|c| c.as_any().downcast_ref::<arrow_array::UInt64Array>())
+                    .context("Missing stored passage row IDs")?;
+                let start = i32_col_opt(&batch, "chunk_start_char");
+                let end = i32_col_opt(&batch, "chunk_end_char");
+                for row in 0..batch.num_rows() {
+                    let key = passage_key(owners.value(row), docs.value(row), indices.value(row));
+                    if !wanted.contains(&key) { continue; }
+                    let order = (times.filter(|c| !c.is_null(row)).map_or(i64::MIN, |c| c.value(row)), row_ids.value(row));
+                    if latest.get(&key).is_some_and(|previous| *previous > order) { continue; }
+                    latest.insert(key.clone(), order);
+                    if text.is_null(row) || text.value(row).trim().is_empty() { passages.remove(&key); continue; }
+                    passages.insert(key, Passage {
+                        text: text.value(row).to_owned(),
+                        start_char: start.filter(|c| !c.is_null(row)).map(|c| c.value(row)),
+                        end_char: end.filter(|c| !c.is_null(row)).map(|c| c.value(row)),
+                        offset_unit: "utf8_bytes".into(),
+                    });
+                }
             }
         }
         Ok(passages)
@@ -379,7 +472,7 @@ impl LocalIndex {
     }
 
     pub async fn delete_document_with_fts(&self, doc_id: &str, fts: &super::fts_index::FtsIndex) -> Result<()> {
-        super::ingest::apply_imported_chunks(self, fts, &[], &[doc_id.to_owned()]).await
+        super::ingest::apply_document_deletion_if_version(self,fts,doc_id,None).await.map(|_|())
     }
 
     /// Apply a remotely requested deletion only if policy inspected this exact
@@ -387,8 +480,7 @@ impl LocalIndex {
     pub async fn delete_document_if_version_with_fts(
         &self, doc_id: &str, expected_version: u64, fts: &super::fts_index::FtsIndex,
     ) -> Result<bool> {
-        super::ingest::apply_imported_chunks_if_version(
-            self, fts, &[], &[doc_id.to_owned()], Some(expected_version)).await
+        super::ingest::apply_document_deletion_if_version(self,fts,doc_id,Some(expected_version)).await
     }
 
     pub(crate) async fn documents_absent(&self, doc_ids: &[String]) -> Result<bool> {
@@ -458,6 +550,50 @@ impl LocalIndex {
         self.fts_inputs_for_doc_changes(doc_ids, &[], &[]).await
     }
 
+    /// Reconstruct exact stored identities during full-text maintenance. Legacy
+    /// append-only rows can share a chunk key, so use the same latest-row rule
+    /// as passage inspection before validating source ranges and boundaries.
+    pub(crate) async fn fts_inputs_for_keys(&self, keys: &[(String, String)]) -> Result<Vec<super::ingest::TantivyInputOwned>> {
+        if keys.is_empty() { return Ok(Vec::new()); }
+        let mut stream = self.table.query().only_if(document_keys_sql(keys))
+            .select(lancedb::query::Select::Columns(["id", "doc_id", "owner_id", "language", "title", "headings_text", "full_text", "text_translated", "chunk_index", "chunk_start_char", "chunk_end_char", "indexed_at"]
+                .into_iter().map(str::to_owned).collect()))
+            .with_row_id().execute().await?;
+        let mut rows = std::collections::BTreeMap::<(String, String, i32), (i64, u64, FtsPiece)>::new();
+        while let Some(batch) = stream.try_next().await? {
+            let docs = str_col(&batch, "doc_id")?;
+            let owners = str_col(&batch, "owner_id")?;
+            let indices = i32_col(&batch, "chunk_index")?;
+            let times = ts_ms_col_opt(&batch, "indexed_at");
+            let row_ids = batch.column_by_name("_rowid").and_then(|c| c.as_any().downcast_ref::<arrow_array::UInt64Array>())
+                .context("Missing stored full-text row identities")?;
+            for row in 0..batch.num_rows() {
+                anyhow::ensure!(!docs.is_null(row) && !owners.is_null(row) && !indices.is_null(row) && !row_ids.is_null(row),
+                    "Stored full-text document identity is incomplete");
+                let key = (owners.value(row).to_owned(), docs.value(row).to_owned(), indices.value(row));
+                let version = (times.filter(|c| !c.is_null(row)).map(|c| c.value(row)).unwrap_or(0), row_ids.value(row));
+                if rows.get(&key).is_some_and(|(time, row_id, _)| (*time, *row_id) >= version) { continue; }
+                let string = |name: &str| str_col_opt(&batch, name).filter(|c| !c.is_null(row)).map(|c| c.value(row).to_owned());
+                let number = |name: &str| i32_col_opt(&batch, name).filter(|c| !c.is_null(row)).map(|c| c.value(row));
+                let piece = FtsPiece {
+                    id: string("id").context("Missing stored full-text chunk ID")?,
+                    doc_id: key.1.clone(), owner: key.0.clone(), chunk_index: key.2,
+                    language: string("language").unwrap_or_default(), title: string("title").unwrap_or_default(),
+                    headings: string("headings_text").unwrap_or_default(), body: string("full_text").unwrap_or_default(),
+                    translated: string("text_translated"), start: number("chunk_start_char"), end: number("chunk_end_char"),
+                };
+                rows.insert(key, (version.0, version.1, piece));
+            }
+        }
+        let mut grouped = std::collections::BTreeMap::<(String, String), Vec<FtsPiece>>::new();
+        for ((owner, doc_id, _), (_, _, piece)) in rows { grouped.entry((owner, doc_id)).or_default().push(piece); }
+        let mut inputs = Vec::new();
+        for ((_, doc_id), pieces) in grouped {
+            if let Some(input) = fts_input_from_pieces(doc_id, pieces)? { inputs.push(input); }
+        }
+        Ok(inputs)
+    }
+
     async fn fts_inputs_for_doc_changes(&self, doc_ids: &[String], chunks: &[DocumentChunk], replace_doc_ids: &[String]) -> Result<Vec<super::ingest::TantivyInputOwned>> {
         if doc_ids.is_empty() { return Ok(Vec::new()); }
         let replaced = import_replacement_ids(chunks, replace_doc_ids);
@@ -483,28 +619,8 @@ impl LocalIndex {
         let mut grouped = std::collections::BTreeMap::<String, Vec<FtsPiece>>::new();
         for (_, piece) in rows { grouped.entry(piece.doc_id.clone()).or_default().push(piece); }
         let mut inputs = Vec::new();
-        for (doc_id, mut group) in grouped {
-            group.sort_by_key(|c| c.chunk_index);
-            let Some(first) = group.first() else { continue; };
-            let has_extracted_row = group.iter().any(|piece| piece.chunk_index >= 0);
-            let mut input = super::ingest::TantivyInputOwned { doc_id, owner_id: first.owner.clone(), language: first.language.clone(),
-                title: first.title.clone(), headings: first.headings.clone(), body: String::new(), body_translated: None };
-            let mut previous_end: Option<i32> = None;
-            for piece in group {
-                if input.body_translated.is_none() { input.body_translated = piece.translated; }
-                let overlap = previous_end.zip(piece.start).and_then(|(end, start)| end.checked_sub(start))
-                    .and_then(|n| usize::try_from(n).ok()).filter(|n| *n <= piece.body.len() && piece.body.is_char_boundary(*n));
-                if let Some(overlap) = overlap {
-                    input.body.push_str(&piece.body[overlap..]);
-                } else {
-                    if !input.body.is_empty() && !piece.body.is_empty() { input.body.push('\n'); }
-                    input.body.push_str(&piece.body);
-                }
-                previous_end = piece.end;
-            }
-            // Visual/audio documents can have no textual body while their
-            // title and other indexed fields remain searchable.
-            if has_extracted_row || !input.body.trim().is_empty() { inputs.push(input); }
+        for (doc_id, pieces) in grouped {
+            if let Some(input) = fts_input_from_pieces(doc_id, pieces)? { inputs.push(input); }
         }
         Ok(inputs)
     }
@@ -664,19 +780,7 @@ impl LocalIndex {
         filters: &SearchFilters,
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
-        let mut vq = self
-            .table
-            .vector_search(embedding)?
-            .distance_type(DistanceType::Cosine)
-            .select(search_result_columns())
-            .limit(limit);
-
-        if let Some(sql) = filters.to_lance_sql() {
-            vq = vq.only_if(sql);
-        }
-
-        let batches: Vec<RecordBatch> = vq.execute().await?.try_collect().await?;
-        record_batches_to_search_results(&batches)
+        self.search_vector_column(embedding, "embedding", filters, limit).await
     }
 
     /// P22 — "More Like This": find documents similar to a given
@@ -737,10 +841,9 @@ impl LocalIndex {
         record_batches_to_search_results(&result_batches)
     }
 
-    /// ANN vector search targeting a specific vector column (e.g.
-    /// `embedding_omni` or `embedding_vit`) instead of the default
-    /// `embedding` column.  Same pattern as `search_vector` but with
-    /// an explicit `.column()` call on the LanceDB `VectorQuery`.
+    /// ANN search targeting a vector column, returning one best chunk per
+    /// document occurrence. Candidate widening avoids long-document crowding;
+    /// metadata filters apply in the database before every ANN collection.
     pub async fn search_vector_column(
         &self,
         embedding: &[f32],
@@ -748,20 +851,32 @@ impl LocalIndex {
         filters: &SearchFilters,
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
-        let mut vq = self
-            .table
-            .vector_search(embedding)?
-            .column(column)
-            .distance_type(DistanceType::Cosine)
-            .select(search_result_columns())
-            .limit(limit);
-
-        if let Some(sql) = filters.to_lance_sql() {
-            vq = vq.only_if(sql);
+        if limit == 0 { return Ok(Vec::new()); }
+        // ANN limits count chunks. Widen the candidate window when a long
+        // document crowds out other sources, keeping its highest-ranked chunk.
+        // This remains approximate retrieval; the bounded window avoids a full
+        // corpus scan for every semantic request.
+        let maximum_candidates = limit.max(4096);
+        let mut candidate_limit = limit.saturating_mul(4).clamp(40, maximum_candidates);
+        loop {
+            let mut vq = self.table.vector_search(embedding)?
+                .column(column)
+                .distance_type(DistanceType::Cosine)
+                .select(search_result_columns())
+                .limit(candidate_limit);
+            if let Some(sql) = filters.to_lance_sql() { vq = vq.only_if(sql); }
+            let batches: Vec<RecordBatch> = vq.execute().await?.try_collect().await?;
+            let rows = record_batches_to_search_results(&batches)?;
+            let exhausted = rows.len() < candidate_limit;
+            let mut seen = std::collections::HashSet::new();
+            let mut documents: Vec<_> = rows.into_iter().filter(|hit|
+                seen.insert((hit.owner_id.clone(), hit.doc_id.clone()))).collect();
+            if documents.len() >= limit || exhausted || candidate_limit >= maximum_candidates {
+                documents.truncate(limit);
+                return Ok(documents);
+            }
+            candidate_limit = candidate_limit.saturating_mul(2).min(maximum_candidates);
         }
-
-        let batches: Vec<RecordBatch> = vq.execute().await?.try_collect().await?;
-        record_batches_to_search_results(&batches)
     }
 
     /// Stage AE — ColBERT late-interaction re-ranking of an existing
@@ -790,22 +905,18 @@ impl LocalIndex {
             return Ok(out);
         }
 
-        // Build `id IN (...)` filter from the candidates' (doc_id,
-        // chunk_index) — matches the row-id formula used at ingest.
-        let quoted: Vec<String> = candidates
-            .iter()
-            .map(|r| {
-                let id = chunk_row_id(&r.doc_id, r.chunk_index);
-                format!("'{}'", id.replace('\'', "''"))
-            })
-            .collect();
-        let filter = format!("id IN ({})", quoted.join(", "));
+        let keys: Vec<_> = candidates.iter().map(|r| (r.owner_id.clone(), r.doc_id.clone())).collect();
+        let ids: Vec<_> = candidates.iter().map(|r| chunk_row_id(&r.doc_id, r.chunk_index)).collect();
+        let wanted: std::collections::HashSet<_> = candidates.iter().map(|r| passage_key(&r.owner_id, &r.doc_id, r.chunk_index)).collect();
+        let filter = format!("({}) AND id IN ({})", document_keys_sql(&keys), sql_values(&ids));
 
         let batches: Vec<RecordBatch> = self
             .table
             .query()
             .only_if(filter)
-            .limit(candidates.len())
+            .select(lancedb::query::Select::Columns(["doc_id", "owner_id", "chunk_index", "indexed_at", "multivec_packed", "multivec_n_tokens"]
+                .into_iter().map(str::to_owned).collect()))
+            .with_row_id()
             .execute()
             .await?
             .try_collect()
@@ -815,8 +926,14 @@ impl LocalIndex {
         let dim = query_multivec[0].len();
         let mut score_by_id: std::collections::HashMap<String, f32> =
             std::collections::HashMap::with_capacity(candidates.len());
+        let mut latest = std::collections::HashMap::<String, (i64, u64)>::new();
         for batch in &batches {
-            let id_col = str_col(batch, "id")?;
+            let docs = str_col(batch, "doc_id")?;
+            let owners = str_col(batch, "owner_id")?;
+            let indices = i32_col(batch, "chunk_index")?;
+            let times = ts_ms_col_opt(batch, "indexed_at");
+            let row_ids = batch.column_by_name("_rowid").and_then(|c| c.as_any().downcast_ref::<arrow_array::UInt64Array>())
+                .context("Missing reranker row identities")?;
             let packed_col = batch
                 .column_by_name("multivec_packed")
                 .and_then(|c| c.as_any().downcast_ref::<LargeBinaryArray>());
@@ -829,9 +946,13 @@ impl LocalIndex {
                 break;
             };
             for i in 0..batch.num_rows() {
-                if packed_col.is_null(i) || n_tok_col.is_null(i) {
-                    continue;
-                }
+                let key = passage_key(owners.value(i), docs.value(i), indices.value(i));
+                if !wanted.contains(&key) { continue; }
+                let order = (times.filter(|c| !c.is_null(i)).map_or(i64::MIN, |c| c.value(i)), row_ids.value(i));
+                if latest.get(&key).is_some_and(|previous| *previous > order) { continue; }
+                latest.insert(key.clone(), order);
+                score_by_id.remove(&key);
+                if packed_col.is_null(i) || n_tok_col.is_null(i) { continue; }
                 let packed = packed_col.value(i);
                 let n_tok = n_tok_col.value(i);
                 let doc_vecs = unpack_multivec(packed, n_tok, dim);
@@ -839,14 +960,14 @@ impl LocalIndex {
                     continue;
                 }
                 let score = maxsim(query_multivec, &doc_vecs);
-                if score.is_finite() { score_by_id.insert(id_col.value(i).to_owned(), score); }
+                if score.is_finite() { score_by_id.insert(key, score); }
             }
         }
 
         let mut out: Vec<SearchResult> = candidates
             .into_iter()
             .map(|mut r| {
-                let id = chunk_row_id(&r.doc_id, r.chunk_index);
+                let id = passage_key(&r.owner_id, &r.doc_id, r.chunk_index);
                 if let Some(s) = score_by_id.get(&id) {
                     r.score = *s;
                 }
@@ -856,8 +977,8 @@ impl LocalIndex {
         // MaxSim and the incoming RRF/BM25 scores have different units.
         // Rank scored rows together, followed by unscored rows in input order.
         out.sort_by(|a, b| {
-            let a_scored = score_by_id.get(&chunk_row_id(&a.doc_id, a.chunk_index)).filter(|v| v.is_finite());
-            let b_scored = score_by_id.get(&chunk_row_id(&b.doc_id, b.chunk_index)).filter(|v| v.is_finite());
+            let a_scored = score_by_id.get(&passage_key(&a.owner_id, &a.doc_id, a.chunk_index)).filter(|v| v.is_finite());
+            let b_scored = score_by_id.get(&passage_key(&b.owner_id, &b.doc_id, b.chunk_index)).filter(|v| v.is_finite());
             match (a_scored, b_scored) {
                 (Some(a), Some(b)) => b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal),
                 (Some(_), None) => std::cmp::Ordering::Less,
@@ -869,77 +990,85 @@ impl LocalIndex {
         Ok(out)
     }
 
-    /// Fetch the best-matching chunk per doc_id for FTS result display.
+    /// Fetch one representative passage for every ranked full-text document.
     ///
-    /// Fetches up to `chunks_per_doc` chunks for each doc_id and selects the
-    /// chunk whose `full_text` contains the most occurrences of `query_terms`.
-    /// Falls back to `chunk_index = 0` when no terms are given.
+    /// Scan all selected documents' passages as a stream. A shared row limit
+    /// cannot express a per-document limit: a long document would consume it
+    /// and hide later documents, and a late matching passage would be missed.
+    /// Memory is bounded by one Arrow batch plus one winning result per doc.
+    /// Ties prefer the earliest chunk and returned order follows `doc_ids`.
     pub async fn fetch_best_chunk_per_doc(
         &self,
         doc_ids: &[String],
         query_terms: &[&str],
         score_map: &std::collections::HashMap<String, f32>,
     ) -> Result<Vec<SearchResult>> {
-        if doc_ids.is_empty() {
-            return Ok(vec![]);
-        }
-
-        let quoted: Vec<String> = doc_ids
-            .iter()
-            .map(|id| format!("'{}'", id.replace('\'', "''")))
-            .collect();
-
-        let (filter, per_doc) = if query_terms.is_empty() {
-            // No terms to score → just grab chunk_index=0
-            (
-                format!("doc_id IN ({}) AND chunk_index = 0", quoted.join(", ")),
-                1usize,
-            )
-        } else {
-            // Fetch several chunks so we can pick the best one
-            (format!("doc_id IN ({})", quoted.join(", ")), 8usize)
-        };
-
-        let batches: Vec<RecordBatch> = self
-            .table
-            .query()
-            .only_if(filter)
-            .select(search_result_columns())
-            .limit(doc_ids.len() * per_doc)
-            .execute()
-            .await?
-            .try_collect()
-            .await?;
-
-        let all = batches_to_search_results_with_scores(&batches, score_map)?;
-
-        if query_terms.is_empty() {
-            return Ok(all);
-        }
-
-        let passages = self.fetch_passages(&all).await?;
-        // Select on complete passages, including matches after the preview.
-        let mut best: std::collections::HashMap<String, (SearchResult, usize)> =
-            std::collections::HashMap::new();
-
-        for result in all {
-            let text_lower = passages.get(&chunk_row_id(&result.doc_id, result.chunk_index))
-                .map(|p| p.text.as_str()).unwrap_or(&result.snippet).to_lowercase();
-            let hits = query_terms
-                .iter()
-                .filter(|&&t| text_lower.contains(t))
-                .count();
-
-            let is_better = match best.get(&result.doc_id) {
-                None => true,
-                Some((_, prev)) => hits > *prev,
-            };
-            if is_better {
-                best.insert(result.doc_id.clone(), (result, hits));
+        let keys = self.matching_document_keys(doc_ids, None).await?;
+        let mut owners = std::collections::HashMap::new();
+        for (owner, doc) in keys {
+            if let Some(previous) = owners.insert(doc, owner.clone()) {
+                anyhow::ensure!(previous == owner, "Document identity belongs to multiple owners; select an exact owner before hydration");
             }
         }
+        let keys: Vec<_> = doc_ids.iter().filter_map(|doc| owners.get(doc).map(|owner| (owner.clone(), doc.clone()))).collect();
+        let scores = keys.iter().map(|(owner, doc)| (super::fts_index::document_key(owner, doc), score_map.get(doc).copied().unwrap_or(0.0))).collect();
+        self.fetch_best_chunk_per_keys(&keys, query_terms, &scores, &SearchFilters::default()).await
+    }
 
-        Ok(best.into_values().map(|(r, _)| r).collect())
+    /// Return every exact owner/document with any stored row matching metadata.
+    /// Sparse chunk numbering and long documents do not change eligibility.
+    pub async fn matching_document_keys(&self, doc_ids: &[String], extra_sql: Option<&str>) -> Result<Vec<(String, String)>> {
+        let mut keys = std::collections::BTreeSet::new();
+        for ids in doc_ids.chunks(256) {
+            let mut filter = format!("doc_id IN ({})", sql_values(ids));
+            if let Some(extra) = extra_sql.filter(|sql| !sql.trim().is_empty()) { filter = format!("({filter}) AND ({extra})"); }
+            let mut stream = self.table.query().only_if(filter)
+                .select(lancedb::query::Select::Columns(vec!["owner_id".into(), "doc_id".into()])).execute().await?;
+            while let Some(batch) = stream.try_next().await? {
+                let owners = str_col(&batch, "owner_id")?;
+                let docs = str_col(&batch, "doc_id")?;
+                for row in 0..batch.num_rows() { keys.insert((owners.value(row).to_owned(), docs.value(row).to_owned())); }
+            }
+        }
+        Ok(keys.into_iter().collect())
+    }
+
+    /// Choose a passage only from the exact lexical identities and matching
+    /// metadata rows. Scores use owner-scoped document keys throughout fusion.
+    pub async fn fetch_best_chunk_per_keys(
+        &self,
+        keys: &[(String, String)],
+        query_terms: &[&str],
+        score_map: &std::collections::HashMap<String, f32>,
+        filters: &SearchFilters,
+    ) -> Result<Vec<SearchResult>> {
+        let mut best = std::collections::HashMap::<String, (SearchResult, usize)>::new();
+        let extra_sql = filters.to_lance_sql();
+        for group in keys.chunks(256) {
+            let mut filter = document_keys_sql(group);
+            if let Some(extra) = &extra_sql { filter = format!("({filter}) AND ({extra})"); }
+            let mut stream = self.table.query().only_if(filter).select(search_result_columns()).execute().await?;
+            while let Some(batch) = stream.try_next().await? {
+                let text = str_col_opt(&batch, "full_text");
+                let results = record_batches_to_search_results(std::slice::from_ref(&batch))?;
+                for (row, mut result) in results.into_iter().enumerate() {
+                    let key = super::fts_index::document_key(&result.owner_id, &result.doc_id);
+                    result.score = score_map.get(&key).copied().unwrap_or(0.0);
+                    let body = text.filter(|column| !column.is_null(row)).map(|column| column.value(row)).unwrap_or("");
+                    let hits = if query_terms.is_empty() { 0 } else {
+                        let tokens: std::collections::HashSet<_> = super::fts_query::simple_tokenize(body).into_iter().collect();
+                        query_terms.iter().filter(|&&term| tokens.contains(term)).count()
+                    };
+                    let replace = match best.get(&key) {
+                        None => true,
+                        Some((previous, previous_hits)) => hits > *previous_hits
+                            || (hits == *previous_hits && result.chunk_index < previous.chunk_index),
+                    };
+                    if replace { best.insert(key, (result, hits)); }
+                }
+            }
+        }
+        Ok(keys.iter().filter_map(|(owner, doc)| best.remove(&super::fts_index::document_key(owner, doc)).map(|(result, _)| result)).collect())
     }
 
     /// Score a candidate doc-id pool by sparse dot product.
@@ -957,18 +1086,14 @@ impl LocalIndex {
     pub async fn search_sparse_in_pool(
         &self,
         query: &SparseVector,
-        candidate_doc_ids: &[String],
+        candidate_doc_ids: &[(String, String)],
         filters: &SearchFilters,
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
         if candidate_doc_ids.is_empty() || query.indices.is_empty() {
             return Ok(vec![]);
         }
-        let quoted: Vec<String> = candidate_doc_ids
-            .iter()
-            .map(|id| format!("'{}'", id.replace('\'', "''")))
-            .collect();
-        let mut filter = format!("doc_id IN ({})", quoted.join(", "));
+        let mut filter = document_keys_sql(candidate_doc_ids);
         if let Some(extra) = filters.to_lance_sql() {
             filter = format!("({}) AND ({})", filter, extra);
         }
@@ -1089,7 +1214,7 @@ impl LocalIndex {
                     summary: str_col_val_opt(&summary_col, i),
                     doc_status: str_col_val_opt(&doc_status_col, i),
                 };
-                let doc_id = result.doc_id.clone();
+                let doc_id = super::fts_index::document_key(&result.owner_id, &result.doc_id);
                 let is_better = match best.get(&doc_id) {
                     None => true,
                     Some((_, prev)) => score > *prev,
@@ -2699,6 +2824,7 @@ impl LocalIndex {
             extraction_failed: value.get("extraction_failure").is_some(),
             extraction_skip: value.get("extraction_skip").and_then(|v| v.as_bool()).unwrap_or(false)
                 || matches!(value.get("extraction_failure").and_then(|v| v.get("msg")).and_then(|v| v.as_str()), Some("skipped via GUI" | "manually skipped via CLI")),
+            container_group_version: value.get("container_group_version").and_then(|value|value.as_u64()).and_then(|value|u32::try_from(value).ok()).unwrap_or(0),
         }
     }
 
@@ -2866,28 +2992,22 @@ impl LocalIndex {
     /// `LocalIndex::open_cidx` API.
     ///
     /// `volume_id` — export only rows for this volume. `None` = full snapshot.
-    /// Scan the FTS-relevant columns for the v103 Tantivy rebuild migration.
-    /// Returns `RecordBatch`es containing `doc_id`, `owner_id`, `language`,
-    /// `title`, `headings_text`, `full_text`, `text_translated`, and
-    /// `chunk_index`.  Used exclusively by `index::migrations::RebuildFtsForBodyTranslated`.
-    pub async fn scan_for_fts_rebuild(&self) -> anyhow::Result<Vec<RecordBatch>> {
-        let select_cols: Vec<String> = [
-            "doc_id", "owner_id", "language", "title",
-            "headings_text", "full_text", "text_translated", "chunk_index",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-
-        self.table
-            .query()
-            .select(lancedb::query::Select::Columns(select_cols))
-            .execute()
-            .await
-            .context("scan_for_fts_rebuild: LanceDB execute")?
-            .try_collect()
-            .await
-            .context("scan_for_fts_rebuild: collecting batches")
+    /// Collect only identities for maintenance; load one document's text at a
+    /// time through `fts_inputs_for_keys` instead of retaining the corpus body.
+    pub(crate) async fn fts_document_keys(&self) -> Result<Vec<(String, String)>> {
+        let mut stream = self.table.query()
+            .select(lancedb::query::Select::Columns(vec!["owner_id".into(), "doc_id".into()]))
+            .execute().await?;
+        let mut keys = std::collections::BTreeSet::new();
+        while let Some(batch) = stream.try_next().await? {
+            let owners = str_col(&batch, "owner_id")?;
+            let docs = str_col(&batch, "doc_id")?;
+            for row in 0..batch.num_rows() {
+                anyhow::ensure!(!owners.is_null(row) && !docs.is_null(row), "Stored full-text document identity is incomplete");
+                keys.insert((owners.value(row).to_owned(), docs.value(row).to_owned()));
+            }
+        }
+        Ok(keys.into_iter().collect())
     }
 
     /// `include_embeddings` — when `false` (default) the embedding columns
@@ -2919,6 +3039,7 @@ impl LocalIndex {
         if include_fts {
             meta_cols.push("full_text");
             meta_cols.push("headings_text");
+            meta_cols.extend(["text_translated", "text_translated_lang", "url", "summary", "doc_status"]);
         }
         let meta_columns: Vec<String> = meta_cols.into_iter().map(String::from).collect();
 
@@ -2962,56 +3083,17 @@ impl LocalIndex {
             let mut writer = fts.writer().context("opening FTS writer")?;
             let mut fts_docs = 0usize;
 
+            // Build from the immutable exported rows, not the live source
+            // table. A source write during export must not alter its companion.
+            let mut doc_ids = std::collections::BTreeSet::new();
             for batch in &batches {
-                let doc_id_col  = batch.schema().index_of("doc_id").ok()
-                    .and_then(|i| batch.column(i).as_any().downcast_ref::<StringArray>());
-                let owner_col   = batch.schema().index_of("owner_id").ok()
-                    .and_then(|i| batch.column(i).as_any().downcast_ref::<StringArray>());
-                let lang_col    = batch.schema().index_of("language").ok()
-                    .and_then(|i| batch.column(i).as_any().downcast_ref::<StringArray>());
-                let title_col   = batch.schema().index_of("title").ok()
-                    .and_then(|i| batch.column(i).as_any().downcast_ref::<StringArray>());
-                let heads_col   = batch.schema().index_of("headings_text").ok()
-                    .and_then(|i| batch.column(i).as_any().downcast_ref::<StringArray>());
-                let text_col    = batch.schema().index_of("full_text").ok()
-                    .and_then(|i| batch.column(i).as_any().downcast_ref::<StringArray>());
-                // text_translated is post-v100-migration only — older
-                // archives don't have the column, hence the optional Some
-                // and the per-row null-guard below.
-                let text_trans_col = batch.schema().index_of("text_translated").ok()
-                    .and_then(|i| batch.column(i).as_any().downcast_ref::<StringArray>());
-                let cidx_col    = batch.schema().index_of("chunk_index").ok()
-                    .and_then(|i| batch.column(i).as_any().downcast_ref::<arrow_array::Int32Array>());
-
-                let (Some(doc_id_col), Some(owner_col)) = (doc_id_col, owner_col)
-                else { continue };
-
-                for i in 0..batch.num_rows() {
-                    // Only index chunk_index = 0 (first/only chunk per doc).
-                    if let Some(cidx) = cidx_col.as_ref() {
-                        if !cidx.is_null(i) && cidx.value(i) != 0 { continue; }
-                    }
-                    if doc_id_col.is_null(i) { continue; }
-                    let doc_id  = doc_id_col.value(i).to_owned();
-                    let owner   = if owner_col.is_null(i) { String::new() } else { owner_col.value(i).to_owned() };
-                    let lang    = lang_col.as_ref().filter(|c| !c.is_null(i)).map(|c| c.value(i)).unwrap_or("").to_owned();
-                    let title   = title_col.as_ref().filter(|c| !c.is_null(i)).map(|c| c.value(i)).unwrap_or("").to_owned();
-                    let heads   = heads_col.as_ref().filter(|c| !c.is_null(i)).map(|c| c.value(i)).unwrap_or("").to_owned();
-                    let body    = text_col.as_ref().filter(|c| !c.is_null(i)).map(|c| c.value(i)).unwrap_or("").to_owned();
-                    let body_translated = text_trans_col
-                        .as_ref()
-                        .filter(|c| !c.is_null(i))
-                        .map(|c| c.value(i));
-
-                    fts.add_document(&mut writer, super::fts_index::TantivyInput {
-                        doc_id: &doc_id,
-                        owner_id: &owner,
-                        language: &lang,
-                        title: &title,
-                        headings: &heads,
-                        body: &body,
-                        body_translated,
-                    })?;
+                doc_ids.extend(str_col(batch, "doc_id")?.iter().flatten().map(str::to_owned));
+            }
+            let snapshot = Self::open_cidx(dest_path).await?;
+            let doc_ids: Vec<_> = doc_ids.into_iter().collect();
+            for ids in doc_ids.chunks(256) {
+                for input in snapshot.fts_inputs_for_docs(ids).await? {
+                    input.write_to(&fts, &mut writer)?;
                     fts_docs += 1;
                 }
             }
@@ -3940,18 +4022,15 @@ async fn migrate_add_volume_id_column(table: &Table) -> Result<()> {
 /// The implicit `chunk_index <= 0` clause is always added so we list one
 /// row per document (L1 metadata rows + L3 representative rows) and
 /// never return chunk-level rows from the catalog overview.
-fn filter_to_sql(f: &super::schema::DocumentFilter) -> Option<String> {
+pub(crate) fn filter_to_sql(f: &super::schema::DocumentFilter) -> Option<String> {
     let mut parts: Vec<String> = vec!["chunk_index <= 0".to_owned()];
 
     if let Some(prefix) = f.parent_dir_prefix.as_ref().filter(|s| !s.is_empty()) {
         // parent_dir is now a first-class column with a BTree scalar index
         // (P9 step 3). Escape single-quotes for SQL safety; escape LIKE
         // wildcards (%_) so they are treated as literals within the prefix.
-        let escaped = prefix
-            .replace('\'', "''")
-            .replace('%', "\\%")
-            .replace('_', "\\_");
-        parts.push(format!("parent_dir LIKE '{}%'", escaped));
+        let escaped = super::schema::sql_like_literal(prefix);
+        parts.push(format!("parent_dir LIKE '{}%' ESCAPE '\\'", escaped));
     }
     if !f.ext.is_empty() {
         let lits: Vec<String> = f
@@ -3984,12 +4063,12 @@ fn filter_to_sql(f: &super::schema::DocumentFilter) -> Option<String> {
         }
     }
     if let Some(sub) = f.name_substring.as_ref().filter(|s| !s.is_empty()) {
-        let pat = sub.replace('\'', "''").replace('%', "\\%");
+        let pat = super::schema::sql_like_literal(sub);
         // Search both filename and title (LIKE in LanceDB is
         // case-insensitive in 0.26 — verified by the existing
         // metadata_json LIKE patterns elsewhere in the codebase).
         parts.push(format!(
-            "(filename LIKE '%{}%' OR title LIKE '%{}%')",
+            "(filename LIKE '%{}%' ESCAPE '\\' OR title LIKE '%{}%' ESCAPE '\\')",
             pat, pat
         ));
     }
@@ -5033,12 +5112,12 @@ mod push_candidate_tests {
         local.ingest_batch(&[chunk]).await.unwrap();
         let result = SearchResult { chunk_index: 2, snippet: "clipped preview".into(), ..mk_result("long-doc", None, None) };
         let passages = local.fetch_passages(&[result]).await.unwrap();
-        let passage = passages.get(&crate::index::ingest::chunk_row_id("long-doc", 2)).unwrap();
+        let passage = passages.get(&passage_key("owner", "long-doc", 2)).unwrap();
         assert!(passage.text.contains("November 2031"));
         assert!(passage.text.len() > 400);
         assert_eq!(passage.start_char, Some(125));
         assert_eq!(passage.offset_unit, "utf8_bytes");
-        assert!(!passages.contains_key(&crate::index::ingest::chunk_row_id("long-doc", 0)));
+        assert!(!passages.contains_key(&passage_key("owner", "long-doc", 0)));
     }
 
     /// Stage AE coverage — a candidate whose row has NULL multivec data

@@ -3,7 +3,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Json, Response},
 };
-use crisp_index_protocol::{SearchFilters, SearchRequest};
+use crisp_index_protocol::SearchRequest;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -16,9 +16,22 @@ use crate::state::SharedState;
 /// `text` (BM25 only), `vector` (ANN only), or `hybrid` (RRF k=60 merge).
 /// Defaults to `hybrid` when absent.
 pub async fn search(state: State<Arc<SharedState>>, request: Json<SearchRequest>) -> Response {
+    let metadata_version = request.metadata_filter_version.unwrap_or(crisp_index_protocol::METADATA_FILTER_VERSION);
+    let embedding_version = request.embedding_query_version;
+    let plan_version = request.query_plan.as_ref().map(|plan| plan.version);
     let (status, body) = search_inner(state, request).await;
     let mut response = (status, body).into_response();
     if status.is_success() {
+        if let Some(version) = plan_version {
+            response.headers_mut().insert(crisp_index_protocol::QUERY_PLAN_VERSION_HEADER, version.to_string().parse().expect("integer header"));
+        }
+        if let Some(version) = embedding_version {
+            response.headers_mut().insert(crisp_index_protocol::EMBEDDING_QUERY_VERSION_HEADER,version.to_string().parse().expect("integer header"));
+        }
+        response.headers_mut().insert(
+            crisp_index_protocol::METADATA_FILTER_VERSION_HEADER,
+            metadata_version.to_string().parse().expect("integer header"),
+        );
         response.headers_mut().insert(
             crisp_index_protocol::QUERY_VERSION_HEADER,
             crisp_index_protocol::QUERY_LANGUAGE_VERSION
@@ -74,14 +87,37 @@ async fn search_inner(
         }
     }
 
-    // Flatten the wire request's filter fields into the `SearchFilters`
-    // struct used by the index layer (same fields, different shape).
-    let filters = SearchFilters {
-        owner_id: req.owner_id,
-        language: req.language,
-        year_min: req.year_min,
-        year_max: req.year_max,
-    };
+    if req.embedding_query_version.is_some_and(|version|version != 1)
+        || (req.embedding_query.is_some() && req.embedding_query_version != Some(1))
+        || req.embedding_query.as_ref().is_some_and(|q|q.trim().is_empty() || q.len() > 8192) {
+        return (StatusCode::UNPROCESSABLE_ENTITY,Json(json!({"error":"A separate embedding query requires negotiated version 1 and 1 to 8192 bytes"})));
+    }
+    let query_plan = if let Some(wire) = &req.query_plan {
+        if wire.version != crisp_index_protocol::QUERY_PLAN_VERSION {
+            return (StatusCode::CONFLICT, Json(json!({"error":"Unsupported query plan version; negotiate /v1/capabilities"})));
+        }
+        let plan = crisp_search_query::query_plan::QueryIntent::parse(&wire.intent).and_then(|intent|
+            crisp_search_query::query_plan::prepare_query(&wire.original_query, intent, wire.fuzzy, wire.synonyms));
+        let plan = match plan {
+            Ok(plan) => plan,
+            Err(error) => return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"error":error.to_string()}))),
+        };
+        if req.query.as_deref() != Some(plan.lexical_query.as_str())
+            || req.embedding_query.as_ref().is_some_and(|query| query != &plan.embedding_query) {
+            return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"error":"The query plan does not match the lexical or embedding query"})));
+        }
+        Some(plan)
+    } else { None };
+    let filters = req.filters();
+    if let Err(error) = filters.validate() {
+        return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"error": error})));
+    }
+    if req.metadata_filter_version.is_some_and(|version| version > crisp_index_protocol::METADATA_FILTER_VERSION || version < filters.required_metadata_filter_version()) {
+        return (StatusCode::CONFLICT, Json(json!({"error": "Unsupported metadata filter version; negotiate /v1/capabilities"})));
+    }
+    if filters.needs_metadata_filter_version() && req.metadata_filter_version.is_none() {
+        return (StatusCode::CONFLICT, Json(json!({"error": "Extended metadata filters require a negotiated metadata_filter_version"})));
+    }
 
     if mode != "vector" {
         let Some(query) = req.query.as_deref() else {
@@ -133,7 +169,7 @@ async fn search_inner(
                         ),
                     );
                 };
-                match embedder.embed_query(query).await {
+                match embedder.embed_query(query_plan.as_ref().map(|plan| plan.embedding_query.as_str()).or(req.embedding_query.as_deref()).unwrap_or(query)).await {
                     Ok(v) => Some(v),
                     Err(e) => {
                         tracing::error!("server-side query embedding failed: {e:#}");
@@ -179,7 +215,7 @@ async fn search_inner(
                         ),
                     );
                 };
-                match embedder.embed_query(query).await {
+                match embedder.embed_query(query_plan.as_ref().map(|plan| plan.embedding_query.as_str()).or(req.embedding_query.as_deref()).unwrap_or(query)).await {
                     Ok(v) => Some(v),
                     Err(e) => {
                         tracing::error!("server-side hybrid query embedding failed: {e:#}");
@@ -201,7 +237,10 @@ async fn search_inner(
                     )
                 }
             };
-            state.index.search_hybrid(query, emb, &filters, limit).await
+            match &query_plan {
+                Some(plan) => state.index.search_hybrid_with_plan(plan, emb, &filters, limit).await,
+                None => state.index.search_hybrid(query, emb, &filters, limit).await,
+            }
         }
     };
 

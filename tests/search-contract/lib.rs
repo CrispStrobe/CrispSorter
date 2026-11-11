@@ -6,6 +6,7 @@ pub mod schema {
     use serde::Deserialize;
     #[derive(Clone, Default)]
     pub struct SearchFilters {
+        pub query_intent: Option<String>,
         pub owner_id: Option<String>,
         pub mounted_volume_ids: Option<Vec<String>>,
         pub language: Option<String>,
@@ -53,3 +54,13 @@ pub mod synonyms;
 pub mod index {
     pub use crate::{fts_index, fts_query, result_cache, schema, synonyms};
 }
+
+// Compile the shared dictionary's own tests as well as its production wrapper.
+pub use crisp_search_query::{rewrite_bare_words, has_explicit_syntax};
+#[cfg(test)]
+#[path = "../../crates/crisp-search-query/src/synonyms.rs"]
+mod shared_synonym_contract;
+#[cfg(test)]
+mod query_plan_contract;
+#[cfg(test)]
+mod explanation_contract;

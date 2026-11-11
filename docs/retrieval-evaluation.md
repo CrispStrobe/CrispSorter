@@ -17,8 +17,9 @@ synthetic fixture for a measured model result.
    measure retrieval quality because they omit returned results.
 3. Repeat the complete query set for each experiment. Record application/model
    versions, hardware, indexing settings, and cache conditions in the environment
-   description. Use the exact executed query from the report when a natural
-   language conversion changed the typed query.
+   description. Preserve the exact executed query and its recorded
+   `queryIntent`; Natural language keeps the original text while the shared
+   planner derives its lexical expression.
 4. Create a manifest beside the reports and run the evaluator:
 
 ```sh
@@ -69,6 +70,25 @@ Copy a report's complete `recipe.filters` into a query's optional `filters`
 property to require an exact filter match. Every experiment must supply the
 entire query set; missing reports fail validation. Duplicate result IDs, edited
 queries, selected scopes, display filtering, and reordered results are rejected.
+Coverage counts must also agree with the exported document list and the recipe's
+requested limit. A manually shortened report cannot qualify as the complete
+returned window. An optional `docIdScope` on a judged query requires the exact
+document scope from its recipe. Additive view preferences in newer recipes do
+not change retrieval metrics. An optional `ownerId` requires the exact owner
+restriction recorded in the recipe, including an explicit empty owner.
+
+A query may specify `"queryIntent": "advanced"` or `"queryIntent": "natural"`
+to require that exact interpretation. Omit it when deliberately comparing
+interpretations of the same original text. Recipe versions before 4 default to
+Advanced syntax; unknown interpretation values are rejected. This receipt
+keeps a changed interpretation visible rather than attributing it to a model.
+
+Reports retain `ownerId` and a collision-free `documentKey` for each result. When
+several owners can use the same document ID, set a judged query's `identity` to
+`"owner-and-document"` and use the report's exact `documentKey` strings as the
+keys in `relevance` and entries in `mustInclude` / `mustExclude`. The default
+`"document"` mode remains compatible with older single-owner reports and rejects
+duplicate IDs instead of silently merging their relevance judgments.
 
 ## Interpret the output
 

@@ -1,24 +1,23 @@
 <script lang="ts">
     import { invoke } from '@tauri-apps/api/core';
     import { i18n } from '$lib/i18n.svelte';
+    import { buildQuery, quoteQueryLiteral, type QueryBuilderInput } from '$lib/search/queryBuilder';
     let { query = $bindable(''), onapply }: { query: string; onapply?: () => void } = $props();
     let all = $state(''), any = $state(''), phrase = $state(''), excluded = $state('');
-    let field = $state('');
+    let field = $state<QueryBuilderInput['field']>('');
+    let nearLeft = $state(''), nearRight = $state(''), distance = $state<number | undefined>(5), ordered = $state(false);
     let prefix = $state('');
     let words = $state<{ term: string; doc_freq: number }[]>([]);
     let busy = $state(false), error = $state(''), browsed = $state(false);
     let sequence = 0;
     const de = $derived(i18n.lang === 'de');
-    const quote = (value: string) => '"' + value.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
-    const tokens = (value: string) => value.trim().split(/\s+/u).filter(Boolean).map(quote);
-    const built = $derived.by(() => {
-        const clauses = tokens(all);
-        if (any.trim()) clauses.push('(' + tokens(any).join(' OR ') + ')');
-        if (phrase.trim()) clauses.push(quote(phrase.trim()));
-        for (const word of tokens(excluded)) clauses.push('NOT ' + word);
-        const value = clauses.join(' AND ');
-        return value && field ? `${field}:(${value})` : value;
-    });
+    const construction = $derived(buildQuery({ all, any, phrase, excluded, field, nearLeft, nearRight, distance: distance ?? null, ordered }));
+    const built = $derived(construction.query);
+    const builderError = $derived(construction.error === 'operands'
+        ? (de ? 'Beide Wörter oder Wortfolgen für die Nähe-Abfrage eingeben.' : 'Enter both words or phrases for the proximity condition.')
+        : construction.error === 'distance'
+            ? (de ? 'Der Wortabstand muss eine ganze Zahl zwischen 0 und 1024 sein.' : 'Word distance must be a whole number from 0 to 1024.')
+            : construction.error === 'length' ? (de ? 'Die Abfrage ist zu lang (maximal 8192 UTF-8-Bytes).' : 'The query is too long (maximum 8192 UTF-8 bytes).') : '');
     function apply() { if (built) { query = built; onapply?.(); } }
     async function browse() {
         const request = ++sequence;
@@ -30,7 +29,7 @@
         finally { if (request === sequence) busy = false; }
     }
     function changePrefix() { sequence += 1; busy = false; browsed = false; words = []; error = ''; }
-    function addWord(term: string) { query = query.trim() ? `(${query.trim()}) AND ${quote(term)}` : quote(term); onapply?.(); }
+    function addWord(term: string) { query = query.trim() ? `(${query.trim()}) AND ${quoteQueryLiteral(term)}` : quoteQueryLiteral(term); onapply?.(); }
 </script>
 
 <details class="query-tools">
@@ -43,12 +42,23 @@
                 <label>{de ? 'Eines dieser Wörter' : 'Any of these words'}<input bind:value={any} /></label>
                 <label>{de ? 'Genaue Wortfolge' : 'Exact phrase'}<input bind:value={phrase} /></label>
                 <label>{de ? 'Ohne diese Wörter' : 'Without these words'}<input bind:value={excluded} /></label>
-                <label>{de ? 'Textfeld' : 'Text field'}<select bind:value={field}>
+                <label>{de ? 'Textfeld' : 'Text field'}<select bind:value={field} aria-label={de ? 'Textfeld' : 'Text field'}>
                     <option value="">{de ? 'Alle Textfelder' : 'All text fields'}</option>
                     <option value="title">{de ? 'Titel' : 'Title'}</option><option value="body">{de ? 'Dokumenttext' : 'Body'}</option>
                     <option value="headings">{de ? 'Überschriften' : 'Headings'}</option><option value="translated">{de ? 'Übersetzter Text' : 'Translated body'}</option>
                 </select></label>
             </div>
+            <fieldset class="proximity-builder">
+                <legend>{de ? 'Wörter in der Nähe' : 'Words near each other'}</legend>
+                <div class="builder-fields">
+                    <label>{de ? 'Erstes Wort oder Wortfolge' : 'First word or phrase'}<input bind:value={nearLeft} /></label>
+                    <label>{de ? 'Zweites Wort oder Wortfolge' : 'Second word or phrase'}<input bind:value={nearRight} /></label>
+                    <label>{de ? 'Höchstens Wörter dazwischen' : 'Maximum intervening words'}<input type="number" min="0" max="1024" step="1" bind:value={distance} /></label>
+                    <label class="order-option"><input type="checkbox" bind:checked={ordered} />{de ? 'In dieser Reihenfolge' : 'In this order'}</label>
+                </div>
+                <p>{de ? '0 bedeutet direkt benachbart. Mehrere Wörter werden als genaue Wortfolge behandelt.' : '0 means adjacent. Multiple words are treated as an exact phrase.'}</p>
+            </fieldset>
+            {#if builderError}<p class="error" role="alert">{builderError}</p>{/if}
             {#if built}<code class="query-preview">{built}</code>{/if}
             <button type="button" onclick={apply} disabled={!built}>{de ? 'Abfrage übernehmen' : 'Use this query'}</button>
             <p>{de ? 'Die Abfrage wird übernommen; Suche startet erst mit Suchen.' : 'This fills the query. Press Search when you are ready.'}</p>
@@ -83,6 +93,10 @@
     .tools-grid { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:24px;padding:0 16px 16px; }
     section { min-width:0; } h3 { font-size:.85rem;color:#e4e4e7;margin:8px 0; }
     .builder-fields { display:grid;grid-template-columns:1fr 1fr;gap:8px; }
+    .proximity-builder { border:1px solid #3f3f46;border-radius:6px;padding:8px;margin:12px 0 0;min-width:0; }
+    .proximity-builder legend { color:#d4d4d8;font-size:.74rem;padding:0 4px; }
+    .order-option { flex-direction:row;align-items:center;gap:6px;align-self:end;min-height:34px; }
+    .order-option input { width:auto;min-height:0; }
     label { display:flex;flex-direction:column;gap:4px;color:#a1a1aa;font-size:.74rem; }
     input,select { width:100%;box-sizing:border-box;min-width:0;background:#18181b;border:1px solid #52525b;border-radius:5px;padding:7px;color:#f4f4f5; }
     button { margin-top:8px;background:#27272a;border:1px solid #52525b;border-radius:5px;color:#e4e4e7;padding:7px 10px;cursor:pointer; }

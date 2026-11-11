@@ -194,8 +194,8 @@ export class LLMClient {
 
         // Sentinel-resolve so callers can pass either the raw key or a
         // `@keyring/llm-provider:<id>` sentinel from settings.json.
-        const key = await resolveSecret(apiKey || this.keys[providerId]);
-        const rawBase = baseUrl || OPENAI_COMPATIBLE[providerId as keyof typeof OPENAI_COMPATIBLE];
+        const key = await resolveSecret(apiKey ?? this.keys[providerId]);
+        const rawBase = baseUrl ?? OPENAI_COMPATIBLE[providerId as keyof typeof OPENAI_COMPATIBLE];
         const base = rawBase ? normalizeProviderBase(providerId, rawBase) : rawBase;
         
         if (!base) {
@@ -209,6 +209,7 @@ export class LLMClient {
             if (!key) throw new Error('No API key is saved for Anthropic.');
             const ids: string[] = [];
             let after: string | null = null;
+            const seen = new Set<string>();
             for (let page = 0; page < 20; page++) {
                 const url = `${base}/models?limit=1000${after ? `&after_id=${encodeURIComponent(after)}` : ''}`;
                 const response = await fetch(url, { method: 'GET', connectTimeout: 10000,
@@ -218,11 +219,16 @@ export class LLMClient {
                     throw new Error(`HTTP ${response.status}: ${errorText || response.statusText}`);
                 }
                 const data = await response.json();
-                for (const m of data?.data ?? []) if (typeof m?.id === 'string') ids.push(m.id);
-                if (!data?.has_more || !data?.last_id) break;
+                if (!Array.isArray(data?.data)) throw new Error('Anthropic returned an invalid model list.');
+                for (const m of data.data) if (typeof m?.id === 'string' && m.id) ids.push(m.id);
+                if (!data.has_more) return [...new Set(ids)];
+                if (typeof data.last_id !== 'string' || !data.last_id || seen.has(data.last_id)) {
+                    throw new Error('Anthropic returned an incomplete model list with an invalid page cursor.');
+                }
+                seen.add(data.last_id);
                 after = data.last_id;
             }
-            return ids;
+            throw new Error('Anthropic model pagination exceeded its safety limit; the previous model list was preserved.');
         }
 
         try {
@@ -258,7 +264,7 @@ export class LLMClient {
         }
     }
 
-    async query(providerId: string, modelId: string, prompt: string, apiKey?: string, temperature: number = 0.3, signal?: AbortSignal, maxOutputTokens?: number): Promise<string> {
+    async query(providerId: string, modelId: string, prompt: string, apiKey?: string, temperature: number = 0.3, signal?: AbortSignal, maxOutputTokens?: number, baseUrlOverride?: string): Promise<string> {
         flog('info', `LLM query: provider=${providerId} model=${modelId} prompt_len=${prompt.length}`);
         if (maxOutputTokens != null && (!Number.isFinite(maxOutputTokens) || maxOutputTokens < 1)) throw new Error('Invalid answer token budget');
         const outputTokenBudget = maxOutputTokens == null ? undefined : Math.floor(maxOutputTokens);
@@ -312,8 +318,9 @@ export class LLMClient {
 
         // Sentinel-resolve so callers can pass either the raw key or a
         // `@keyring/llm-provider:<id>` sentinel from settings.json.
-        const key = await resolveSecret(apiKey || this.keys[providerId]);
-        const baseUrl = OPENAI_COMPATIBLE[providerId as keyof typeof OPENAI_COMPATIBLE];
+        const key = await resolveSecret(apiKey ?? this.keys[providerId]);
+        const rawBase = baseUrlOverride ?? OPENAI_COMPATIBLE[providerId as keyof typeof OPENAI_COMPATIBLE];
+        const baseUrl = rawBase ? normalizeProviderBase(providerId, rawBase) : rawBase;
 
         if (!baseUrl) throw new Error(`Base URL for ${providerId} not found.`);
 

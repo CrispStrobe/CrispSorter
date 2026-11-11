@@ -19,8 +19,10 @@ platform binaries in environments that do not have a system package.
 transaction implementation and its tests are compiled from the application
 source, including the durable write journal and the metadata transaction.
 There is no second implementation of replacement, deletion, recovery, or queue
-acknowledgement in this package. Model adapters are deliberately unavailable;
-calling one fails the test instead of producing a fabricated embedding.
+acknowledgement in this package. The production search engine also compiles here.
+Its dense retrieval contracts use an explicit fixed query vector to test joins
+and candidate behavior deterministically. Other model adapters fail if called;
+this package does not run model inference or measure relevance quality.
 
 The suite checks:
 
@@ -53,8 +55,24 @@ The suite checks:
   durable acknowledgements before progress advances.
 - File-byte receipts checked under the index writer lease after extraction and
   embedding, including changes while a prepared document waits to commit.
+- Document diversity across long sources, complete late-chunk hydration, owner
+  isolation in lexical and dense retrieval, and literal structured filters.
+- Actual stored-passage navigation and provenance, including sparse chunks and
+  owner constraints, rather than a reconstruction from returned snippets.
+- Complete lexical matching totals, disk-backed identity deduplication, matching
+  facets, index-generation checks, and cooperative cancellation.
+- Streamed complete reports and atomic returned-window reports, source and
+  storage protection, stable metadata ordering, zero-result receipts, and
+  cancellation before publication.
+- Federated rank fusion using the production wire type and merge function,
+  repeated hits within a source, finite representative evidence, deterministic
+  ties, and owner-aware CLI result identities.
+- Legacy schema rebuilds from complete owner-scoped stored text, interrupted
+  staging and directory publication, rollback preservation, and missing or
+  empty full-text storage with existing document rows.
 
 This suite does not qualify model inference, platform extractors, GPU backends,
-the desktop worker adapters or command registration, or the full search engine. Those remain the
+or desktop worker adapters and command registration. Those remain the
 responsibility of the application and platform integration suites. The separate
-search contract package qualifies query parsing and lexical execution.
+search contract package qualifies query parsing and lexical execution; the
+server and extraction packages exercise their production modules independently.

@@ -1,0 +1,79 @@
+{
+  "schema": "crispsorter-system-ocr-panel-v1",
+  "frozenBeforeInference": true,
+  "sourcePlan": "tests/quality/ocr-real-panel.json",
+  "sourcePlanSha256": "298158bfaf26947d067b79753276126e5c68813443bb7652ed1ea26059627c20",
+  "engine": "system_tesseract",
+  "ompThreadLimit": 2,
+  "caseTimeoutSeconds": 180,
+  "packs": [
+    {
+      "name": "deu.traineddata",
+      "revision": "87416418657359cb625c412a48b6e1d6d41c29bd",
+      "url": "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/87416418657359cb625c412a48b6e1d6d41c29bd/deu.traineddata",
+      "bytes": 1525436,
+      "gitBlobSha1": "97ed7b2b60f2771c07040660ef0f6daf596dc7bf",
+      "sha256": "19d219bbb6672c869d20a9636c6816a81eb9a71796cb93ebe0cb1530e2cdb22d"
+    },
+    {
+      "name": "deu_latf.traineddata",
+      "revision": "87416418657359cb625c412a48b6e1d6d41c29bd",
+      "url": "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/87416418657359cb625c412a48b6e1d6d41c29bd/deu_latf.traineddata",
+      "bytes": 6423052,
+      "gitBlobSha1": "11a641044a93413454f75fbb8e05b085bd0b9d8d",
+      "sha256": "7cd1b541e9d3884b9546a7d292c4f349cdb45ff646b4b43166dfc5099a8ad1a1"
+    },
+    {
+      "name": "eng.traineddata",
+      "revision": "87416418657359cb625c412a48b6e1d6d41c29bd",
+      "url": "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/87416418657359cb625c412a48b6e1d6d41c29bd/eng.traineddata",
+      "bytes": 4113088,
+      "gitBlobSha1": "bbef4675053b5b468cdb477053e28b1c698ba08e",
+      "sha256": "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2"
+    },
+    {
+      "name": "ind.traineddata",
+      "revision": "87416418657359cb625c412a48b6e1d6d41c29bd",
+      "url": "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/87416418657359cb625c412a48b6e1d6d41c29bd/ind.traineddata",
+      "bytes": 1122661,
+      "gitBlobSha1": "3013f50cd2af9aceca00e865ed889144865f0848",
+      "sha256": "69786901da87ab8766c1ea7fbb10b28f2110c14da3f6c8f2735df131fba95d88"
+    },
+    {
+      "name": "osd.traineddata",
+      "revision": "87416418657359cb625c412a48b6e1d6d41c29bd",
+      "url": "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/87416418657359cb625c412a48b6e1d6d41c29bd/osd.traineddata",
+      "bytes": 10562727,
+      "gitBlobSha1": "527457ca8f8fe1fda7c2f88bce3c0e4be12be9d0",
+      "sha256": "9cf5d576fcc47564f11265841e5ca839001e7e6f38ff7f7aacf46d15a96b00ff"
+    }
+  ],
+  "cases": [
+    {
+      "id": "en-prose-constitution-13",
+      "language": "eng"
+    },
+    {
+      "id": "de-antiqua-kafka-schloss-211",
+      "language": "deu"
+    },
+    {
+      "id": "de-fraktur-grimm-319",
+      "language": "deu_latf"
+    },
+    {
+      "id": "en-table-climatic-26",
+      "language": "eng"
+    },
+    {
+      "id": "de-degraded-freiligrath-46",
+      "language": "deu_latf"
+    },
+    {
+      "id": "receipt-cord-test-29",
+      "language": "eng+ind"
+    }
+  ],
+  "scope": "All six frozen public pages; actual production System Tesseract adapter with explicit installed language packs and same-run word evidence. No default-engine change or full-desktop qualification.",
+  "decisionRule": "Retain every failure, case score and language setting. Report complete-panel success separately from averages over successful cases. Receipt uses word recall because its reference is partial; confidence remains uncalibrated."
+}

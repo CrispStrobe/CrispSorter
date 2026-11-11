@@ -57,6 +57,8 @@ pub struct StoredChunk {
     pub year: Option<i32>,
     pub headings: String,
     pub text: String,
+    #[serde(default)]
+    pub translated: Option<String>,
     pub start: Option<i32>,
     pub end: Option<i32>,
 }
@@ -70,6 +72,7 @@ pub struct FtsDocument {
     pub headings: String,
     /// Separate entries have unknown source continuity and cannot form phrases.
     pub body_segments: Vec<String>,
+    pub translated: Option<String>,
 }
 
 impl FtsDocument {
@@ -115,7 +118,10 @@ impl FtsDocument {
             year: first.year,
             headings: String::new(),
             body_segments: Vec::new(),
+            translated: chunks.iter().find_map(|chunk|chunk.translated.clone()),
         };
+        ensure!(result.translated.as_ref().map_or(true, |text| text.len() <= MAX_DOCUMENT_BYTES),
+            "Translation exceeds the 64 MiB document limit");
         let mut seen_headings = HashSet::new();
         let mut current_end: Option<usize> = None;
         for chunk in chunks {
@@ -197,7 +203,8 @@ fn build_schema() -> (Schema, Fields) {
     let year = builder.add_i64_field("year", INDEXED);
     let title = builder.add_text_field("title", options.clone());
     let headings = builder.add_text_field("headings", options.clone());
-    let body = builder.add_text_field("body", options);
+    let body = builder.add_text_field("body", options.clone());
+    let body_translated = builder.add_text_field("body_translated", options);
     (
         builder.build(),
         Fields {
@@ -210,7 +217,7 @@ fn build_schema() -> (Schema, Fields) {
                 title,
                 body,
                 headings,
-                body_translated: None,
+                body_translated: Some(body_translated),
             },
         },
     )
@@ -299,11 +306,20 @@ impl FtsStore {
                     && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'),
                 "Invalid stored full-text generation identifier"
             );
-            *result
-                .active
-                .write()
-                .map_err(|_| anyhow!("Full-text generation lock poisoned"))? =
-                Some(Arc::new(Generation::open(&root.join(id))?));
+            let on_disk = Index::open_in_dir(root.join(&id))?.schema();
+            if on_disk == build_schema().0 {
+                *result.active.write().map_err(|_| anyhow!("Full-text generation lock poisoned"))? =
+                    Some(Arc::new(Generation::open(&root.join(id))?));
+            } else {
+                // Only the known previous schema may be upgraded automatically.
+                // Its files and published pointer survive until the new index
+                // has committed and is atomically published by the coordinator.
+                let mut legacy = serde_json::to_value(build_schema().0)?;
+                legacy.as_array_mut().context("Unexpected full-text schema encoding")?
+                    .retain(|field|field.get("name").and_then(|v|v.as_str()) != Some("body_translated"));
+                let legacy: Schema = serde_json::from_value(legacy)?;
+                ensure!(on_disk == legacy, "Published full-text schema is incompatible; existing generations were preserved");
+            }
         }
         Ok(result)
     }
@@ -362,6 +378,7 @@ impl FtsStore {
         let mut db = self.state()?;
         let transaction = db.transaction()?;
         transaction.execute("INSERT INTO metadata(key,value) VALUES('active_generation',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [&sealed.id])?;
+        transaction.execute("INSERT INTO metadata(key,value) VALUES('active_schema_version',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [FTS_SCHEMA_VERSION.to_string()])?;
         transaction.execute("DELETE FROM pending_documents WHERE NOT EXISTS (SELECT 1 FROM pending_deletions WHERE pending_deletions.owner_id=pending_documents.owner_id AND pending_deletions.doc_id=pending_documents.doc_id)", [])?;
         transaction.commit()?;
         *self
@@ -554,20 +571,53 @@ impl FtsStore {
             .ok_or_else(|| anyhow!("Full-text rebuild has not completed"))
     }
 
+    pub(crate) fn snapshot_stamp(&self) -> Result<String> {
+        let active: String = self.state()?.query_row("SELECT value FROM metadata WHERE key='active_generation'", [], |row|row.get(0))?;
+        Ok(format!("{}:{}:{}",self.root.canonicalize()?.display(),active,self.generation()?.index.load_metas()?.opstamp))
+    }
+
     pub fn capabilities(&self) -> Result<SearchCapabilities> {
         Ok(SearchCapabilities {
             api_version: 1,
+            metadata_filter_version: 1,
+            metadata_filter_max_version: crisp_index_protocol::METADATA_FILTER_VERSION,
+            stored_passage_version: crisp_index_protocol::STORED_PASSAGE_VERSION,
+            query_explanation_version: crisp_index_protocol::QUERY_EXPLANATION_VERSION,
+            query_plan_version: 1,
+            complete_search_version: crisp_index_protocol::COMPLETE_SEARCH_VERSION,
+            metadata_schema_version: crisp_index_protocol::METADATA_SCHEMA_VERSION,
+            embedding_query_version: 1,
+            container_members_version: crisp_index_protocol::CONTAINER_MEMBERS_VERSION,
+            metadata_fields: ["owner_id","language","year_min","year_max","ext","tag","tags","source_hash_prefix","doc_id_scope",
+                "parent_dir_prefix","url_domain","audio_duration_min_seconds","audio_duration_max_seconds","image_camera_make","image_camera_model",
+                "prefer_translated_lang","doc_status","mounted_volume_ids"].into_iter().map(str::to_owned).collect(),
             query_language_version: QUERY_LANGUAGE_VERSION,
-            fts_schema_version: FTS_SCHEMA_VERSION,
+            fts_schema_version: 2,
+            active_fts_schema_version: FTS_SCHEMA_VERSION,
             fts_ready: !self.needs_rebuild()? && self.pending()?.is_empty(),
             strict_hybrid_constraints: true,
-            searchable_fields: vec!["title".into(), "body".into(), "headings".into()],
+            searchable_fields: vec!["title".into(), "body".into(), "headings".into(), "translated".into()],
             chunk_boundary_policy: "verified byte offsets join source text; legacy chunks remain separate positional regions".into(),
         })
     }
 
     pub fn prepare(&self, text: &str, filters: &SearchFilters) -> Result<PreparedSearch> {
         self.prepare_optional(Some(text), filters)
+    }
+
+    /// Clause truth from one exact current document; ranges use only the selected passage.
+    pub fn explain_passage(&self, query: &str, owner_id: &str, doc_id: &str, text: &str,
+        edges: crisp_search_query::explanation::PassageEdges)
+        -> Result<crisp_search_query::explanation::QueryEvidence> {
+        let generation = self.generation()?;
+        generation.reader.reload()?;
+        let searcher = generation.reader.searcher();
+        let identity = TermQuery::new(Term::from_field_text(generation.fields.key,
+            &DocumentKey { owner_id: owner_id.into(), doc_id: doc_id.into() }.encoded()), IndexRecordOption::Basic);
+        let addresses = searcher.search(&identity, &TopDocs::with_limit(2))?;
+        ensure!(addresses.len() == 1,
+            "This document has missing or ambiguous full-text postings; refresh its index before explaining it");
+        crisp_search_query::explanation::explain(query, &searcher, &generation.fields.search, addresses[0].1, text, edges)
     }
 
     pub fn prepare_filters(&self, filters: &SearchFilters) -> Result<PreparedSearch> {
@@ -579,6 +629,7 @@ impl FtsStore {
         text: Option<&str>,
         filters: &SearchFilters,
     ) -> Result<PreparedSearch> {
+        filters.validate().map_err(|error| anyhow!(error))?;
         ensure!(
             self.pending()?.is_empty(),
             "Pending full-text writes must be repaired before searching"
@@ -635,6 +686,9 @@ fn index_document(document: &FtsDocument, fields: &Fields) -> Result<TantivyDocu
     doc.add_text(fields.doc_id, &document.key.doc_id);
     doc.add_text(fields.owner, &document.key.owner_id);
     doc.add_text(fields.language, &document.language);
+    if let (Some(field), Some(text)) = (fields.search.body_translated, document.translated.as_deref()) {
+        doc.add_text(field, text);
+    }
     if let Some(year) = document.year {
         doc.add_i64(fields.year, year as i64);
     }
@@ -694,15 +748,21 @@ pub struct PreparedSearch {
 
 impl PreparedSearch {
     pub fn hits(&self, limit: usize) -> Result<Vec<FtsHit>> {
-        if limit == 0 {
-            return Ok(Vec::new());
-        }
         ensure!(limit <= 1000, "Full-text candidate limit exceeds 1000");
+        self.hits_page(limit, 0)
+    }
+
+    pub fn document_count(&self) -> usize { self.searcher.num_docs() as usize }
+
+    /// Keep one pinned lexical snapshot while applying scalar metadata filters.
+    pub fn hits_page(&self, limit: usize, offset: usize) -> Result<Vec<FtsHit>> {
+        if limit == 0 { return Ok(Vec::new()); }
+        ensure!(offset.checked_add(limit).is_some(), "Full-text page range overflow");
         let mut snippets =
             SnippetGenerator::create(&self.searcher, self.query.as_ref(), self.fields.search.body)?;
         snippets.set_max_num_chars(400);
         self.searcher
-            .search(&self.query, &TopDocs::with_limit(limit))?
+            .search(&self.query, &TopDocs::with_limit(limit).and_offset(offset))?
             .into_iter()
             .map(|(score, address)| {
                 let doc: TantivyDocument = self.searcher.doc(address)?;

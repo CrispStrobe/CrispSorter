@@ -30,6 +30,17 @@ use lancedb::{
 };
 
 const MAX_AFFECTED_CHUNKS: usize = 65_536;
+#[path="container_members.rs"]
+mod container_members;
+pub use container_members::validate_container_batch;
+#[path = "complete_search.rs"]
+mod complete_search;
+pub use complete_search::CompleteError;
+#[path = "../../shared/stored_passage.rs"]
+mod stored_passage;
+pub use stored_passage::PassageReadError;
+#[path = "../../shared/query_explanation.rs"]
+mod query_explanation;
 
 #[derive(Debug)]
 pub struct AmbiguousDocument;
@@ -103,6 +114,18 @@ pub fn build_lance_schema(dims: usize) -> Arc<Schema> {
             true,
         ),
         Field::new("metadata_json", DataType::Utf8, true),
+        Field::new("parent_dir", DataType::Utf8, true),
+        Field::new("volume_id", DataType::Utf8, true),
+        Field::new("url", DataType::Utf8, true),
+        Field::new("text_translated", DataType::Utf8, true),
+        Field::new("text_translated_lang", DataType::Utf8, true),
+        Field::new("doc_status", DataType::Utf8, true),
+        Field::new("image_camera_make", DataType::Utf8, true),
+        Field::new("image_camera_model", DataType::Utf8, true),
+        Field::new("audio_duration_seconds", DataType::Float64, true),
+        Field::new("container_member", DataType::Utf8, true),
+        Field::new("container_source", DataType::Utf8, true),
+        Field::new("container_coverage", DataType::Utf8, true),
     ]))
 }
 
@@ -114,6 +137,50 @@ pub fn build_lance_schema(dims: usize) -> Arc<Schema> {
 // `../../crisp-index-protocol/src/lib.rs` for per-field documentation.
 
 // ── VectorStore ───────────────────────────────────────────────────────────────
+
+fn parent_directory(uri: &str) -> String {
+    crate::source_paths::source_parent_directory(uri)
+        .unwrap_or_else(||uri.rfind('/').map(|position|uri[..position].to_owned()).unwrap_or_default())
+}
+
+/// Add only the explicitly versioned optional metadata columns. Existing core
+/// fields and embedding dimensions must match before any storage mutation.
+async fn migrate_metadata_schema(table: &Table, dims: usize) -> Result<()> {
+    let expected = build_lance_schema(dims);
+    let existing = table.schema().await?;
+    let additional = ["parent_dir", "volume_id", "url", "text_translated", "text_translated_lang",
+        "doc_status", "image_camera_make", "image_camera_model", "audio_duration_seconds",
+        "container_member", "container_source", "container_coverage"];
+    for field in existing.fields() {
+        ensure!(expected.field_with_name(field.name()).is_ok_and(|target| target == field.as_ref()),
+            "Stored vector schema contains an incompatible field {}; existing data was preserved", field.name());
+    }
+    let mut missing = Vec::new();
+    for field in expected.fields() {
+        if existing.field_with_name(field.name()).is_err() {
+            ensure!(additional.contains(&field.name().as_str()), "Stored vector schema is missing core field {}",field.name());
+            missing.push(field.as_ref().clone());
+        }
+    }
+    if !missing.is_empty() {
+        let output_schema=Arc::new(Schema::new(missing));
+        let mapped_schema=output_schema.clone();
+        table.add_columns(lancedb::table::NewColumnTransform::BatchUDF(lance::dataset::BatchUDF {
+            output_schema, result_checkpoint:None,
+            mapper:Box::new(move |batch| {
+                let uris=batch.column_by_name("location_uri").and_then(|column|column.as_any().downcast_ref::<StringArray>())
+                    .ok_or_else(||arrow_schema::ArrowError::SchemaError("Missing source URI during metadata migration".into()))?;
+                let columns=mapped_schema.fields().iter().map(|field| {
+                    if field.name()=="parent_dir" {
+                        Arc::new(StringArray::from(uris.iter().map(|uri|uri.map(parent_directory)).collect::<Vec<_>>())) as arrow_array::ArrayRef
+                    } else { arrow_array::new_null_array(field.data_type(),batch.num_rows()) }
+                }).collect();
+                Ok(RecordBatch::try_new(mapped_schema.clone(),columns)?)
+            }),
+        }), Some(vec!["location_uri".into()])).await.context("Adding and backfilling optional remote metadata columns")?;
+    }
+    Ok(())
+}
 
 pub struct VectorStore {
     _db: Connection,
@@ -147,6 +214,7 @@ impl VectorStore {
             Err(e) => return Err(e).context("open LanceDB table"),
         };
 
+        migrate_metadata_schema(&table, dims).await?;
         ensure!(table.schema().await?.as_ref() == build_lance_schema(dims).as_ref(),
             "Stored vector schema or embedding dimension differs from this server; preserve the existing data and use a compatible configuration");
         Ok(VectorStore {
@@ -167,6 +235,9 @@ impl VectorStore {
         chunks: &[IngestChunk],
     ) -> Result<(Vec<IngestChunk>, Vec<SourceRemoval>)> {
         let mut normalized = chunks.to_vec();
+        for chunk in &mut normalized {
+            if chunk.parent_dir.is_none() { chunk.parent_dir = Some(parent_directory(&chunk.location_uri)); }
+        }
         let mut groups = BTreeMap::<(String, String, String), Vec<usize>>::new();
         for (position, chunk) in chunks.iter().enumerate() {
             if let Some(version) = chunk.source_identity_version {
@@ -503,6 +574,27 @@ impl VectorStore {
         Ok(batches)
     }
 
+    /// Resolve scalar predicates against every chunk without loading bodies or vectors.
+    async fn matching_keys_for_filters(&self, keys: &[DocumentKey], filters: &SearchFilters) -> Result<HashSet<DocumentKey>> {
+        if keys.is_empty() { return Ok(HashSet::new()); }
+        let mut predicate = keys_sql(keys);
+        if let Some(extra) = filters.to_lance_sql() {
+            predicate = format!("({predicate}) AND ({extra})");
+        }
+        let mut stream = self.table.query().only_if(predicate)
+            .select(Select::columns(&["owner_id", "doc_id"]))
+            .execute().await?;
+        let mut allowed = HashSet::new();
+        while let Some(batch) = stream.try_next().await? {
+            let owners = string_column(&batch, "owner_id")?;
+            let ids = string_column(&batch, "doc_id")?;
+            for row in 0..batch.num_rows() {
+                allowed.insert(DocumentKey { owner_id: owners.value(row).into(), doc_id: ids.value(row).into() });
+            }
+        }
+        Ok(allowed)
+    }
+
     async fn keys_for_doc(&self, doc_id: &str) -> Result<Vec<DocumentKey>> {
         let batches: Vec<RecordBatch> = self
             .table
@@ -577,7 +669,7 @@ impl VectorStore {
                 "language",
                 "year",
                 "headings_text",
-                "full_text",
+                "full_text", "text_translated",
                 "chunk_start_char",
                 "chunk_end_char",
             ]))
@@ -705,18 +797,7 @@ impl VectorStore {
         new_uri: &str,
         indexed_at: i64,
     ) -> Result<()> {
-        self.table
-            .update()
-            .only_if(keys_sql(keys))
-            .column("location_uri", format!("'{}'", sql_escape(new_uri)))
-            .column(
-                "indexed_at",
-                format!("timestamp '{}'", iso_from_ms(indexed_at)),
-            )
-            .execute()
-            .await
-            .context("Update scoped document location")?;
-        Ok(())
+        self.update_container_locations(keys,new_uri,indexed_at).await
     }
 
     /// Total row count.
@@ -760,6 +841,7 @@ pub struct SearchIndex {
     pub vector: Arc<VectorStore>,
     pub fts: Arc<FtsStore>,
     gate: tokio::sync::Mutex<()>,
+    complete: Arc<complete_search::CompleteRegistry>,
 }
 
 impl SearchIndex {
@@ -768,6 +850,7 @@ impl SearchIndex {
             vector,
             fts,
             gate: tokio::sync::Mutex::new(()),
+            complete: Arc::new(complete_search::CompleteRegistry::default()),
         }
     }
 
@@ -804,6 +887,28 @@ impl SearchIndex {
         self.fts.capabilities()
     }
 
+    /// Return one exact owner's stored chunk after repairing pending writes.
+    pub async fn read_passage(&self, request: &crisp_index_protocol::StoredPassageRequest) -> Result<crisp_index_protocol::StoredPassage> {
+        request.validate().map_err(|error| anyhow!(error))?;
+        let _guard = self.read_guard().await?;
+        stored_passage::read_passage(&self.vector.table, &request.doc_id, Some(&request.owner_id), request.chunk_index).await
+    }
+
+    /// Read source text and explain current postings under the same consistent index lease.
+    pub async fn explain_passage(&self, request: &crisp_index_protocol::QueryExplanationRequest)
+        -> Result<crisp_index_protocol::QueryExplanation> {
+        query_explanation::validate_request(request)?;
+        let _guard = self.read_guard().await?;
+        let passage = stored_passage::read_passage(&self.vector.table, &request.doc_id,
+            Some(&request.owner_id), request.chunk_index).await?;
+        let evidence = if request.mode == "vector" { None } else {
+            Some(self.fts.explain_passage(&request.lexical_query, &request.owner_id, &request.doc_id, &passage.text,
+                crisp_search_query::explanation::PassageEdges { start:passage.start_char==Some(0),
+                    end:passage.next_chunk_index.is_none() && !passage.truncated })?)
+        };
+        query_explanation::response(request, passage, evidence)
+    }
+
     /// Validate all syntax and actual dictionary expansions before model work.
     pub async fn validate_query(&self, query: &str, filters: &SearchFilters) -> Result<()> {
         let _guard = self.gate.lock().await;
@@ -818,7 +923,7 @@ impl SearchIndex {
         }
         let _guard = self.gate.lock().await;
         self.repair_locked().await?;
-        let (chunks, removals) = self.vector.resolve_source_identities(&batch.chunks).await?;
+        let (chunks, removals) = self.vector.resolve_container_group(batch).await?;
         let mut write = self
             .vector
             .prepare_upsert_scoped(&chunks, &removals)
@@ -885,6 +990,7 @@ impl SearchIndex {
         if keys.is_empty() {
             return Ok(());
         }
+        let keys=self.vector.expand_member_deletion_keys(&keys).await?;
         self.fts
             .mark_pending_delete(&keys, self.fts.next_write_timestamp()?)?;
         self.vector.delete_keys(&keys).await?;
@@ -956,6 +1062,33 @@ impl SearchIndex {
         ))
     }
 
+    /// Metadata predicates apply before result limits, including matches beyond
+    /// the first lexical page. The pinned reader is shared across every page.
+    async fn filtered_fts_hits(&self, prepared: &PreparedSearch, filters: &SearchFilters, wanted: usize) -> Result<Vec<FtsHit>> {
+        if !filters.needs_metadata_filter_version() { return prepared.hits(wanted); }
+        let mut hits = Vec::with_capacity(wanted);
+        let mut offset = 0usize;
+        let total = prepared.document_count();
+        while offset < total && hits.len() < wanted {
+            let page_size = offset.max(wanted.clamp(128, 512)).min(4096).min(total - offset);
+            let page = prepared.hits_page(page_size, offset)?;
+            let exhausted = page.len() < page_size;
+            offset += page.len();
+            for group in page.chunks(512) {
+                let keys: Vec<_> = group.iter().map(|hit| hit.key.clone()).collect();
+                let allowed = self.vector.matching_keys_for_filters(&keys, filters).await?;
+                for hit in group {
+                    if allowed.contains(&hit.key) {
+                        hits.push(hit.clone());
+                        if hits.len() == wanted { return Ok(hits); }
+                    }
+                }
+            }
+            if exhausted { break; }
+        }
+        Ok(hits)
+    }
+
     pub async fn search_text(
         &self,
         query: &str,
@@ -966,10 +1099,11 @@ impl SearchIndex {
             return Ok(Vec::new());
         }
         ensure!(limit <= 200, "Result limit exceeds 200");
+        filters.validate().map_err(|error| anyhow!(error))?;
         let _guard = self.gate.lock().await;
         self.repair_locked().await?;
         let prepared = self.fts.prepare(query, filters)?;
-        let hits = prepared.hits(limit)?;
+        let hits = self.filtered_fts_hits(&prepared, filters, limit).await?;
         let scores = hits
             .iter()
             .map(|hit| (hit.key.clone(), hit.score))
@@ -987,6 +1121,7 @@ impl SearchIndex {
             return Ok(Vec::new());
         }
         ensure!(limit <= 200, "Result limit exceeds 200");
+        filters.validate().map_err(|error| anyhow!(error))?;
         validate_embedding(embedding, self.vector.dims)?;
         let _guard = self.gate.lock().await;
         self.repair_locked().await?;
@@ -1018,16 +1153,29 @@ impl SearchIndex {
         filters: &SearchFilters,
         limit: usize,
     ) -> Result<Vec<SearchHit>> {
-        if limit == 0 {
-            return Ok(Vec::new());
-        }
+        let plan = crisp_search_query::query_plan::plan_query(query, crisp_search_query::query_plan::QueryIntent::Advanced)?;
+        self.search_hybrid_with_plan(&plan, embedding, filters, limit).await
+    }
+
+    /// Run a prepared intent without mistaking generated OR clauses for user
+    /// constraints. Metadata predicates always remain binding in every channel.
+    pub async fn search_hybrid_with_plan(
+        &self,
+        plan: &crisp_search_query::query_plan::QueryPlan,
+        embedding: &[f32],
+        filters: &SearchFilters,
+        limit: usize,
+    ) -> Result<Vec<SearchHit>> {
+        let query = plan.lexical_query.as_str();
+        if limit == 0 { return Ok(Vec::new()); }
         ensure!(limit <= 200, "Result limit exceeds 200");
-        let constrained = crisp_search_query::has_explicit_syntax(query)?;
+        filters.validate().map_err(|error| anyhow!(error))?;
+        let constrained = plan.requires_lexical_match;
         validate_embedding(embedding, self.vector.dims)?;
         let _guard = self.gate.lock().await;
         self.repair_locked().await?;
         let prepared = self.fts.prepare(query, filters)?;
-        let fts_hits = prepared.hits((limit * 3).min(1000))?;
+        let fts_hits = self.filtered_fts_hits(&prepared, filters, (limit * 3).min(1000)).await?;
         let vec_hits = self
             .vector_candidates(
                 embedding,
@@ -1155,6 +1303,12 @@ fn rrf_merge(
     ranked.into_iter().collect()
 }
 
+fn container_metadata_strings(chunk:&IngestChunk)->Result<[Option<String>;3]> {
+    Ok([chunk.container_member.as_ref().map(serde_json::to_string).transpose()?,
+        chunk.container_source.as_ref().map(serde_json::to_string).transpose()?,
+        chunk.container_coverage.as_ref().map(serde_json::to_string).transpose()?])
+}
+
 fn same_document_metadata(left: &IngestChunk, right: &IngestChunk) -> bool {
     left.title == right.title
         && left.author == right.author
@@ -1165,6 +1319,16 @@ fn same_document_metadata(left: &IngestChunk, right: &IngestChunk) -> bool {
         && left.location_uri == right.location_uri
         && left.source_hash == right.source_hash
         && left.tags == right.tags
+        && left.parent_dir == right.parent_dir
+        && left.volume_id == right.volume_id
+        && left.url == right.url
+        && left.doc_status == right.doc_status
+        && left.image_camera_make == right.image_camera_make
+        && left.image_camera_model == right.image_camera_model
+        && left.container_member == right.container_member
+        && left.container_source == right.container_source
+        && left.container_coverage == right.container_coverage
+        && left.audio_duration_seconds == right.audio_duration_seconds
 }
 
 /// Partial chunk updates still publish one coherent document metadata view.
@@ -1193,6 +1357,12 @@ fn propagate_document_metadata(
         "language",
         "location_uri",
         "source_hash",
+        "parent_dir",
+        "volume_id",
+        "url",
+        "doc_status",
+        "image_camera_make",
+        "image_camera_model",
     ] {
         let old = string_column(batch, name)?;
         let values: Vec<Option<&str>> = metadata
@@ -1206,7 +1376,18 @@ fn propagate_document_metadata(
                     "ext" => Some(chunk.ext.as_str()),
                     "language" => Some(chunk.language.as_str()),
                     "location_uri" => Some(chunk.location_uri.as_str()),
-                    _ => Some(chunk.source_hash.as_str()),
+                    "source_hash" => Some(chunk.source_hash.as_str()),
+                    "parent_dir" => chunk.parent_dir.as_deref(),
+                    "volume_id" => chunk.volume_id.as_deref(),
+                    "url" => chunk.url.as_deref(),
+                    "text_translated" => groups.get(&DocumentKey {owner_id:chunk.owner_id.clone(),doc_id:chunk.doc_id.clone()})
+                        .and_then(|group|group.iter().find_map(|c|c.text_translated.as_deref())),
+                    "text_translated_lang" => groups.get(&DocumentKey {owner_id:chunk.owner_id.clone(),doc_id:chunk.doc_id.clone()})
+                        .and_then(|group|group.iter().find(|c|c.text_translated.is_some())).and_then(|c|c.text_translated_lang.as_deref()),
+                    "doc_status" => chunk.doc_status.as_deref(),
+                    "image_camera_make" => chunk.image_camera_make.as_deref(),
+                    "image_camera_model" => chunk.image_camera_model.as_deref(),
+                    _ => unreachable!(),
                 },
                 None => {
                     if old.is_null(row) {
@@ -1218,6 +1399,16 @@ fn propagate_document_metadata(
             })
             .collect();
         columns[batch.schema().index_of(name)?] = Arc::new(StringArray::from(values));
+    }
+    for (position,name) in ["container_member","container_source","container_coverage"].into_iter().enumerate() {
+        let old=string_column(batch,name)?;
+        let values:Vec<Option<String>>=metadata.iter().enumerate().map(|(row,chunk)| -> Result<_> {
+            match chunk {
+                Some(chunk)=>Ok(container_metadata_strings(chunk)?[position].clone()),
+                None=>Ok((!old.is_null(row)).then(||old.value(row).to_owned())),
+            }
+        }).collect::<Result<_>>()?;
+        columns[batch.schema().index_of(name)?]=Arc::new(StringArray::from(values));
     }
     let year = batch
         .column_by_name("year")
@@ -1239,6 +1430,13 @@ fn propagate_document_metadata(
             })
             .collect::<Vec<_>>(),
     ));
+    let old_audio = batch.column_by_name("audio_duration_seconds")
+        .and_then(|column| column.as_any().downcast_ref::<arrow_array::Float64Array>()).context("Missing audio duration column")?;
+    columns[batch.schema().index_of("audio_duration_seconds")?] = Arc::new(arrow_array::Float64Array::from(
+        metadata.iter().enumerate().map(|(row, chunk)| match chunk {
+            Some(chunk) => chunk.audio_duration_seconds,
+            None => (!old_audio.is_null(row)).then(|| old_audio.value(row)),
+        }).collect::<Vec<_>>()));
     let old_tags = batch
         .column_by_name("tags")
         .and_then(|column| column.as_any().downcast_ref::<arrow_array::ListArray>())
@@ -1280,16 +1478,25 @@ fn keys_sql(keys: &[DocumentKey]) -> String {
     if keys.is_empty() {
         return "false".into();
     }
-    keys.iter()
-        .map(|key| {
-            format!(
-                "(owner_id='{}' AND doc_id='{}')",
-                sql_escape(&key.owner_id),
-                sql_escape(&key.doc_id)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(" OR ")
+    // A left-deep OR for each document can exhaust the SQL planner's stack
+    // for ordinary import or retrieval batches. IN lists keep one owner's
+    // IDs shallow; a balanced tree handles batches spanning many owners.
+    let mut grouped = BTreeMap::<&str, BTreeSet<&str>>::new();
+    for key in keys {
+        grouped.entry(&key.owner_id).or_default().insert(&key.doc_id);
+    }
+    let mut parts: Vec<_> = grouped.into_iter().map(|(owner, ids)| {
+        let ids = ids.into_iter().map(|id| format!("'{}'", sql_escape(id))).collect::<Vec<_>>().join(",");
+        format!("(owner_id='{}' AND doc_id IN ({ids}))", sql_escape(owner))
+    }).collect();
+    while parts.len() > 1 {
+        parts = parts.chunks(2).map(|pair| match pair {
+            [left, right] => format!("({left} OR {right})"),
+            [only] => only.clone(),
+            _ => unreachable!(),
+        }).collect();
+    }
+    parts.pop().expect("nonempty keys")
 }
 
 pub fn validate_embedding(embedding: &[f32], dims: usize) -> Result<()> {
@@ -1310,6 +1517,14 @@ pub fn validate_embedding(embedding: &[f32], dims: usize) -> Result<()> {
 }
 
 pub fn validate_chunk_shape(chunk: &IngestChunk) -> Result<()> {
+    container_members::validate_container_chunk(chunk)?;
+    ensure!(chunk.tags.len() <= 1024 && chunk.tags.iter().all(|v|v.len() <= 1024), "Stored tags exceed supported limits");
+    ensure!([Some(&chunk.location_uri),Some(&chunk.filename),Some(&chunk.ext),Some(&chunk.language),chunk.title.as_ref(),chunk.author.as_ref(),
+        chunk.parent_dir.as_ref(),chunk.volume_id.as_ref(),chunk.url.as_ref(),chunk.text_translated_lang.as_ref(),chunk.doc_status.as_ref(),
+        chunk.image_camera_make.as_ref(),chunk.image_camera_model.as_ref()].into_iter().flatten().all(|v|v.len() <= 16384),
+        "Stored document metadata exceeds 16384 bytes per value");
+    ensure!(chunk.text_translated.as_ref().is_none_or(|value|value.len() <= 64 * 1024 * 1024), "Translated text exceeds 64 MiB");
+    ensure!(chunk.audio_duration_seconds.is_none_or(|value|value.is_finite() && value >= 0.0), "Audio duration must be finite and nonnegative");
     ensure!(
         !chunk.doc_id.is_empty() && chunk.doc_id.len() <= 512,
         "Document identifier must contain 1 to 512 bytes"
@@ -1352,7 +1567,13 @@ pub fn validate_chunk_shape(chunk: &IngestChunk) -> Result<()> {
 
 pub fn validate_chunk(chunk: &IngestChunk, dims: usize) -> Result<()> {
     validate_chunk_shape(chunk)?;
+    if metadata_only_container(chunk) {ensure!(dims>0,"Embedding dimensions must be positive");return Ok(());}
     validate_embedding(&chunk.embedding, dims)
+}
+
+pub fn metadata_only_container(chunk:&IngestChunk)->bool {
+    chunk.embedding.is_empty()&&chunk.full_text.trim().is_empty()
+        &&(chunk.container_source.is_some()||chunk.container_member.is_some())
 }
 
 /// One canonical row per owner/document/chunk, including deterministic ordering
@@ -1484,6 +1705,8 @@ fn stored_chunks(batch: &RecordBatch) -> Result<Vec<StoredChunk>> {
                 year: integer("year", row),
                 headings: string("headings_text", row),
                 text: string("full_text", row),
+                translated: batch.column_by_name("text_translated").and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                    .filter(|c| !c.is_null(row)).map(|c|c.value(row).to_owned()),
                 start: integer("chunk_start_char", row),
                 end: integer("chunk_end_char", row),
             })
@@ -1518,6 +1741,7 @@ fn chunk_to_record_batch(
     dims: usize,
     schema: &Arc<Schema>,
 ) -> Result<RecordBatch> {
+    let container_metadata=container_metadata_strings(chunk)?;
     use arrow_array::builder::Float32Builder;
 
     let now_ms = std::time::SystemTime::now()
@@ -1528,7 +1752,8 @@ fn chunk_to_record_batch(
     // Build FixedSizeList for embedding.
     let mut flat = Float32Builder::new();
     let emb = &chunk.embedding;
-    if emb.len() != dims {
+    let metadata_only=metadata_only_container(chunk);
+    if emb.len() != dims && !metadata_only {
         return Err(anyhow!(
             "embedding length {} != expected dims {}",
             emb.len(),
@@ -1539,12 +1764,14 @@ fn chunk_to_record_batch(
         flat.append_value(v);
     }
     let values_arr = Arc::new(flat.finish());
-    let emb_arr = FixedSizeListArray::new(
+    let emb_arr:arrow_array::ArrayRef = if metadata_only {
+        arrow_array::new_null_array(schema.field_with_name(EMB_FIELD)?.data_type(),1)
+    } else {Arc::new(FixedSizeListArray::new(
         Arc::new(Field::new("item", DataType::Float32, true)),
         dims as i32,
         values_arr,
         None,
-    );
+    ))};
 
     // Tags list column. Protocol exposes `tags` as `Vec<String>` (always
     // present, possibly empty) — no Option unwrap needed.
@@ -1578,7 +1805,7 @@ fn chunk_to_record_batch(
                 .as_deref()])),
             Arc::new(StringArray::from(vec![Some(chunk.full_text.as_str())])),
             Arc::new(StringArray::from(vec![chunk.full_text_md.as_deref()])),
-            Arc::new(emb_arr),
+            emb_arr,
             Arc::new(StringArray::from(vec![None::<&str>])), // embedding_sparse
             Arc::new(StringArray::from(vec![Some("server-stored")])),
             Arc::new(Int32Array::from(vec![chunk.chunk_index])),
@@ -1589,6 +1816,18 @@ fn chunk_to_record_batch(
             Arc::new(StringArray::from(vec![Some(chunk.source_hash.as_str())])),
             Arc::new(tags_builder.finish()),
             Arc::new(StringArray::from(vec![None::<&str>])), // metadata_json
+            Arc::new(StringArray::from(vec![chunk.parent_dir.as_deref()])),
+            Arc::new(StringArray::from(vec![chunk.volume_id.as_deref()])),
+            Arc::new(StringArray::from(vec![chunk.url.as_deref()])),
+            Arc::new(StringArray::from(vec![chunk.text_translated.as_deref()])),
+            Arc::new(StringArray::from(vec![chunk.text_translated_lang.as_deref()])),
+            Arc::new(StringArray::from(vec![chunk.doc_status.as_deref()])),
+            Arc::new(StringArray::from(vec![chunk.image_camera_make.as_deref()])),
+            Arc::new(StringArray::from(vec![chunk.image_camera_model.as_deref()])),
+            Arc::new(arrow_array::Float64Array::from(vec![chunk.audio_duration_seconds])),
+            Arc::new(StringArray::from(vec![container_metadata[0].as_deref()])),
+            Arc::new(StringArray::from(vec![container_metadata[1].as_deref()])),
+            Arc::new(StringArray::from(vec![container_metadata[2].as_deref()])),
         ],
     )?;
 
@@ -1684,7 +1923,26 @@ fn batches_to_results(
                 })
                 .unwrap_or_default();
 
+            let optional = |name: &str| batch.column_by_name(name).and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                .filter(|c| !c.is_null(i)).map(|c| c.value(i).to_owned());
+            let tags = batch.column_by_name("tags").and_then(|c| c.as_any().downcast_ref::<arrow_array::ListArray>())
+                .filter(|c| !c.is_null(i)).map(|c| c.value(i)).and_then(|a| a.as_any().downcast_ref::<StringArray>()
+                    .map(|c|c.iter().flatten().map(str::to_owned).collect())).unwrap_or_default();
             results.push(SearchHit {
+                container_member: optional("container_member").as_deref().map(serde_json::from_str).transpose()?,
+                container_source: optional("container_source").as_deref().map(serde_json::from_str).transpose()?,
+                container_coverage: optional("container_coverage").as_deref().map(serde_json::from_str).transpose()?,
+                parent_dir: optional("parent_dir"),
+                volume_id: optional("volume_id"),
+                url: optional("url"),
+                text_translated: optional("text_translated"),
+                text_translated_lang: optional("text_translated_lang"),
+                doc_status: optional("doc_status"),
+                image_camera_make: optional("image_camera_make"),
+                image_camera_model: optional("image_camera_model"),
+                audio_duration_seconds: batch.column_by_name("audio_duration_seconds").and_then(|c|c.as_any().downcast_ref::<arrow_array::Float64Array>())
+                    .filter(|c|!c.is_null(i)).map(|c|c.value(i)),
+                tags,
                 doc_id,
                 location_uri: loc_col.map(|c| c.value(i).to_owned()).unwrap_or_default(),
                 owner_id: owner_col.map(|c| c.value(i).to_owned()).unwrap_or_default(),

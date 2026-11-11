@@ -21,12 +21,13 @@ arrow-array = { version = "57", default-features = false }
 arrow-schema = { version = "57", default-features = false }
 arrow-select = { version = "57", default-features = false }
 futures-util = "0.3"
+futures = "0.3"
 lancedb = { version = "=0.26.2", default-features = false }
 lance = { version = "2.0.0", default-features = false }
 tokio = { version = "1.50", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
 crisp-index-protocol = { path = "../../crisp-index-protocol" }
 crisp-search-query = { path = "../../crates/crisp-search-query" }
-rusqlite = { version = "0.39", features = ["bundled"] }
+rusqlite = { version = "0.39", features = ["bundled", "hooks"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tantivy = "0.22"

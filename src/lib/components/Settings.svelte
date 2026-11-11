@@ -9,15 +9,15 @@
     import CrispEmbedServiceSettings from './CrispEmbedServiceSettings.svelte';
     import IntendedPurposeGate from './IntendedPurposeGate.svelte';
     import { DEFAULT_PROVIDERS, type LLMProvider, llmClient } from '../llm/client';
+    import { ProviderRequests, providerConfigurationMatches, providerErrorMessage, type ProviderRequest, type ProviderRequestConfig } from '../llm/providerRequests';
+    import { ProviderSaveQueue, prepareProviderSecrets, reconcileProviderSecrets } from '../llm/providerPersistence';
+    import { COST_REPORT_PROVIDERS, costKeyAccount, resolveProviderReportKey, fetchProviderAccountReport } from '../llm/providerCosts';
     import { caps, currentCaps } from '../capabilities';
     import { listConsented, revokeConsent, providerDisplayName } from '$lib/llm/thirdPartyConsent';
     import { buildLicenseConsentDialog, type ModelLicenseInfo } from '$lib/licenseConsentMessage';
     import {
         resolveSecret,
         bulkSetSecrets,
-        makeSentinel,
-        sentinelAccount,
-        llmProviderAccount,
         getSecret,
         setSecret,
         deleteSecret,
@@ -37,40 +37,13 @@
         type CreatedKeychain,
     } from '../secretBackend';
 
-    /**
-     * Walk a providers list, find any plain-text `apiKey` values (i.e.
-     * not already `@keyring/…` sentinels), move them into the OS
-     * keychain in a single bulk call, and return a new list with those
-     * fields rewritten to sentinels.
-     *
-     * Empty / sentinel / non-string apiKeys pass through unchanged.
-     * Returns `{ providers, migrated }` so the caller can decide
-     * whether to persist the rewritten list (the migration is only
-     * useful if we write the sentinels back to settings.json).
-     */
+    const providerSaves = new ProviderSaveQueue();
+
+    /** Store every submitted raw key before any provider settings are written. */
     async function migrateProviderKeysToKeychain(
         list: LLMProvider[]
     ): Promise<{ providers: LLMProvider[]; migrated: number }> {
-        const toMigrate: Array<[string, string]> = [];
-        for (const p of list) {
-            const k = p.apiKey;
-            if (!k || sentinelAccount(k)) continue;
-            // Skip the well-known local-server sentinel strings that
-            // aren't real secrets: 'ollama', 'no-key', '', 'local'.
-            if (k === 'ollama' || k === 'no-key' || k === 'local') continue;
-            toMigrate.push([llmProviderAccount(p.id), k]);
-        }
-        if (toMigrate.length === 0) return { providers: list, migrated: 0 };
-        const stored = await bulkSetSecrets(toMigrate);
-        const storedSet = new Set(stored);
-        const next = list.map((p) => {
-            const account = llmProviderAccount(p.id);
-            if (storedSet.has(account)) {
-                return { ...p, apiKey: makeSentinel(account) };
-            }
-            return p;
-        });
-        return { providers: next, migrated: stored.length };
+        return prepareProviderSecrets(list, bulkSetSecrets);
     }
 
     /**
@@ -536,11 +509,22 @@
 
     // Local Model Management
     let localModels = $state<LocalModel[]>([]);
-    let loadingModels = $state(false);
-    let testingConnection = $state(false);
-    /** Connection-test results per provider, so one provider's result never
-     *  shows on another provider's panel. */
-    let testResults = $state<Record<string, { success: boolean; message: string } | null>>({});
+    const providerRequests = new ProviderRequests();
+    onDestroy(() => providerRequests.dispose());
+    let modelRequests = $state<Record<string, ProviderRequest>>({});
+    let loadingModels = $derived(!!modelRequests[selectedProvider.id]
+        && providerConfigurationMatches(modelRequests[selectedProvider.id].config, selectedProvider));
+    let testingProviders = $state<Record<string, ProviderRequest>>({});
+    let testingConnection = $derived(!!testingProviders[selectedProvider.id]
+        && providerConfigurationMatches(testingProviders[selectedProvider.id].config, selectedProvider, true));
+    let testResults = $state<Record<string, { request: ProviderRequest; success: boolean; message: string }>>({});
+    let testResult = $derived(testResults[selectedProvider.id]
+        && providerConfigurationMatches(testResults[selectedProvider.id].request.config, selectedProvider, true)
+        ? testResults[selectedProvider.id] : null);
+    let modelRefreshErrors = $state<Record<string, { request: ProviderRequest; message: string }>>({});
+    let modelRefreshError = $derived(modelRefreshErrors[selectedProvider.id]
+        && providerConfigurationMatches(modelRefreshErrors[selectedProvider.id].request.config, selectedProvider)
+        ? modelRefreshErrors[selectedProvider.id].message : '');
     let mlxPort = $state(8000);
     let llamacppPort = $state(8080);
     let mlxRunning = $state(false);
@@ -581,6 +565,8 @@
     let mlxReady = $state(false);
     let saveIndicator = $state(false);
     let settingsSaveError = $state('');
+    let providerSavePending = $state(0);
+    let providerSaveNotice = $state('');
     let ocrPersistenceError = $state('');
 
     async function syncBackgroundOcr(): Promise<boolean> {
@@ -1280,16 +1266,18 @@
                 const saved = (savedProviders as LLMProvider[]).find(p => p.id === def.id);
                 return saved ? { ...def, ...saved } : def;
             });
-            // One-time migration: move any plain-text apiKey out of
-            // settings.json into the OS keychain, replace with a sentinel.
-            // Idempotent — entries already on sentinels are no-op.
-            const { providers: migrated, migrated: n } = await migrateProviderKeysToKeychain(merged);
-            providers = migrated;
-            if (n > 0) {
-                // Persist the rewritten list so the plain keys never
-                // touch disk again from this point on.
-                await saveSetting('providers', $state.snapshot(providers));
-                console.log(`secrets: migrated ${n} provider API key(s) to OS keychain`);
+            providers = merged;
+            const submitted = $state.snapshot(providers);
+            try {
+                await providerSaves.run(async () => {
+                    const { providers: migrated, migrated: n } = await migrateProviderKeysToKeychain(submitted);
+                    if (n > 0) await saveSetting('providers', migrated);
+                    providers = reconcileProviderSecrets(providers, submitted, migrated);
+                });
+            } catch (error) {
+                // Keep usable settings and editable drafts if the chosen vault
+                // is unavailable; never persist the unmigrated raw keys again.
+                settingsSaveError = providerErrorMessage(error, 'Provider keys could not be moved to secret storage. Choose or unlock a store, then save again.');
             }
         }
 
@@ -1541,7 +1529,7 @@
         });
 
         if (activeProviderId === 'ollama') {
-            handleRefreshModels();
+            handleRefreshModels('ollama');
         }
 
         // Check if Ollama is already running
@@ -1686,19 +1674,37 @@
         }
     }
 
+    async function saveProviderSettings() {
+        const submitted = $state.snapshot(providers);
+        const submittedActiveId = activeProviderId;
+        providerSavePending += 1;
+        try {
+            return await providerSaves.run(async () => {
+                const { providers: stored } = await migrateProviderKeysToKeychain(submitted);
+                // Persist the captured, sanitized submission. Reading live
+                // drafts here could write a key typed while migration waited.
+                await saveSetting('providers', stored);
+                await saveSetting('activeProviderId', submittedActiveId);
+                providers = reconcileProviderSecrets(providers, submitted, stored);
+                llmClient.setKeys(await resolveAllApiKeys(stored));
+                return { providers: stored, activeProviderId: submittedActiveId };
+            });
+        } finally {
+            providerSavePending -= 1;
+        }
+    }
+
+    function showProviderSaveReceipt(saved: { providers: LLMProvider[]; activeProviderId: string }) {
+        const unchanged = JSON.stringify($state.snapshot(providers)) === JSON.stringify(saved.providers)
+            && activeProviderId === saved.activeProviderId;
+        saveIndicator = unchanged;
+        providerSaveNotice = unchanged ? '' : 'Submitted provider settings were saved. New edits are still unsaved.';
+        if (unchanged) setTimeout(() => saveIndicator = false, 2000);
+    }
+
     // Save all settings without showing the "Gespeichert!" badge
     async function saveSettingsSilent() {
-        // If the user typed a fresh API key into a provider field, the
-        // bound state holds it in plain text. Migrate to keychain before
-        // it lands in settings.json.
-        const { providers: migrated, migrated: n } = await migrateProviderKeysToKeychain(
-            $state.snapshot(providers)
-        );
-        if (n > 0) {
-            providers = migrated;
-        }
-        await saveSetting('providers', $state.snapshot(providers));
-        await saveSetting('activeProviderId', activeProviderId);
+        const providerReceipt = await saveProviderSettings();
         await saveSetting('exportPath', exportPath);
         await saveSetting('exportPathMode', exportPathMode);
         await saveSetting('pathTemplate', pathTemplate);
@@ -1765,7 +1771,7 @@
         await saveSetting('indexBackendType',   indexBackendType);
         await saveSetting('indexRemoteUrl',     indexRemoteUrl);
         await saveSetting('indexRemoteApiKey',  indexRemoteApiKey);
-        if (!await persistFileAssociations()) return;
+        if (!await persistFileAssociations()) throw new Error(fileAssociationsError || 'File associations could not be saved.');
         await saveSetting('indexEmbedderModel', indexEmbedderModel);
         await saveSetting('indexEmbedderBackend', indexEmbedderBackend);
         await saveSetting('indexDevice',        indexDevice);
@@ -1812,11 +1818,11 @@
         await saveSetting('cloudBackupPartitionMax',        cloudBackupPartitionMax);
         await saveSetting('cloudBackupPartitionDepth',      cloudBackupPartitionDepth);
         await saveSetting('indexDataDir',       indexDataDir);
-        llmClient.setKeys(await resolveAllApiKeys(providers));
         llmClient.noThinking = noThinking;
         llmClient.llamacppPort = llamacppPort;
         llmClient.mlxPort = mlxPort;
         i18n.setLanguage(currentLanguage);
+        return providerReceipt;
     }
 
     // ── Round-robin helpers ──────────────────────────────────────────────────
@@ -2528,22 +2534,23 @@
     async function handleSave() {
         settingsSaveError = '';
         saveIndicator = false;
+        providerSaveNotice = '';
         try {
-            await saveSettingsSilent();
-            saveIndicator = true;
-            setTimeout(() => saveIndicator = false, 2000);
+            showProviderSaveReceipt(await saveSettingsSilent());
         } catch (error) {
             settingsSaveError = `Einstellungen wurden nicht vollständig gespeichert: ${String(error)}`;
         }
     }
 
     async function handleSaveProvider() {
-        console.log(`[Settings] Saving provider settings for: ${selectedProvider.name}`);
-        await saveSetting('providers', $state.snapshot(providers));
-        await saveSetting('activeProviderId', activeProviderId);
-        llmClient.setKeys(await resolveAllApiKeys(providers));
-        saveIndicator = true;
-        setTimeout(() => saveIndicator = false, 2000);
+        settingsSaveError = '';
+        saveIndicator = false;
+        providerSaveNotice = '';
+        try {
+            showProviderSaveReceipt(await saveProviderSettings());
+        } catch (error) {
+            settingsSaveError = providerErrorMessage(error, 'Provider settings could not be saved. Your edits are still available; retry after checking secret storage.');
+        }
     }
 
     async function resetToDefaults() {
@@ -2574,63 +2581,76 @@
         if (selected) exportPath = selected as string;
     }
 
-    async function handleRefreshModels() {
-        loadingModels = true;
-        try {
-            const resolvedKey = await resolveSecret(selectedProvider.apiKey);
-            const models = await llmClient.fetchModels(selectedProvider.id, resolvedKey, selectedProvider.baseUrl);
-            selectedProvider.models = models;
-            modelListChecked[selectedProvider.id] = true;
-            if (models.length > 0 && !selectedProvider.selectedModel) {
-                selectedProvider.selectedModel = models[0];
-            }
-            await handleSave();
-        } catch (e: any) {
-            console.error(`Failed to fetch models for ${selectedProvider.id}:`, e);
-            // Do not retry in a loop; the refresh button stays available.
-            modelListChecked[selectedProvider.id] = true;
-        } finally {
-            loadingModels = false;
+    function invalidateProviderRequests(providerId: string, modelOnly = false) {
+        saveIndicator = false;
+        providerSaveNotice = '';
+        providerRequests.invalidate(providerId, modelOnly ? 'connection' : undefined);
+        delete testingProviders[providerId];
+        delete testResults[providerId];
+        if (!modelOnly) {
+            delete modelRequests[providerId];
+            delete modelListChecked[providerId];
+            delete modelRefreshErrors[providerId];
+            delete balanceRequests[providerId];
+            delete balance[providerId];
         }
     }
 
-    /**
-     * Per-provider testing state.  Reading `testingProviders[id]` is the
-     * source of truth for the Test button's disabled state.  The legacy
-     * single `testingConnection` boolean still tracks the active panel
-     * so the spinner icon stays correct; it just no longer locks the
-     * Test buttons across other providers' panels.
-     *
-     * Reported: "testen of providers is blocked on all as long as one
-     * provider test runs" — the global flag was the cause.
-     */
-    let testingProviders = $state<Record<string, boolean>>({});
+    async function handleRefreshModels(providerId = selectedProvider.id) {
+        const provider = providers.find(p => p.id === providerId);
+        if (!provider) return;
+        const request = providerRequests.begin('models', provider);
+        const currentProvider = () => providers.find(p => p.id === request.config.id);
+        modelRequests[provider.id] = request;
+        modelListAttempted[provider.id] = true;
+        delete modelRefreshErrors[provider.id];
+        try {
+            const result = await providerRequests.run(request, currentProvider, resolveSecret,
+                (config, key) => llmClient.fetchModels(config.id, key, config.baseUrl));
+            if (!result.current || !providerRequests.isCurrent(request, currentProvider())) return;
+            const target = currentProvider()!;
+            target.models = result.value;
+            modelListChecked[target.id] = request.config;
+            if (result.value.length > 0 && !target.selectedModel) {
+                target.selectedModel = result.value[0];
+            }
+            await handleSave();
+        } catch (e: any) {
+            if (providerRequests.isCurrent(request, currentProvider())) {
+                modelRefreshErrors[request.config.id] = { request, message: providerErrorMessage(e,
+                    'The model list could not be loaded. Check the endpoint and key, then refresh to retry.') };
+            }
+        } finally {
+            if (modelRequests[request.config.id]?.generation === request.generation) delete modelRequests[request.config.id];
+        }
+    }
 
     async function handleTestConnection() {
-        const pid = selectedProvider.id;
-        testingProviders[pid] = true;
-        testingConnection = true;
-        testResults[pid] = null;
+        const provider = selectedProvider;
+        const request = providerRequests.begin('connection', provider);
+        const currentProvider = () => providers.find(p => p.id === request.config.id);
+        const pid = request.config.id;
+        testingProviders[pid] = request;
+        delete testResults[pid];
         if (selectedModelUnavailable) {
-            testResults[pid] = { success: false, message: `${selectedProvider.selectedModel} is not in ${selectedProvider.name}'s current model list. Choose one of the offered models above.` };
+            testResults[pid] = { request, success: false, message: `${request.config.selectedModel} is not in ${provider.name}'s current model list. Choose one of the offered models above.` };
             delete testingProviders[pid];
-            testingConnection = false;
             return;
         }
         try {
             const prompt = "Reply with 'OK' and nothing else.";
-            const resolvedKey = await resolveSecret(selectedProvider.apiKey);
-            const response = await llmClient.query(selectedProvider.id, selectedProvider.selectedModel, prompt, resolvedKey);
-            testResults[pid] = { success: true, message: `Connected! Response: ${response}` };
+            const result = await providerRequests.run(request, currentProvider, resolveSecret,
+                (config, key) => llmClient.query(config.id, config.selectedModel, prompt, key, 0.3, undefined, undefined, config.baseUrl));
+            if (result.current && providerRequests.isCurrent(request, currentProvider())) {
+                testResults[pid] = { request, success: true, message: `Connected! Response: ${result.value}` };
+            }
         } catch (e: any) {
-            // Tauri/IPC rejections are often plain strings or objects, not
-            // Error instances; an empty message rendered an empty red box.
-            const detail = (e instanceof Error ? e.message : typeof e === 'string' ? e
-                : e?.message ?? (e == null ? '' : JSON.stringify(e)))?.trim();
-            testResults[pid] = { success: false, message: detail || 'The connection test failed without an error message. Check that the server is running and the selected model can answer chat requests.' };
+            if (providerRequests.isCurrent(request, currentProvider())) {
+                testResults[pid] = { request, success: false, message: providerErrorMessage(e,
+                    'The connection test failed without an error message. Check that the server is running and the selected model can answer chat requests.') };
+            }
         } finally {
-            delete testingProviders[pid];
-            testingConnection = false;
+            if (testingProviders[pid]?.generation === request.generation) delete testingProviders[pid];
         }
     }
 
@@ -2900,7 +2920,7 @@
             }
             console.log(`[Settings] Ollama pull complete: ${tag}`);
             delete ollamaPulling[tag];
-            await handleRefreshModels();
+            await handleRefreshModels('ollama');
         } catch(e) {
             console.error('[Settings] Ollama pull failed:', e);
             alert('Pull failed: ' + e);
@@ -2979,13 +2999,15 @@
         }
     }
 
-    /** Providers whose model list was fetched in this session. */
-    let modelListChecked = $state<Record<string, boolean>>({});
+    /** Auto-refresh once per panel; manual refresh is available after edits or errors. */
+    let modelListAttempted = $state<Record<string, boolean>>({});
+    let modelListChecked = $state<Record<string, ProviderRequestConfig>>({});
     const LOCAL_MODEL_PROVIDERS = ['mistralrs', 'llamacpp', 'mlx', 'webllm', 'ort'];
     /** The saved model is missing from the provider's current /models list. */
     let selectedModelUnavailable = $derived(
         !LOCAL_MODEL_PROVIDERS.includes(selectedProvider.id)
         && !!modelListChecked[selectedProvider.id]
+        && providerConfigurationMatches(modelListChecked[selectedProvider.id], selectedProvider)
         && !!selectedProvider.selectedModel
         && (selectedProvider.models?.length ?? 0) > 0
         && !selectedProvider.models!.includes(selectedProvider.selectedModel));
@@ -2996,109 +3018,99 @@
     // Check the selected model against the provider's live /models list once
     // per session, when its panel is opened and it can be queried.
     $effect(() => {
-        const p = selectedProvider;
-        if (!p || LOCAL_MODEL_PROVIDERS.includes(p.id) || modelListChecked[p.id] || loadingModels) return;
+        const p = providers.find(provider => provider.id === selectedProviderId);
+        if (!p || LOCAL_MODEL_PROVIDERS.includes(p.id) || modelListAttempted[p.id]) return;
         if (!['ollama'].includes(p.id) && !p.apiKey) return;
-        untrack(() => { void handleRefreshModels(); });
+        untrack(() => { void handleRefreshModels(p.id); });
     });
 
-    /** What each provider's API can report about money for a key. OpenRouter
-     *  reports the remaining balance; Anthropic and OpenAI report spend
-     *  (cost so far this month) through admin/organization credentials. */
-    const BALANCE_PROVIDERS = ['openrouter', 'anthropic', 'openai'];
-    const COST_REPORT_PROVIDERS = ['anthropic', 'openai'];
-    let balance = $state<Record<string, { text: string; error: boolean; at: number }>>({});
+    /** Credit balances and monthly spend remain separate provider reports. */
+    const BALANCE_PROVIDERS = ['openrouter', ...COST_REPORT_PROVIDERS];
+    let balance = $state<Record<string, { request: ProviderRequest; text: string; error: boolean; at: number }>>({});
+    let balanceRequests = $state<Record<string, ProviderRequest>>({});
+    let balanceBusy = $derived(!!balanceRequests[selectedProvider.id]
+        && providerConfigurationMatches(balanceRequests[selectedProvider.id].config, selectedProvider));
+    let selectedBalance = $derived(balance[selectedProvider.id]
+        && providerConfigurationMatches(balance[selectedProvider.id].request.config, selectedProvider)
+        ? balance[selectedProvider.id] : null);
     let costKeyInput = $state<Record<string, string>>({});
     let costKeySaved = $state<Record<string, boolean>>({});
-    const costKeyAccount = (id: string) => `llm-provider-admin:${id}`;
-    const usd = (n: number) => `$${n.toFixed(2)}`;
-    const monthStart = () => { const d = new Date(); return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)); };
-    const apiError = (body: any, status: number) => body?.error?.message || body?.message || `HTTP ${status}`;
+    let costKeySaving = $state<Record<string, boolean>>({});
+    let costKeyNotices = $state<Record<string, { text: string; error: boolean }>>({});
+    const costKeyStatusSequence = new Map<string, number>();
 
     async function refreshCostKeySaved(id: string) {
         if (!COST_REPORT_PROVIDERS.includes(id)) return;
-        try { costKeySaved[id] = !!(await getSecret(costKeyAccount(id))); } catch { costKeySaved[id] = false; }
+        const sequence = (costKeyStatusSequence.get(id) ?? 0) + 1;
+        costKeyStatusSequence.set(id, sequence);
+        let saved = false;
+        try { saved = !!(await getSecret(costKeyAccount(id))); } catch { /* An unavailable store is not a saved-key receipt. */ }
+        if (costKeyStatusSequence.get(id) === sequence) costKeySaved[id] = saved;
     }
     $effect(() => { const id = selectedProvider?.id; if (id) untrack(() => { void refreshCostKeySaved(id); }); });
 
+    function invalidateProviderBalance(id: string) {
+        providerRequests.invalidate(id, 'balance');
+        delete balanceRequests[id];
+        delete balance[id];
+    }
+
     async function saveCostKey() {
-        const id = selectedProvider.id, value = (costKeyInput[id] ?? '').trim();
+        const id = selectedProvider.id, submitted = costKeyInput[id] ?? '';
+        if (!COST_REPORT_PROVIDERS.includes(id) || costKeySaving[id]) return;
+        const value = submitted.trim();
+        costKeySaving[id] = true;
+        delete costKeyNotices[id];
+        costKeyStatusSequence.set(id, (costKeyStatusSequence.get(id) ?? 0) + 1);
+        invalidateProviderBalance(id);
         try {
-            if (value) await setSecret(costKeyAccount(id), value); else await deleteSecret(costKeyAccount(id));
-            costKeyInput[id] = '';
-            await refreshCostKeySaved(id);
-            balance[id] = { text: value ? 'Admin key saved in the secret store.' : 'Admin key removed.', error: false, at: Date.now() };
-        } catch (e: any) {
-            balance[id] = { text: e instanceof Error ? e.message : String(e), error: true, at: Date.now() };
-        }
-    }
-
-    async function openRouterBalance(p: LLMProvider): Promise<string> {
-        const key = await resolveSecret(p.apiKey);
-        if (!key) throw new Error('No API key is saved for this provider.');
-        const base = (p.baseUrl || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
-        const resp = await fetch(`${base}/credits`, { headers: { Authorization: `Bearer ${key}` } });
-        const body = await resp.json().catch(() => null) as any;
-        if (!resp.ok) throw new Error(apiError(body, resp.status));
-        const total = Number(body?.data?.total_credits ?? NaN), used = Number(body?.data?.total_usage ?? NaN);
-        if (!Number.isFinite(total) || !Number.isFinite(used)) throw new Error('The provider did not report a balance.');
-        return `${usd(total - used)} left of ${usd(total)} purchased (${usd(used)} used)`;
-    }
-
-    /** Month-to-date cost from Anthropic's Usage and Cost Admin API. Needs an
-     *  Admin API key or an organization-scoped key; workspace keys are refused. */
-    async function anthropicCost(key: string): Promise<string> {
-        const start = monthStart().toISOString().replace(/\.\d{3}Z$/, 'Z');
-        const endDate = new Date(); endDate.setUTCHours(24, 0, 0, 0);
-        const end = endDate.toISOString().replace(/\.\d{3}Z$/, 'Z');
-        let cents = 0, page: string | null = null;
-        for (let guard = 0; guard < 20; guard++) {
-            const url = `https://api.anthropic.com/v1/organizations/cost_report?starting_at=${start}&ending_at=${end}` + (page ? `&page=${encodeURIComponent(page)}` : '');
-            const resp = await fetch(url, { headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' } });
-            const body = await resp.json().catch(() => null) as any;
-            if (!resp.ok) throw new Error(apiError(body, resp.status));
-            for (const bucket of body?.data ?? []) for (const row of bucket?.results ?? []) cents += Number(row?.amount ?? 0);
-            if (!body?.has_more || !body?.next_page) break;
-            page = body.next_page;
-        }
-        return `${usd(cents / 100)} spent this month (Anthropic does not report a remaining balance)`;
-    }
-
-    /** Month-to-date cost from OpenAI's organization Costs API (admin key). */
-    async function openAiCost(key: string): Promise<string> {
-        const startTime = Math.floor(monthStart().getTime() / 1000);
-        let dollars = 0, page: string | null = null;
-        for (let guard = 0; guard < 20; guard++) {
-            const url = `https://api.openai.com/v1/organization/costs?start_time=${startTime}&limit=31` + (page ? `&page=${encodeURIComponent(page)}` : '');
-            const resp = await fetch(url, { headers: { Authorization: `Bearer ${key}` } });
-            const body = await resp.json().catch(() => null) as any;
-            if (!resp.ok) throw new Error(apiError(body, resp.status));
-            for (const bucket of body?.data ?? []) for (const row of bucket?.results ?? []) dollars += Number(row?.amount?.value ?? 0);
-            if (!body?.has_more || !body?.next_page) break;
-            page = body.next_page;
-        }
-        return `${usd(dollars)} spent this month (OpenAI does not report a remaining balance)`;
+            await providerSaves.run(async () => {
+                if (value) await setSecret(costKeyAccount(id), value);
+                else await deleteSecret(costKeyAccount(id));
+            });
+            // A delayed vault operation must never clear a newer draft or
+            // permit a report started with the replaced credential to appear.
+            costKeyStatusSequence.set(id, (costKeyStatusSequence.get(id) ?? 0) + 1);
+            costKeySaved[id] = !!value;
+            const unchanged = (costKeyInput[id] ?? '') === submitted;
+            if (unchanged) costKeyInput[id] = '';
+            invalidateProviderBalance(id);
+            costKeyNotices[id] = { text: (value ? 'Admin key saved in the secret store.' : 'Admin key removed.')
+                + (unchanged ? '' : ' New edits are still unsaved.'), error: false };
+        } catch (cause) {
+            costKeyNotices[id] = { text: providerErrorMessage(cause, 'The admin key could not be saved. Your edits are still available.'), error: true };
+        } finally { delete costKeySaving[id]; }
     }
 
     async function checkBalance() {
-        const p = selectedProvider;
+        if (costKeySaving[selectedProvider.id]) return;
+        const request = providerRequests.begin('balance', selectedProvider);
+        const currentProvider = () => providers.find(p => p.id === request.config.id);
+        const assertCurrent = () => {
+            if (!providerRequests.isCurrent(request, currentProvider())) throw new Error('The provider report request was superseded.');
+        };
+        balanceRequests[request.config.id] = request;
+        delete balance[request.config.id];
+        let usingAdminKey = false;
         try {
-            let text: string;
-            if (p.id === 'openrouter') text = await openRouterBalance(p);
-            else {
-                const admin = await getSecret(costKeyAccount(p.id)).catch(() => null);
-                const key = admin || await resolveSecret(p.apiKey);
-                if (!key) throw new Error('No API key is saved for this provider.');
-                try {
-                    text = p.id === 'anthropic' ? await anthropicCost(key) : await openAiCost(key);
-                } catch (e: any) {
-                    const reason = e instanceof Error ? e.message : String(e);
-                    throw new Error(admin ? reason : `${reason} Cost reports need an admin or organization-scoped key; add one below.`);
-                }
+            const result = await providerRequests.run(request, currentProvider, async () => {
+                const resolved = await resolveProviderReportKey(request.config, getSecret, resolveSecret);
+                usingAdminKey = resolved.admin;
+                return resolved.key;
+            }, (config, key) => fetchProviderAccountReport(config, key, assertCurrent));
+            if (result.current && providerRequests.isCurrent(request, currentProvider())) {
+                balance[request.config.id] = { request, text: result.value, error: false, at: Date.now() };
             }
-            balance[p.id] = { text, error: false, at: Date.now() };
-        } catch (e: any) {
-            balance[p.id] = { text: e instanceof Error ? e.message : String(e), error: true, at: Date.now() };
+        } catch (cause) {
+            if (providerRequests.isCurrent(request, currentProvider())) {
+                let text = providerErrorMessage(cause, 'The provider account report could not be loaded. Try again.');
+                if (COST_REPORT_PROVIDERS.includes(request.config.id) && !usingAdminKey) {
+                    text += ' Cost reports need an admin or organization-scoped key; add one below.';
+                }
+                balance[request.config.id] = { request, text, error: true, at: Date.now() };
+            }
+        } finally {
+            if (balanceRequests[request.config.id]?.generation === request.generation) delete balanceRequests[request.config.id];
         }
     }
 
@@ -5839,14 +5851,17 @@
                     <button class="action-btn small" class:active-btn={activeProviderId === selectedProvider.id} onclick={() => setActiveProvider(selectedProvider.id)}>
                         <Zap size={14} /> {activeProviderId === selectedProvider.id ? i18n.t.batch.selected_status : i18n.t.settings.set_active}
                     </button>
-                    <button class="save-btn" onclick={handleSaveProvider}>{i18n.t.settings.save_all}</button>
+                    <button class="save-btn" onclick={handleSaveProvider} disabled={providerSavePending > 0}>{providerSavePending > 0 ? 'Saving…' : i18n.t.settings.save_all}</button>
                 </div>
             </div>
+
+            {#if providerSaveNotice}<p class="hint" role="status">{providerSaveNotice}</p>{/if}
 
             {#if !['mistralrs', 'webllm', 'ort'].includes(selectedProvider.id)}
                 <div class="form-group">
                     <label for="base-url-input-{selectedProvider.id}">{i18n.t.settings.base_url}</label>
-                    <input id="base-url-input-{selectedProvider.id}" type="text" bind:value={selectedProvider.baseUrl} />
+                    <input id="base-url-input-{selectedProvider.id}" type="text" bind:value={selectedProvider.baseUrl}
+                        oninput={() => invalidateProviderRequests(selectedProvider.id)} />
                 </div>
             {/if}
 
@@ -5855,7 +5870,8 @@
                     <input type="text" name="username" value="api-key" style="display:none;" autocomplete="username" />
                     <div class="form-group">
                         <label for="api-key-input-{selectedProvider.id}">{i18n.t.settings.api_key}</label>
-                        <input id="api-key-input-{selectedProvider.id}" type="password" name="password" bind:value={selectedProvider.apiKey} autocomplete="current-password" />
+                        <input id="api-key-input-{selectedProvider.id}" type="password" name="password" bind:value={selectedProvider.apiKey} autocomplete="current-password"
+                            oninput={() => invalidateProviderRequests(selectedProvider.id)} />
                     </div>
                 </form>
             {/if}
@@ -5864,26 +5880,30 @@
             <div class="form-group">
                 <label for="model-select-input-{selectedProvider.id}">{i18n.t.settings.select_model}</label>
                 <div class="input-with-action">
-                    <select id="model-select-input-{selectedProvider.id}" bind:value={selectedProvider.selectedModel} class="styled-select" onchange={() => handleSave()}>
+                    <select id="model-select-input-{selectedProvider.id}" bind:value={selectedProvider.selectedModel} class="styled-select"
+                        onchange={(event) => { selectedProvider.selectedModel = event.currentTarget.value; invalidateProviderRequests(selectedProvider.id, true); void handleSave(); }}>
                         <option value="">-- {i18n.t.settings.select_model} --</option>
                         {#each availableModels as model}
                             <option value={model}>{model.split(/[\\/]/).pop()}</option>
                         {/each}
                     </select>
                     {#if selectedProvider.id !== 'mistralrs'}
-                        <button class="action-btn small" onclick={handleRefreshModels} disabled={loadingModels} aria-label={i18n.t.settings.action_refresh_models}>
+                        <button class="action-btn small" onclick={() => handleRefreshModels()} disabled={loadingModels} aria-label={i18n.t.settings.action_refresh_models}>
                             <RefreshCw size={14} class={loadingModels ? "loader-spin" : ""} />
                         </button>
                     {/if}
                 </div>
             </div>
             {/if}
+            {#if modelRefreshError}
+                <p class="hint" role="alert" style="color:#f87171;">{modelRefreshError}</p>
+            {/if}
             {#if selectedModelUnavailable}
                 <div class="model-unavailable" role="alert">
                     <p><strong>{selectedProvider.selectedModel}</strong> is no longer offered by {selectedProvider.name}.
                         Choose one of the models it currently lists:</p>
                     <select aria-label="Replacement model" class="styled-select"
-                        onchange={(e) => { const v = (e.currentTarget as HTMLSelectElement).value; if (v) { selectedProvider.selectedModel = v; void handleSave(); } }}>
+                        onchange={(e) => { const v = (e.currentTarget as HTMLSelectElement).value; if (v) { invalidateProviderRequests(selectedProvider.id, true); selectedProvider.selectedModel = v; void handleSave(); } }}>
                         <option value="">-- {i18n.t.settings.select_model} --</option>
                         {#each selectedProvider.models ?? [] as model}<option value={model}>{model}</option>{/each}
                     </select>
@@ -5903,9 +5923,9 @@
                 <div class="actions">
                     <button class="action-btn test-btn"
                             onclick={handleTestConnection}
-                            disabled={!!testingProviders[selectedProvider.id] || !selectedProvider.selectedModel}>
-                        <span class={testingProviders[selectedProvider.id] ? "loader-spin" : ""}>
-                            {#if testingProviders[selectedProvider.id]}<Loader2 size={16} />{:else}<CheckCircle size={16} />{/if}
+                            disabled={testingConnection || !selectedProvider.selectedModel}>
+                        <span class={testingConnection ? "loader-spin" : ""}>
+                            {#if testingConnection}<Loader2 size={16} />{:else}<CheckCircle size={16} />{/if}
                         </span>
                         {i18n.t.settings.test_connection}
                     </button>
@@ -5914,10 +5934,10 @@
                     <div class="balance-row">
                         {#if BALANCE_PROVIDERS.includes(selectedProvider.id)}
                             <button class="action-btn secondary" onclick={checkBalance}
-                                disabled={!selectedProvider.apiKey && !costKeySaved[selectedProvider.id]}>
-                                {selectedProvider.id === 'openrouter' ? 'Check balance' : 'Check spend this month'}</button>
-                            {#if balance[selectedProvider.id]}
-                                <span role="status" class:balance-error={balance[selectedProvider.id].error}>{balance[selectedProvider.id].text}</span>
+                                disabled={(!selectedProvider.apiKey && !costKeySaved[selectedProvider.id]) || balanceBusy || costKeySaving[selectedProvider.id]}>
+                                {balanceBusy ? 'Checking account report…' : selectedProvider.id === 'openrouter' ? 'Check balance' : 'Check spend this month'}</button>
+                            {#if selectedBalance}
+                                <span role="status" class:balance-error={selectedBalance.error}>{selectedBalance.text}</span>
                             {/if}
                         {:else}
                             <span class="hint">{selectedProvider.name}'s API does not report a balance or spend for an API key; see the provider's console.</span>
@@ -5930,13 +5950,19 @@
                             <input id="cost-key-{selectedProvider.id}" type="password" autocomplete="off"
                                 placeholder={selectedProvider.id === 'anthropic' ? 'sk-ant-admin01-… or an organization-scoped key' : 'sk-admin-…'}
                                 bind:value={costKeyInput[selectedProvider.id]} />
-                            <button class="action-btn secondary" type="submit">{costKeyInput[selectedProvider.id]?.trim() ? 'Save' : 'Remove'}</button>
+                            <button class="action-btn secondary" type="submit" disabled={costKeySaving[selectedProvider.id]}>
+                                {costKeySaving[selectedProvider.id] ? 'Saving…' : costKeyInput[selectedProvider.id]?.trim() ? 'Save' : 'Remove'}</button>
                         </form>
+                        <p class="hint">Cost reports use {selectedProvider.id === 'anthropic' ? 'api.anthropic.com' : 'api.openai.com'} with the separate admin key when saved.</p>
+                        {#if costKeyNotices[selectedProvider.id]}
+                            <p role={costKeyNotices[selectedProvider.id].error ? 'alert' : 'status'} class="hint">
+                                {costKeyNotices[selectedProvider.id].text}
+                            </p>
+                        {/if}
                     {/if}
                 {/if}
                 <IntendedPurposeGate blocking={false} />
-                {#if testResults[selectedProvider.id]}
-                    {@const testResult = testResults[selectedProvider.id]!}
+                {#if testResult}
                     <div class="test-result-box" class:success={testResult.success} class:error={!testResult.success}>
                         {#if testResult.success}<AiGeneratedBadge compact />{/if}
                         <span>{testResult.message}</span>
@@ -5965,7 +5991,7 @@
                                     <Rocket size={14} /> {i18n.t.settings.ollama_start}
                                 </button>
                             {/if}
-                            <button class="action-btn small" onclick={handleRefreshModels} disabled={loadingModels} aria-label={i18n.t.settings.action_fetch_installed_ollama}>
+                            <button class="action-btn small" onclick={() => handleRefreshModels()} disabled={loadingModels} aria-label={i18n.t.settings.action_fetch_installed_ollama}>
                                 <RefreshCw size={14} class={loadingModels ? "loader-spin" : ""} /> {i18n.t.settings.ollama_fetch_installed}
                             </button>
                         </div>

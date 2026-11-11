@@ -3,6 +3,10 @@
 mod fts;
 #[path = "../../crisp-index-server/src/index.rs"]
 mod index;
+#[path = "../../crisp-index-server/src/auth.rs"]
+mod auth;
+#[path = "../../shared/source_paths.rs"]
+mod source_paths;
 #[cfg(test)]
 #[path = "../../crisp-index-protocol/src/lib.rs"]
 mod protocol_contract;
@@ -29,6 +33,20 @@ pub mod embedder {
 }
 #[cfg(test)]
 mod http_contract;
+#[cfg(test)]
+mod remote_client_complete_contract;
+#[cfg(test)]
+mod remote_client_member_contract;
+#[cfg(test)]
+mod retrieval_benchmark;
+#[cfg(test)]
+mod complete_contract;
+#[cfg(test)]
+mod container_contract;
+#[cfg(test)]
+mod passage_contract;
+#[cfg(test)]
+mod explanation_contract;
 #[path = "../../crisp-index-server/src/queue.rs"]
 mod queue;
 #[path = "../../crisp-index-server/src/routes/mod.rs"]
@@ -59,7 +77,7 @@ mod tests {
             language: "en".into(),
             year: Some(2024),
             headings: "Report heading".into(),
-            text: text.into(),
+            text: text.into(), translated: None,
             start,
             end: start.map(|s| s + text.len() as i32),
         }
@@ -197,6 +215,7 @@ mod tests {
             language: Some("en".into()),
             year_min: Some(2024),
             year_max: Some(2024),
+            ..Default::default()
         };
         assert_eq!(
             store.prepare("alpha", &filters).unwrap().hits(1).unwrap()[0].key,
@@ -244,7 +263,6 @@ mod tests {
             "title:",
             "alpha) beta",
             "unknown:foo",
-            "translated:hello",
         ] {
             assert!(
                 store.prepare(query, &Default::default()).is_err(),

@@ -38,6 +38,17 @@ mod tests {
     }
 
     #[test]
+    fn passage_terms_follow_query_structure_without_claiming_expanded_matches() {
+        assert_eq!(literal_body_terms("café AND 東京 NOT draft").unwrap(), ["cafe", "東京"]);
+        assert_eq!(literal_body_terms("title:invoice AND body:(paid OR due) AND NOT headings:draft").unwrap(), ["due", "paid"]);
+        assert_eq!(literal_body_terms("NOT NOT body:paid").unwrap(), ["paid"]);
+        assert_eq!(literal_body_terms(r#"body:("and not" pre/2 x)"#).unwrap(), ["and", "not", "x"]);
+        assert!(literal_body_terms("title:invoice OR headings:renewal OR translated:paid").unwrap().is_empty());
+        assert!(literal_body_terms("pay* OR invoice~1 OR NOT excluded").unwrap().is_empty());
+        assert!(literal_body_terms("paid AND").is_err());
+    }
+
+    #[test]
     fn boolean_complements_and_precedence_match_real_documents() {
         let (index, _dir) = fixture();
         assert_eq!(ids(&index, "red NOT agile"), ["a", "b"]);

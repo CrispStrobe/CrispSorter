@@ -283,7 +283,20 @@ Search for documents. Supports text-only (BM25), vector-only (ANN), or hybrid (R
 | `query_language_version` | after negotiation | grammar version confirmed by `/v1/capabilities` |
 | `owner_id` | no | filter to a specific user's documents |
 | `language` | no | filter by language code (`"en"`, `"de"`, …) |
-| `year_min` / `year_max` | no | filter by publication year |
+| `year_min` / `year_max` | no | inclusive publication years, 1–9999 |
+| `metadata_filter_version` | for the filters below | version 1 for baseline predicates; version 2 for the additional predicates, after capability negotiation |
+| `ext` | no | any of these extensions, without a leading dot; values are lowercased |
+| `tag` | no | one exact tag value, including punctuation |
+| `source_hash_prefix` | no | 1–64 hexadecimal characters; case-insensitive input |
+| `doc_id_scope` | no | restrict to up to 1,000 document IDs; combine with `owner_id` to select an owner |
+| `tags` | no | require every listed exact tag, in addition to `tag` |
+| `parent_dir_prefix` | no | literal folder prefix; wildcard characters stay literal |
+| `url_domain` | no | literal source URL substring, matching the existing desktop filter |
+| `audio_duration_min_seconds` / `audio_duration_max_seconds` | no | finite, nonnegative duration bounds |
+| `image_camera_make` / `image_camera_model` | no | literal camera metadata matching |
+| `prefer_translated_lang` | no | require actual stored translated text in the selected language |
+| `doc_status` | no | exact stored review status |
+| `mounted_volume_ids` | no | recorded volume IDs; null is unrestricted, an empty list retains only unassigned volumes, and a nonempty list also retains its recorded IDs |
 
 **Response 200:**
 ```json
@@ -566,6 +579,32 @@ chunk-boundary behavior. A negotiated `POST /v1/search` includes
 syntax requires a compatible ready server, and clients reject results that do
 not confirm the negotiated version.
 
+For older clients the capability response retains `metadata_filter_version: 1`
+and `fts_schema_version: 2`, advertising their supported baseline semantics.
+The additive `metadata_filter_max_version: 2` and `active_fts_schema_version: 3`
+describe the expanded predicate contract and the actual on-disk full-text
+generation. The manifest and startup readiness checks use the active schema.
+Both version-1 and version-2 requests remain accepted when their predicates fit
+that version; successful responses echo the requested version through
+`x-crisp-metadata-filter-version`. A missing or insufficient requested version
+returns HTTP 409; invalid filter values return HTTP 422. Clients require the
+receipt before using the response. Queries without expanded predicates remain
+compatible with the earlier request shape.
+
+Metadata predicates apply before ranking limits in every search mode. Lexical
+search continues across the pinned full-text snapshot when the first ranked
+page has no eligible documents. Scalar matching projects only owner/document
+identities, and each SQL predicate batch is bounded. This favors correct results
+for restrictive filters; broad lexical queries with very selective metadata can
+still require substantial work. ANN candidate retrieval remains approximate.
+Nullable source folder, URL, volume, audio, camera, translated-text, and review
+metadata are retained on ingestion. Upgrades add these columns atomically;
+legacy local paths receive a host-independent parent-folder backfill. A
+translated-language predicate requires both that language and stored translated
+body text. Volume filtering refers only to the recorded identifiers, not current
+mount liveness on either machine. Client-only model reranking options still
+require an appropriate server implementation.
+
 Run one server per data directory. On upgrade, stop the previous process and
 start the new binary with the same `LANCE_DATA_DIR`. Before accepting requests,
 the server streams all stored chunks into a disk spool, builds and verifies a
@@ -581,8 +620,9 @@ original positional text. Legacy chunks without offsets remain separate
 positional regions: words anywhere in the document are searchable, while a
 phrase or proximity query cannot invent adjacency between unknown boundaries.
 Re-ingest the source with offsets to recover cross-boundary positional matching.
-The server has no translated field; a translated-field query returns an explicit
-error.
+The active generation indexes stored translated text and supports translated
+field queries. An upgrade rebuilds that generation from actual stored content;
+it never invents translations from a language label alone.
 
 Each mutation records a repair intent before atomically replacing its Lance
 rows. Search and metadata reads repair interrupted publication before returning
@@ -594,6 +634,52 @@ Document identifiers can be shared across owners. Delete and location-update
 requests accept `?owner_id=...`. A bare identifier that belongs to multiple owners
 returns HTTP 409 without changing either document. Scoped requests modify only
 the selected owner's rows.
+
+### Complete lexical sessions
+
+Complete counts, facets, and metadata-ordered exports have a separate negotiated
+contract (`complete_search_version: 1`, `metadata_schema_version: 2`). All routes
+use the existing bearer-key middleware. This remains a server-wide credential;
+the owner field is an exact query/session filter, not a per-user authorization
+boundary.
+
+| Route | Purpose |
+| --- | --- |
+| `POST /v1/search/generation` | Capture a generation for the exact version, query, and filters. |
+| `POST /v1/search/complete` | Build a disk-backed matching-document session using a unique request ID and optional expected generation. |
+| `POST /v1/search/complete/page` | Read globally sorted metadata using the returned session ID, generation, offset, limit, and sort. |
+| `POST /v1/search/complete/destination` | Check a report destination against all indexed source locations under the same ready request and generation. |
+| `DELETE /v1/search/complete/:request_id` | Cancel in-flight work or close a retained session, including cancellation arriving before its build. |
+
+The scope is `remote_indexed_documents`. Each owner/document counts once;
+extension, language, year, and tag facets include exact document counts and
+explicit omitted-value counts. Up to 25 values per facet are returned. The
+summary carries the query, complete filters, generation, request/session IDs,
+expiry, matching-document count, and scanned-row count. Every successful route
+confirms `x-crisp-complete-search-version: 1`.
+
+Pages contain at most 200 documents and 4 MiB. They support filename, title,
+year ascending/descending, and location order with deterministic identity ties.
+Clients must validate continuity, identity uniqueness, order, total, generation,
+and scope before publishing a report. Empty results still carry complete scope
+and zero-count metadata. The destination guard scans all indexed sources,
+including sources outside the query and owner filter, so an export cannot
+overwrite a nonmatching source known to the server.
+
+Builds and page/destination work have a 120-second deadline. The server permits
+two builds, eight retained sessions, and up to 1,000,000 matching documents per
+session; sessions expire after 15 minutes. Metadata is spooled to private SQLite
+files, page and per-document metadata sizes are bounded, and cancellation
+interrupts SQLite work. Exceeding a bound fails explicitly. Concurrent writes
+invalidate the generation, requiring the client to count again. Semantic and
+hybrid retrieval remain bounded candidate windows, outside this complete
+lexical contract.
+
+When a client expands lexical synonyms or fuzzy terms before server-side hybrid
+embedding, it negotiates `embedding_query_version: 1` and sends the unchanged
+semantic query in `embedding_query`. The response confirms
+`x-crisp-embedding-query-version`; lexical expansion therefore does not alter
+the text supplied to the embedding model.
 
 ## Storage and HTTP contract tests
 

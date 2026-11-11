@@ -2,7 +2,7 @@
     import { readTextFile, writeTextFile } from '@tauri-apps/plugin-fs';
     import { i18n } from '$lib/i18n.svelte';
 
-    let { path = '' }: { path: string } = $props();
+    let { path = '', readOnly = false }: { path: string; readOnly?: boolean } = $props();
 
     const MAX_BYTES = 512 * 1024;
 
@@ -13,16 +13,22 @@
     let error = $state('');
     let editing = $state(false);
     let saving = $state(false);
+    let sourceEpoch = 0;
 
     $effect(() => {
-        if (!path) return;
+        const source = path;
+        sourceEpoch += 1;
+        let current = true;
         loading = true;
         error = '';
         text = '';
         truncated = false;
+        originalText = ''; editing = false; saving = false;
+        if (!source) { loading = false; return; }
 
-        readTextFile(path)
+        readTextFile(source)
             .then((content) => {
+                if (!current) return;
                 if (content.length > MAX_BYTES) {
                     text = content.slice(0, MAX_BYTES);
                     truncated = true;
@@ -34,25 +40,31 @@
                 loading = false;
             })
             .catch((e: any) => {
+                if (!current) return;
                 error = String(e.message ?? e);
                 loading = false;
             });
+        return () => { current = false; };
     });
+
+    $effect(() => { if (readOnly) editing = false; });
 
     let dirty = $derived(editing && text !== originalText);
 
     async function saveText(): Promise<void> {
-        if (!path || truncated || !dirty || saving) return;
+        if (!path || readOnly || truncated || !dirty || saving) return;
+        const source = path, content = text, epoch = sourceEpoch;
         saving = true;
         error = '';
         try {
-            await writeTextFile(path, text);
-            originalText = text;
-            editing = false;
+            await writeTextFile(source, content);
+            if (epoch !== sourceEpoch) return;
+            originalText = content;
+            editing = text !== content;
         } catch (e: any) {
-            error = String(e?.message ?? e);
+            if (epoch === sourceEpoch) error = String(e?.message ?? e);
         } finally {
-            saving = false;
+            if (epoch === sourceEpoch) saving = false;
         }
     }
 
@@ -69,7 +81,9 @@
         <p class="tv-msg tv-error">{error}</p>
     {:else}
         <div class="tv-toolbar">
-            {#if truncated}
+            {#if readOnly}
+                <span class="tv-trunc">Read-only preview</span>
+            {:else if truncated}
                 <span class="tv-trunc">Preview truncated; editing disabled.</span>
             {:else if editing}
                 <button type="button" onclick={saveText} disabled={!dirty || saving}>

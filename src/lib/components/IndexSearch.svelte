@@ -10,15 +10,17 @@
     import { i18n } from '$lib/i18n.svelte';
     import { searchLabels } from '$lib/search/labels';
     import { activeSearchFilters, defaultSearchFilters, localSearchArguments, normalizeSearchRecipe,
-        restoreSavedSearches, restoreSearchHistory, searchRecipeKey, validateSearchFilters,
+        restoreSavedSearches, restoreSearchHistory, searchRecipeKey, searchRequestKey, searchResultLimitForBackend, validateSearchFilters,
         type SearchFilters, type SearchRecipe, type SavedSearch, type SearchHistoryEntry } from '$lib/search/recipe';
+    import { canCountLexicalMatches, corpusScopeForBackend, lexicalGenerationArguments, lexicalSummaryArguments, lexicalExportArguments, readCorpusReportReceipt, readLexicalSummary, recipeWithCorpusFacet,
+        type CorpusFacet, type LexicalSummary, type CorpusReportFormat, type CorpusReportSort } from '$lib/search/summary';
     const labels = $derived(searchLabels[i18n.lang]);
     import { caps } from '$lib/capabilities';
     import DocumentViewer from './viewer/DocumentViewer.svelte';
     import SearchQueryTools from './SearchQueryTools.svelte';
     import SearchPassage from './SearchPassage.svelte';
     import { buildSearchReport, groupResults, highlightedSnippet, searchReportCsv, searchReportHtml,
-        sortGroups, type ResultSort } from '$lib/search/inspection';
+        sortGroups, resultIdentity, type ResultSort } from '$lib/search/inspection';
     import FieldEvidencePanel from './FieldEvidencePanel.svelte';
     import DocumentDecisionPanel from './DocumentDecisionPanel.svelte';
     import { experimentalCrispEmbed, loadExperimentalCrispEmbed } from '$lib/experimentalCrispEmbed';
@@ -27,6 +29,8 @@
     import { stat } from '@tauri-apps/plugin-fs';
     import { availableDocumentTools, documentToolRequest } from '$lib/workflow';
     import { AUDIO_EXTENSIONS } from '$lib/extractors/index';
+    import { containerBreadcrumb, isContainerMemberUri, readOpenedContainerMember, resultContainerMember, resultContainerCoverage,
+        type OpenedContainerMember } from '$lib/containers';
     import {
         Search, X, ChevronDown, ChevronRight,
         SlidersHorizontal, ExternalLink, Loader2, Clock,
@@ -36,7 +40,7 @@
     import TagCloud from './TagCloud.svelte';
     import { requestBrowserContext } from '$lib/drives/browserContext';
     import { cloudDrivePanel, localPathPanel, remoteSearchPanel, searchResultsPanel } from '$lib/drives/panels';
-    import { localPathFromSearchUri, pathBaseName } from '$lib/drives/browser';
+    import { drivePathFromSearchUri as driveUriParts, localPathFromSearchUri, pathBaseName } from '$lib/drives/browser';
 
     // Strip path → bare catalog filename for the badge label.
     function catalogName(path: string): string {
@@ -81,6 +85,8 @@
         tags?:                 string[];
         // P22.3 — extractive summary generated at ingest time.
         summary?:              string;
+        metadata_json?:        string;
+        container_member?:     unknown;
     }
 
     // P13.5 on-demand translation surface — per-result state tracking
@@ -100,9 +106,16 @@
     // ── State ──────────────────────────────────────────────────────────────────
 
     let query       = $state('');
+    let searchRoot = $state<HTMLDivElement>();
+    let queryInput = $state<HTMLInputElement>();
     let mode        = $state<'hybrid' | 'text' | 'vector'>('hybrid');
+    let queryIntent = $state<'advanced' | 'natural'>('advanced');
     let vectorEnabled = $state(true);
+    let activeBackend = $state<string | null>(null);
     let limit       = $state(20);
+    let resultLimitMaximum = $state<200 | 500>(200);
+    let resultLimitNotice = $state('');
+    const resultLimitOptions = $derived([10, 20, 50, 100, 200, 500].filter(value => value <= resultLimitMaximum));
     let results     = $state<SearchResult[]>([]);
     let compareResults = $state<SearchResult[]>([]);
     let loading     = $state(false);
@@ -159,6 +172,139 @@
     let executedQuery = $state('');
     let searchedAt = $state('');
     let elapsedMs = $state(0);
+    let corpusSummary = $state<LexicalSummary | null>(null);
+    let summaryLoading = $state(false);
+    let summaryNotice = $state('');
+    let summaryRequestId: string | null = null;
+    let summarySequence = 0;
+    let generationCheck: { sequence: number; promise: Promise<boolean> } | null = null;
+    let corpusReportFormat = $state<CorpusReportFormat>('csv');
+    let corpusReportSort = $state<CorpusReportSort>('filename');
+    let corpusExportBusy = $state(false), corpusExportCancelling = $state(false);
+    let corpusExportRequestId = $state<string | null>(null);
+    let corpusExportQuery = $state('');
+    let corpusExportNotice = $state(''), corpusExportError = $state(false);
+    const corpusFacets: { key: CorpusFacet; en: string; de: string }[] = [
+        { key: 'extensions', en: 'File types', de: 'Dateitypen' },
+        { key: 'languages', en: 'Languages', de: 'Sprachen' },
+        { key: 'years', en: 'Publication years', de: 'Publikationsjahre' },
+        { key: 'tags', en: 'Tags', de: 'Tags' },
+    ];
+
+    function clearCorpusSummary(message = ''): void {
+        const requestId = summaryRequestId;
+        summarySequence += 1; summaryRequestId = null;
+        corpusSummary = null; summaryLoading = false; summaryNotice = message;
+        if (requestId) void invoke('index_cancel_search_summary', { requestId }).catch(() => {});
+    }
+
+    async function verifySummaryGeneration(): Promise<boolean> {
+        const snapshot = corpusSummary, recipe = executedRecipe;
+        if (!snapshot || !recipe) return false;
+        const sequence = summarySequence;
+        if (generationCheck?.sequence === sequence) return generationCheck.promise;
+        const check = (async () => {
+            try {
+                const generation = await invoke<string>('index_search_summary_generation', lexicalGenerationArguments(recipe, snapshot.query));
+                if (sequence !== summarySequence || corpusSummary?.generation !== snapshot.generation) return false;
+                if (generation !== snapshot.generation) {
+                    clearCorpusSummary(i18n.lang === 'de' ? 'Index oder Quellenbereich haben sich geändert. Erneut zählen, um aktuelle Gesamtzahlen zu sehen.'
+                        : 'The index or source scope changed. Count again to refresh the totals.');
+                    return false;
+                }
+                return true;
+            } catch (cause) {
+                if (sequence === summarySequence) clearCorpusSummary(String(cause));
+                return false;
+            }
+        })();
+        generationCheck = { sequence, promise: check };
+        try { return await check; }
+        finally { if (generationCheck?.promise === check) generationCheck = null; }
+    }
+
+    async function countAllMatches(): Promise<void> {
+        if (!executedRecipe || !canCountLexicalMatches(executedRecipe, activeBackend) || searchOptionsChanged || corpusExportBusy) return;
+        clearCorpusSummary();
+        const sequence = summarySequence, request = searchRequest;
+        const recipe = normalizeSearchRecipe(executedRecipe), searchedQuery = executedQuery;
+        const scope = corpusScopeForBackend(activeBackend);
+        if (!scope) return;
+        const requestId = crypto.randomUUID();
+        summaryRequestId = requestId; summaryLoading = true;
+        try {
+            const value = await invoke<unknown>('index_search_summary', lexicalSummaryArguments(recipe, searchedQuery, requestId));
+            if (sequence !== summarySequence || request !== searchRequest) return;
+            const summary = readLexicalSummary(value, searchedQuery, scope);
+            const generation = await invoke<string>('index_search_summary_generation', lexicalGenerationArguments(recipe, searchedQuery));
+            if (sequence !== summarySequence || request !== searchRequest) return;
+            if (generation !== summary.generation) throw new Error(i18n.lang === 'de'
+                ? 'Der Index hat sich während der Zählung geändert. Bitte erneut zählen.' : 'The index changed while counting matches. Count again to refresh the totals.');
+            corpusSummary = summary;
+        } catch (cause) {
+            if (sequence === summarySequence && request === searchRequest) summaryNotice = String(cause);
+        } finally {
+            if (sequence === summarySequence) { summaryLoading = false; summaryRequestId = null; }
+        }
+    }
+
+    async function applyCorpusFacet(key: CorpusFacet, value: string): Promise<void> {
+        if (!executedRecipe || searchOptionsChanged || !(await verifySummaryGeneration())) return;
+        try {
+            applyRecipe(recipeWithCorpusFacet(executedRecipe, key, value));
+            await runSearch();
+        } catch (cause) { summaryNotice = String(cause); }
+    }
+
+    async function exportAllMatches(): Promise<void> {
+        if (!executedRecipe || corpusExportBusy || summaryLoading || searchOptionsChanged || !canCountLexicalMatches(executedRecipe, activeBackend)) return;
+        const recipe = normalizeSearchRecipe(executedRecipe), searchedQuery = executedQuery;
+        const format = corpusReportFormat, sort = corpusReportSort;
+        const scope = corpusScopeForBackend(activeBackend);
+        if (!scope) return;
+        corpusExportBusy = true; corpusExportError = false; corpusExportNotice = ''; corpusExportQuery = searchedQuery;
+        try {
+            if (corpusSummary && !(await verifySummaryGeneration())) return;
+            const expectedGeneration = corpusSummary?.generation ?? await invoke<string>('index_search_summary_generation', lexicalGenerationArguments(recipe, searchedQuery));
+            if (typeof expectedGeneration !== 'string' || !expectedGeneration) throw new Error('The active index snapshot could not be captured for export.');
+            const path = await save({ defaultPath: `CrispSorter-all-text-matches-${new Date().toISOString().slice(0, 10)}.${format}`,
+                filters: [{ name: `Complete matching-document report (${format.toUpperCase()})`, extensions: [format] }] });
+            if (!path) return;
+            const requestId = crypto.randomUUID(); corpusExportRequestId = requestId;
+            const receipt = readCorpusReportReceipt(await invoke<unknown>('index_export_lexical_report',
+                lexicalExportArguments(recipe, searchedQuery, { requestId, path, format, sort, expectedGeneration })), format, sort, scope, expectedGeneration);
+            corpusExportNotice = i18n.lang === 'de'
+                ? `${receipt.documents.toLocaleString()} passende Dokumente exportiert: ${receipt.path}`
+                : `Exported all ${receipt.documents.toLocaleString()} matching documents: ${receipt.path}`;
+        } catch (cause) {
+            corpusExportError = !/cancelled/i.test(String(cause));
+            corpusExportNotice = String(cause);
+        } finally { corpusExportBusy = false; corpusExportCancelling = false; corpusExportRequestId = null; }
+    }
+
+    async function cancelCorpusExport(): Promise<void> {
+        const requestId = corpusExportRequestId;
+        if (!requestId || corpusExportCancelling) return;
+        corpusExportCancelling = true;
+        try {
+            const accepted = await invoke<boolean>('index_cancel_search_summary', { requestId });
+            if (corpusExportRequestId !== requestId) return;
+            corpusExportNotice = accepted
+                ? (i18n.lang === 'de' ? 'Export wird abgebrochen …' : 'Cancelling export…')
+                : (i18n.lang === 'de' ? 'Der Bericht wird veröffentlicht. Das endgültige Ergebnis folgt.' : 'The report is being published. Waiting for its final result.');
+        } catch (cause) {
+            if (corpusExportRequestId === requestId) { corpusExportCancelling = false; corpusExportNotice = String(cause); }
+        }
+    }
+
+    onMount(() => {
+        const onFocus = () => { if (corpusSummary) void verifySummaryGeneration(); };
+        window.addEventListener('focus', onFocus);
+        return () => {
+            window.removeEventListener('focus', onFocus); clearCorpusSummary();
+            if (corpusExportRequestId) void invoke('index_cancel_search_summary', { requestId: corpusExportRequestId }).catch(() => {});
+        };
+    });
     let resultSort = $state<ResultSort>('relevance');
     let reportFormat = $state<'json' | 'csv' | 'html'>('html');
     let compactResults = $state(false);
@@ -196,6 +342,7 @@
     let includeUnmounted = $state(false);
     // P23 — search-within-results: doc_id scope from previous results
     let refinementScope = $state<string[]>([]);
+    let ownerScope = $state<string | null>(null);
 
     // P21 — image search via ViT + omni embeddings.
     let imageSearchLoading = $state(false);
@@ -355,11 +502,22 @@
         revealResultsOnNarrowScreen();
         if (!validateFilters()) return;
         const request = ++fedRequest;
+        if (queryIntent === 'natural') {
+            fedLoading = false; fedSearched = true; fedResults = [];
+            fedErrors = { global: mode === 'vector'
+                ? (i18n.lang === 'de'
+                    ? 'Für Alle zuerst Volltext oder Hybrid und anschließend Erweiterte Syntax wählen. Für eine semantische Suche im ausgewählten Index Suchen verwenden.'
+                    : 'For All sources (Alle), first select Full text or Hybrid, then choose Advanced syntax. Use Search for semantic retrieval in the selected index.')
+                : (i18n.lang === 'de'
+                    ? 'Natürliche Sprache wird über Suchen mit dem ausgewählten Index unterstützt. Für Alle bitte Erweiterte Syntax wählen.'
+                    : 'Use Search with the selected index for Natural language. Choose Advanced syntax for All sources.') };
+            return;
+        }
         // The current remote federation wire paths do not carry these
         // options. Never silently broaden an explicitly filtered search.
-        if (filterFuzzy || filterSynonyms || includeUnmounted || smartSearch || refinementScope.length
+        if (filterFuzzy || filterSynonyms || includeUnmounted || smartSearch || refinementScope.length || ownerScope !== null
             || (activeFilterKeys.length > 0 && fedBackendsActive.some(backend => backend !== 'local'))) {
-            fedSearched = true; fedResults = []; fedErrors = { global: labels.remoteUnsupported };
+            fedLoading = false; fedSearched = true; fedResults = []; fedErrors = { global: labels.remoteUnsupported };
             return;
         }
         fedLoading  = true;
@@ -474,6 +632,7 @@
      *  a long-snippet audio hit (already transcribed) hides the
      *  button so we don't re-transcribe perfectly-good rows. */
     function looksUntranscribed(r: SearchResult): boolean {
+        if (isContainerMemberUri(r.location_uri)) return false;
         const ext = (r.ext ?? '').toLowerCase();
         if (!AUDIO_EXTS_SET_SEARCH.has(ext)) return false;
         const snip = (r.snippet ?? '').trim();
@@ -483,6 +642,7 @@
      *  button when an image row has no recognisable OCR text.
      *  Same caveats as looksUntranscribed. */
     function looksUnOcred(r: SearchResult): boolean {
+        if (isContainerMemberUri(r.location_uri)) return false;
         const ext = (r.ext ?? '').toLowerCase();
         if (!IMAGE_EXTS_SET_SEARCH.has(ext)) return false;
         const snip = (r.snippet ?? '').trim();
@@ -536,7 +696,7 @@
     /** Should this row offer the per-file document tools? Image/PDF rows only,
      *  and only when CrispEmbed is linked in (the tools need it). */
     function looksDocToolable(r: SearchResult): boolean {
-        if (!crispembedAvailable) return false;
+        if (!crispembedAvailable || isContainerMemberUri(r.location_uri)) return false;
         const ext = (r.ext ?? '').toLowerCase();
         return IMAGE_EXTS_SET_SEARCH.has(ext) || ext === 'pdf';
     }
@@ -587,7 +747,7 @@
 
     /** Stable key for the translations map. */
     function translationKey(r: SearchResult): string {
-        return `${r.doc_id}:${r.chunk_index}`;
+        return `${resultIdentity(r)}:${r.chunk_index}`;
     }
 
     /** Has a translation finished + succeeded for this result + current target? */
@@ -689,18 +849,42 @@
     // Format detection + rendering is handled entirely by the viewer.
     let previewing = $state<SearchResult | null>(null);
     let previewTab = $state<'original' | 'indexed'>('original');
+    let previewPreference = $state<'original' | 'indexed'>('original');
     let previewCloseButton = $state<HTMLButtonElement>();
     let previewTrigger: HTMLButtonElement | null = null;
+    let memberPreview = $state<OpenedContainerMember | null>(null);
+    let memberPreviewBusy = $state(false);
+    let memberPreviewError = $state('');
+    let memberPreviewAttempt = $state(0);
+
+    $effect(() => {
+        const result = previewing;
+        const tab = previewTab;
+        void memberPreviewAttempt;
+        let current = true;
+        memberPreview = null; memberPreviewError = ''; memberPreviewBusy = false;
+        if (result && tab === 'original' && isContainerMemberUri(result.location_uri)) {
+            memberPreviewBusy = true;
+            void invoke<unknown>('index_open_container_member', { ownerId: result.owner_id, docId: result.doc_id })
+                .then(value => readOpenedContainerMember(value, result))
+                .then(value => { if (current) memberPreview = value; })
+                .catch(cause => { if (current) memberPreviewError = cause instanceof Error ? cause.message : String(cause); })
+                .finally(() => { if (current) memberPreviewBusy = false; });
+        }
+        // Native verification continues, but a late result can never replace
+        // another selected document or reopen a closed preview.
+        return () => { current = false; };
+    });
 
     async function openPreview(r: SearchResult, trigger: HTMLButtonElement) {
-        if (previewing && previewing.doc_id === r.doc_id) { await closePreview(); return; }
+        if (previewing && resultIdentity(previewing) === resultIdentity(r)) { await closePreview(); return; }
         previewTrigger = trigger;
         previewing = r;
-        previewTab = 'original';
+        previewTab = r.chunk_index >= 0 && !r.catalog_source ? previewPreference : 'original';
         await tick();
         // Narrow screens show the preview in place of the result list. Move
         // focus to its close control instead of leaving it on a hidden trigger.
-        if (previewing?.doc_id === r.doc_id && window.matchMedia('(max-width: 800px)').matches) {
+        if (previewing && resultIdentity(previewing) === resultIdentity(r) && window.matchMedia('(max-width: 800px)').matches) {
             previewCloseButton?.focus({ preventScroll: true });
         }
     }
@@ -713,6 +897,11 @@
         if (trigger?.isConnected) trigger.focus();
     }
 
+    async function openResultPreview(result: SearchResult, trigger: HTMLButtonElement) {
+        await openPreview(result, trigger);
+        if (previewing && resultIdentity(previewing) === resultIdentity(result)) previewCloseButton?.focus({ preventScroll: true });
+    }
+
     function revealResultsOnNarrowScreen() {
         if (window.matchMedia('(max-width: 800px)').matches) {
             previewing = null;
@@ -720,10 +909,62 @@
         }
     }
 
+    function clearLocalPreview() {
+        previewing = null;
+        previewTrigger = null;
+    }
+
+    function resultFocusTarget(key: string): HTMLButtonElement | undefined {
+        return Array.from(searchRoot?.querySelectorAll<HTMLButtonElement>('.result-title') ?? [])
+            .find(button => button.dataset.resultKey === key);
+    }
+
+    function focusResult(index: number) {
+        const group = displayedGroups[index];
+        if (!group) return;
+        const target = resultFocusTarget(group.key);
+        target?.focus({ preventScroll: true });
+        target?.scrollIntoView({ block: 'nearest' });
+    }
+
+    function handleWorkspaceKeydown(event: KeyboardEvent) {
+        if (event.defaultPrevented || event.isComposing || !searchRoot?.contains(event.target as Node)) return;
+        const target = event.target as HTMLElement;
+        // Ctrl/⌘ K belongs to the application's quick navigation palette.
+        if (event.ctrlKey !== event.metaKey && event.shiftKey && !event.altKey && event.key.toLowerCase() === 'f') {
+            event.preventDefault(); queryInput?.focus(); queryInput?.select(); return;
+        }
+        if (event.key === 'Escape') {
+            if (showSavedDropdown || showHistory) {
+                showSavedDropdown = false; showHistory = false;
+                event.preventDefault(); queryInput?.focus(); return;
+            }
+            if (previewing && target.closest('.preview-pane')) {
+                event.preventDefault(); void closePreview(); return;
+            }
+        }
+        if (event.altKey && !event.ctrlKey && !event.metaKey && previewing && target.closest('.preview-pane')
+            && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+            event.preventDefault(); movePreview(event.key === 'ArrowDown' ? 1 : -1); return;
+        }
+        if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || loading || error) return;
+        if (target === queryInput && event.key === 'ArrowDown' && displayedGroups.length) {
+            event.preventDefault(); focusResult(0); return;
+        }
+        if (!target.matches('.result-title')) return;
+        const index = displayedGroups.findIndex(group => group.key === target.dataset.resultKey);
+        const next = event.key === 'ArrowDown' ? Math.min(index + 1, displayedGroups.length - 1)
+            : event.key === 'ArrowUp' ? Math.max(index - 1, 0)
+            : event.key === 'Home' ? 0 : event.key === 'End' ? displayedGroups.length - 1 : -1;
+        if (next >= 0) { event.preventDefault(); focusResult(next); }
+    }
+
     async function findByField(tag: string, value: string) {
-        revealResultsOnNarrowScreen();
+        clearLocalPreview();
+        clearCorpusSummary();
         const request = ++searchRequest;
         resetFilters(); searchNotice = ''; displayedRecipeKey = null; imageSearchLoading = false;
+        executedRecipe = null; executedQuery = ''; searchTags = new Set(); batchSelection = new Set();
         loading = true; error = ''; searched = true;
         filterTag = tag; query = value; clearTranslations();
         try {
@@ -780,10 +1021,12 @@
         fuzzy: filterFuzzy, synonyms: filterSynonyms, includeUnmounted,
     });
     const activeFilterKeys = $derived(activeSearchFilters(currentFilters));
-    const searchOptionsChanged = $derived(displayedRecipeKey !== null && displayedRecipeKey !== searchRecipeKey(currentRecipe()));
+    const searchOptionsChanged = $derived(displayedRecipeKey !== null && displayedRecipeKey !== searchRequestKey(currentRecipe()));
 
     function currentRecipe(): SearchRecipe {
-        return normalizeSearchRecipe({ query, mode, limit, filters: currentFilters, smart: smartSearch, docIdScope: refinementScope });
+        return normalizeSearchRecipe({ query, queryIntent, mode, limit, filters: currentFilters, smart: smartSearch, docIdScope: refinementScope, ownerId: ownerScope,
+            view: { sort: resultSort, compact: compactResults, preview: previewPreference, reportFormat,
+                displayTags: [...searchTags], tagCloud: showSearchTagCloud } }, resultLimitMaximum);
     }
 
     function applyFilters(f: SearchFilters): void {
@@ -797,17 +1040,25 @@
     }
 
     function applyRecipe(recipe: SearchRecipe): void {
+        queryIntent = recipe.queryIntent;
         query = recipe.query;
         void runSkeletonSearch(query);
         mode = !vectorEnabled && recipe.mode !== 'text' ? 'text' : recipe.mode;
-        limit = recipe.limit; smartSearch = recipe.smart;
-        refinementScope = [...recipe.docIdScope];
+        limit = Math.min(recipe.limit, resultLimitMaximum); smartSearch = recipe.smart;
+        resultLimitNotice = recipe.limit > limit ? (i18n.lang === 'de'
+            ? `Ergebnislimit für den aktiven Index von ${recipe.limit} auf ${limit} angepasst.`
+            : `Result limit adjusted from ${recipe.limit} to ${limit} for the active index.`) : '';
+        refinementScope = [...recipe.docIdScope]; ownerScope = recipe.ownerId;
         applyFilters(recipe.filters);
+        resultSort = recipe.view.sort; compactResults = recipe.view.compact;
+        previewPreference = recipe.view.preview; reportFormat = recipe.view.reportFormat;
+        searchTags = new Set(recipe.view.displayTags); showSearchTagCloud = recipe.view.tagCloud;
     }
 
     function resetFilters(): void {
         applyFilters(defaultSearchFilters());
         refinementScope = [];
+        ownerScope = null;
         smartSearch = false;
         searchNotice = '';
     }
@@ -865,10 +1116,13 @@
 
     onMount(async () => {
         try {
-            const config = await invoke<{ use_vector?: boolean }>('index_get_config');
+            const config = await invoke<{ use_vector?: boolean; backend_type?: 'local' | 'remote' | 'hybrid' }>('index_get_config');
+            activeBackend = config.backend_type ?? null;
+            resultLimitMaximum = searchResultLimitForBackend(config.backend_type);
+            if (limit > resultLimitMaximum) applyRecipe({ ...currentRecipe(), limit });
             vectorEnabled = config.use_vector !== false;
             if (!vectorEnabled) mode = 'text';
-        } catch { /* use the normal default until configuration is available */ }
+        } catch { /* keep the conservative result window if native configuration is unavailable */ }
         await loadExperimentalCrispEmbed().catch(e => console.warn('Could not restore experimental service settings', e));
         await restoreBookmarks();
         try {
@@ -953,11 +1207,13 @@
         });
         return sortGroups(filtered, resultSort);
     });
-    const selectedDisplayedCount = $derived(displayedGroups.filter(group => batchSelection.has(group.doc_id)).length);
+    const selectedDisplayedCount = $derived(displayedGroups.filter(group => batchSelection.has(group.key)).length);
+    const canRefineDisplayed = $derived(new Set(displayedGroups.map(group => group.owner_id)).size === 1
+        && displayedGroups.every(group => !group.best.catalog_source));
 
     async function exportSearchReport(selectedOnly: boolean) {
         if (!executedRecipe) return;
-        const groups = displayedGroups.filter(group => !selectedOnly || batchSelection.has(group.doc_id));
+        const groups = displayedGroups.filter(group => !selectedOnly || batchSelection.has(group.key));
         if (!groups.length) return;
         // Freeze the executed recipe and current window before opening a dialog.
         // Editing the query or changing selection during export cannot relabel it.
@@ -966,36 +1222,42 @@
             scope: selectedOnly ? 'selected' : 'displayed', returnedDocuments: grouped.length,
             returnedPassages: results.length, groups });
         const format = reportFormat;
+        const protectedSourceUris = [...new Set(groups.flatMap(group => group.chunks.flatMap(hit => {
+            const member = resultContainerMember(hit);
+            return member ? [hit.location_uri, member.rootLocationUri] : [hit.location_uri];
+        })))];
         const content = format === 'json' ? JSON.stringify(report, null, 2)
             : format === 'csv' ? searchReportCsv(report) : searchReportHtml(report);
         await runResultAction('report', async () => {
             const path = await save({ defaultPath: `CrispSorter-search-${report.exportedAt.slice(0, 10)}.${format}`,
                 filters: [{ name: `Search report (${format.toUpperCase()})`, extensions: [format] }] });
             if (!path) return null;
-            await writeFile(path, new TextEncoder().encode(content));
+            await invoke('index_write_search_report', { path, content, protectedSourceUris });
             return `${i18n.lang === 'de' ? 'Suchbericht gespeichert' : 'Search report saved'}: ${path}`;
         }, i18n.lang === 'de' ? 'Suchbericht konnte nicht gespeichert werden' : 'Could not save search report');
     }
 
     async function inspectPassage(result: SearchResult, trigger: HTMLButtonElement) {
-        if (previewing?.doc_id !== result.doc_id) await openPreview(result, trigger);
+        if (!previewing || resultIdentity(previewing) !== resultIdentity(result)) await openPreview(result, trigger);
         else previewing = result;
-        previewTab = 'indexed';
+        previewTab = 'indexed'; previewPreference = 'indexed';
+        previewTrigger = trigger;
     }
 
     function movePreview(delta: number) {
         if (!previewing || !displayedGroups.length) return;
-        const index = displayedGroups.findIndex(group => group.doc_id === previewing?.doc_id);
+        const index = displayedGroups.findIndex(group => group.key === resultIdentity(previewing!));
         const next = displayedGroups[(index + delta + displayedGroups.length) % displayedGroups.length];
         previewing = next.best;
-        if (next.best.chunk_index < 0) previewTab = 'original';
+        previewTrigger = resultFocusTarget(next.key) ?? null;
+        previewTab = next.best.chunk_index >= 0 && !next.best.catalog_source ? previewPreference : 'original';
     }
 
     async function loadMoreResults() {
         if (!executedRecipe || searchOptionsChanged) return;
-        const nextLimit = [50, 100, 200, 500].find(value => value > executedRecipe!.limit);
+        const nextLimit = resultLimitOptions.find(value => value > executedRecipe!.limit);
         if (!nextLimit) return;
-        applyRecipe({ ...executedRecipe, limit: nextLimit });
+        applyRecipe({ ...executedRecipe, limit: nextLimit, view: currentRecipe().view });
         await runSearch();
     }
 
@@ -1009,8 +1271,9 @@
 
     async function runSearch() {
         if (!query.trim()) return;
-        revealResultsOnNarrowScreen();
         if (!validateFilters()) return;
+        clearLocalPreview();
+        clearCorpusSummary();
         const request = ++searchRequest;
         const recipe = currentRecipe();
         const started = performance.now();
@@ -1018,7 +1281,7 @@
         loading = true; error = ''; searchNotice = ''; searched = true;
         resultActionFeedback = null;
         similarHeader = ''; compareResults = []; batchSelection = new Set();
-        clearTranslations(); searchTags = new Set();
+        clearTranslations();
         try {
             let searchQuery = recipe.query;
             if (recipe.smart) {
@@ -1070,7 +1333,7 @@
             executedQuery = searchQuery;
             searchedAt = new Date().toISOString();
             elapsedMs = Math.round(performance.now() - started);
-            displayedRecipeKey = searchRecipeKey(recipe);
+            displayedRecipeKey = searchRequestKey(recipe);
             // Keep the scope visible until explicitly cleared; repeated searches
             // and bookmarks must not silently broaden the user's selection.
             try { await addToHistory(recipe, results.length); }
@@ -1091,7 +1354,8 @@
     let similarHeader = $state('');
 
     async function findSimilar(r: SearchResult) {
-        revealResultsOnNarrowScreen();
+        clearLocalPreview();
+        clearCorpusSummary();
         const request = ++searchRequest;
         displayedRecipeKey = null; imageSearchLoading = false;
         executedRecipe = null; executedQuery = '';
@@ -1120,7 +1384,7 @@
 
     // P27.10 — Export a search result to HTML/DOCX
     async function exportDoc(r: SearchResult, fmt: string) {
-        await runResultAction(`export:${r.doc_id}:${r.chunk_index}`, async () => {
+        await runResultAction(`export:${translationKey(r)}`, async () => {
             const savePath = await save({ filters: [{ name: fmt.toUpperCase(), extensions: [fmt] }], defaultPath: `${r.title || r.doc_id}.${fmt}` });
             if (!savePath) return null;
             await invoke(`export_to_${fmt}`, { title: r.title || r.filename || '', body: r.snippet || '', outPath: savePath });
@@ -1130,7 +1394,7 @@
 
     // P25.9 — Add passage to reading list
     async function highlightPassage(r: SearchResult) {
-        await runResultAction(`reading:${r.doc_id}:${r.chunk_index}`, async () => {
+        await runResultAction(`reading:${translationKey(r)}`, async () => {
             await invoke('highlight_add', {
                 docId: r.doc_id,
                 chunkIndex: r.chunk_index >= 0 ? r.chunk_index : 0,
@@ -1152,13 +1416,15 @@
 
     // P23 — search within current results (progressive refinement)
     function refineSearch() {
-        if (results.length === 0) return;
-        // Scope the next search to the doc_ids in the current result set
-        const docIds = [...new Set(results.map(r => r.doc_id))];
-        refinementScope = docIds;
+        if (!displayedGroups.length || !canRefineDisplayed) return;
+        // Only the visible window enters the scope, including display tag filters.
+        refinementScope = displayedGroups.map(group => group.doc_id);
+        ownerScope = displayedGroups[0].owner_id;
+        searchTags = new Set();
         // Clear query so the user can type a new one
         query = '';
         void runSkeletonSearch('');
+        queryInput?.focus();
     }
 
     function onKeydown(e: KeyboardEvent) {
@@ -1179,7 +1445,8 @@
         const imagePath = typeof selected === 'string' ? selected : (selected as any).path;
         if (!imagePath) return;
 
-        revealResultsOnNarrowScreen();
+        clearLocalPreview();
+        clearCorpusSummary();
         const request = ++searchRequest;
         displayedRecipeKey = null;
         executedRecipe = null; executedQuery = '';
@@ -1215,11 +1482,18 @@
         revealResultsOnNarrowScreen();
         if (!validateFilters()) return;
         const request = ++remoteRequest;
+        if (queryIntent === 'natural' && mode !== 'vector') {
+            remoteLoading = false; remoteSearched = true; remoteResults = [];
+            remoteError = i18n.lang === 'de'
+                ? 'Natürliche Sprache wird über Suchen mit dem ausgewählten Index unterstützt. Für Cloud bitte Erweiterte Syntax wählen.'
+                : 'Use Search with the selected index for Natural language. Choose Advanced syntax for Cloud search.';
+            return;
+        }
         const recipe = currentRecipe();
         const f = recipe.filters;
         if (f.audioMin != null || f.audioMax != null || f.cameraMake || f.cameraModel || f.fuzzy
-            || f.synonyms || f.colbert || f.omni || f.includeUnmounted || recipe.smart || recipe.docIdScope.length) {
-            remoteSearched = true; remoteResults = []; remoteError = labels.remoteUnsupported;
+            || f.synonyms || f.colbert || f.omni || f.includeUnmounted || recipe.smart || recipe.docIdScope.length || recipe.ownerId !== null) {
+            remoteLoading = false; remoteSearched = true; remoteResults = []; remoteError = labels.remoteUnsupported;
             return;
         }
         remoteLoading  = true;
@@ -1334,13 +1608,14 @@
     }
 
     function clearSearch() {
-        revealResultsOnNarrowScreen();
+        clearLocalPreview();
+        clearCorpusSummary();
         searchRequest += 1;
         remoteRequest += 1; fedRequest += 1;
         remoteResults = []; remoteLoading = false; remoteSearched = false; remoteError = ''; remoteQuery = '';
         fedResults = []; fedLoading = false; fedSearched = false; fedErrors = {}; fedBody = new Map();
         dismissResultActionFeedback();
-        loading = false; imageSearchLoading = false; searchNotice = ''; refinementScope = [];
+        loading = false; imageSearchLoading = false; searchNotice = ''; resultLimitNotice = ''; refinementScope = []; ownerScope = null;
         displayedRecipeKey = null; similarHeader = '';
         executedRecipe = null; executedQuery = ''; searchedAt = ''; elapsedMs = 0;
         void runSkeletonSearch('');
@@ -1355,7 +1630,7 @@
 
     function toggleCompare(result: SearchResult): void {
         const existing = compareResults.findIndex((item) =>
-            item.doc_id === result.doc_id && item.chunk_index === result.chunk_index);
+            resultIdentity(item) === resultIdentity(result) && item.chunk_index === result.chunk_index);
         if (existing >= 0) {
             compareResults = compareResults.filter((_, index) => index !== existing);
             return;
@@ -1369,24 +1644,27 @@
         return localPathFromSearchUri(uri) ?? uri;
     }
 
-    async function openFile(uri: string) {
+    function resultSourceLabel(result: SearchResult): string {
+        const member = resultContainerMember(result);
+        return member ? containerBreadcrumb({ ...member, rootLocationUri: compareLabel(member.rootLocationUri) })
+            : compareLabel(result.location_uri);
+    }
+
+    async function openFile(result: SearchResult) {
+        const uri = result.location_uri;
         if (uri.startsWith('https://') || uri.startsWith('http://')) {
             await openOriginal(uri);
             return;
         }
-        // uri may be: absolute path, crisp+local://... URI, or similar
-        let path = uri;
-        // Strip crisp+local:// scheme — everything after the scheme+authority is the path
-        if (uri.startsWith('crisp+local://')) {
-            // crisp+local://<authority><path>  — authority ends at second "/"
-            const afterScheme = uri.slice('crisp+local://'.length);
-            const slashIdx = afterScheme.indexOf('/');
-            path = slashIdx >= 0 ? afterScheme.slice(slashIdx) : afterScheme;
-        }
         await runResultAction(`open:${uri}`, async () => {
+            const path = isContainerMemberUri(uri)
+                ? readOpenedContainerMember(await invoke<unknown>('index_open_container_member', {
+                    ownerId: result.owner_id, docId: result.doc_id,
+                }), result).path : localPathFromSearchUri(uri);
+            if (!path) throw new Error('This source is not available as a local file.');
             await openPath(path);
             return null;
-        }, `${labels.openFileFailed} (${path})`);
+        }, `${labels.openFileFailed} (${resultSourceLabel(result)})`);
     }
 
     async function openOriginal(url: string) {
@@ -1400,17 +1678,6 @@
             await openUrl(url);
             return null;
         }, `${labels.openSourceFailed} (${url})`);
-    }
-
-    function driveUriParts(uri: string): { driveId: string; remotePath: string } | null {
-        if (!uri.startsWith('crisp+drive://')) return null;
-        const rest = uri.slice('crisp+drive://'.length);
-        const slash = rest.indexOf('/');
-        if (slash < 0) return null;
-        return {
-            driveId: rest.slice(0, slash),
-            remotePath: decodeURIComponent(rest.slice(slash)),
-        };
     }
 
     function driveIdFromUri(uri: string): string {
@@ -1462,15 +1729,37 @@
         }, labels.downloadFailed);
     }
 
-    async function copyResultPath(uri: string): Promise<void> {
+    async function copyResultPath(uri: string, result?: SearchResult): Promise<void> {
         const drive = driveUriParts(uri);
         const local = localPathFromSearchUri(uri);
-        const value = drive ? `${drive.driveId}:${drive.remotePath}` : local;
+        const member = result && resultContainerMember(result);
+        const value = member ? containerBreadcrumb(member) : drive ? `${drive.driveId}:${drive.remotePath}` : local || uri;
         if (!value) return;
         await runResultAction(`copy:${uri}`, async () => {
             await navigator.clipboard.writeText(value);
             return `${labels.pathCopied}: ${value}`;
         }, labels.copyPathFailed);
+    }
+
+    async function copyResultCitation(result: SearchResult): Promise<void> {
+        const member = resultContainerMember(result);
+        const content = [
+            result.title || result.filename || result.doc_id,
+            [result.author, result.year].filter(value => value != null && value !== '').join(' · '),
+            `Source: ${result.location_uri}`,
+            ...(member ? [`Container source: ${containerBreadcrumb(member)}`, `Container SHA-256: ${member.rootSha256}`] : []),
+            ...(result.url && result.url !== result.location_uri ? [`Original URL: ${result.url}`] : []),
+            `Document: ${result.doc_id}`,
+            ...(result.owner_id != null ? [`Owner: ${result.owner_id || "Unspecified"}`] : []),
+            ...(result.catalog_source ? [`Catalog: ${result.catalog_source}`]
+                : result.chunk_index >= 0 ? [`Indexed passage: ${result.chunk_index + 1}`] : []),
+            ...(result.source_hash ? [`Source SHA-256: ${result.source_hash}`] : []),
+            ...(executedQuery ? [`Search: ${executedQuery}`] : []),
+        ].filter(Boolean).join('\n');
+        await runResultAction(`citation:${translationKey(result)}`, async () => {
+            await navigator.clipboard.writeText(content);
+            return i18n.lang === 'de' ? 'Quellenangabe kopiert.' : 'Source citation copied.';
+        }, i18n.lang === 'de' ? 'Quellenangabe konnte nicht kopiert werden' : 'Could not copy source citation');
     }
 
     /**
@@ -1614,20 +1903,22 @@
 
     function toggleBatchSelection(result: SearchResult): void {
         const next = new Set(batchSelection);
-        if (next.has(result.doc_id)) next.delete(result.doc_id);
-        else next.add(result.doc_id);
+        const key = resultIdentity(result);
+        if (next.has(key)) next.delete(key);
+        else next.add(key);
         batchSelection = next;
     }
 
     async function addSelectedToBatch(): Promise<void> {
         // Snapshot documents, not matching chunks. Retry keeps the same targets
         // even if the user changes the current selection while storage is busy.
-        const selected = displayedGroups.filter(group => batchSelection.has(group.doc_id)).map(group => group.best);
+        const selected = displayedGroups.filter(group => batchSelection.has(group.key)).map(group => group.best);
         const local = new Map<string, { result: SearchResult; path: string }>();
-        let skipped = 0;
+        let skipped = 0, skippedMembers = 0;
         for (const result of selected) {
             const path = localPathFromSearchUri(result.location_uri);
             if (path) local.set(batchSourceKey(path), { result, path });
+            else if (isContainerMemberUri(result.location_uri)) skippedMembers += 1;
             else skipped += 1;
         }
         await runResultAction('batch:selection', async () => {
@@ -1641,6 +1932,7 @@
                 `${labels.addedToBatch}: ${added}`,
                 `${labels.alreadyInBatch}: ${local.size - added}`,
                 ...(skipped ? [`${labels.skippedCloud}: ${skipped}`] : []),
+                ...(skippedMembers ? [`${i18n.lang === 'de' ? 'Container-Einträge unverändert' : 'Container members left in their source'}: ${skippedMembers}`] : []),
             ].join(' · ');
         }, labels.addBatchFailed, local.size > 0);
     }
@@ -1660,7 +1952,9 @@
     }
 </script>
 
-<div class="search-root">
+<svelte:window onkeydown={handleWorkspaceKeydown} />
+
+<div class="search-root" bind:this={searchRoot}>
     <!-- ── Query bar ─────────────────────────────────────────────────────────── -->
     <div class="query-bar">
         <div class="query-input-wrap">
@@ -1669,10 +1963,12 @@
             <input
                 class="query-input"
                 type="text"
+                bind:this={queryInput}
                 bind:value={query}
                 oninput={event => runSkeletonSearch(event.currentTarget.value)}
                 onkeydown={onKeydown}
                 aria-label={labels.query}
+                aria-keyshortcuts="Control+Shift+f Meta+Shift+f ArrowDown"
                 placeholder={labels.placeholder}
                 title={'Operatoren: AND OR NOT, "Phrase", w/N (proximity), pre/N (ordered), foo* (wildcard), foo~2 (fuzzy), title:karl, headings:foo, body:foo, (Klammern). Großschreibung der Operatoren beliebig.'}
                 autofocus
@@ -1736,7 +2032,7 @@
             </button>
             {#if showSavedDropdown && savedSearches.length > 0}
                 <div class="saved-dropdown">
-                    <p class="saved-help">{labels.restoreHint}</p>
+                    <p class="saved-help">{labels.restoreHint} {i18n.lang === 'de' ? 'Sortierung und Ansicht werden ebenfalls wiederhergestellt.' : 'Sort order and view preferences are restored too.'}</p>
                     {#each savedSearches as s, i}
                         <div class="saved-item">
                             <button
@@ -1748,9 +2044,10 @@
                                 <span class="saved-meta">
                                     {s.mode} · {s.limit} · {activeSearchFilters(s.filters).length} {labels.filterCount}
                                     {#if s.docIdScope.length} · {s.docIdScope.length} {labels.scope}{/if}
+                                    {#if s.view.displayTags.length} · {s.view.displayTags.join(', ')}{/if}
                                 </span>
                             </button>
-                            {#if activeSearchFilters(s.filters).length === 0 && s.docIdScope.length === 0 && !s.smart}
+                            {#if activeSearchFilters(s.filters).length === 0 && s.docIdScope.length === 0 && s.ownerId === null && !s.smart && !s.view.displayTags.length}
                             <button
                                 class="saved-context"
                                 onclick={() => requestBrowserContext(searchResultsPanel(s.query, `Saved search: ${s.name}`))}
@@ -1829,8 +2126,15 @@
     </div>
 
     <!-- ── Mode chips ─────────────────────────────────────────────────────────── -->
-    <SearchQueryTools bind:query onapply={() => void runSkeletonSearch(query)} />
+    <SearchQueryTools bind:query onapply={() => { queryIntent = 'advanced'; void runSkeletonSearch(query); }} />
     <div class="mode-row">
+        <label class="query-intent-control">
+            <span>{i18n.lang === 'de' ? 'Abfragesprache' : 'Query interpretation'}</span>
+            <select bind:value={queryIntent} aria-label={i18n.lang === 'de' ? 'Abfragesprache' : 'Query interpretation'} disabled={mode === 'vector'}>
+                <option value="advanced">{i18n.lang === 'de' ? 'Erweiterte Syntax' : 'Advanced syntax'}</option>
+                <option value="natural">{i18n.lang === 'de' ? 'Natürliche Sprache' : 'Natural language'}</option>
+            </select>
+        </label>
         {#each (['hybrid', 'text', 'vector'] as const) as m}
             <button class="mode-chip" class:active={mode === m} disabled={!vectorEnabled && m !== 'text'}
                     title={!vectorEnabled && m !== 'text' ? 'Enable vector embeddings in Search Index settings.' : ''}
@@ -1841,7 +2145,12 @@
     </div>
 
     <p class="search-help">{labels.modesHint}</p>
-    {#if activeFilterKeys.length || refinementScope.length || smartSearch}
+    {#if mode !== 'vector' && queryIntent === 'natural'}
+        <p class="search-help">{i18n.lang === 'de'
+            ? 'Wörter und Satzzeichen werden als normaler Text behandelt. Volltext findet beliebige enthaltene Wörter; Hybrid ergänzt inhaltlich ähnliche Dokumente. Alle gesetzten Filter gelten weiterhin.'
+            : 'Words and punctuation are treated as ordinary text. Full text matches any of the indexed words; Hybrid adds related documents. All selected filters still apply.'}</p>
+    {/if}
+    {#if activeFilterKeys.length || refinementScope.length || ownerScope !== null || smartSearch}
         <div class="active-filters" aria-label={labels.active}>
             {#each activeFilterKeys as key}
                 <button class="filter-chip" onclick={() => removeFilter(key)}
@@ -1851,9 +2160,12 @@
                 </button>
             {/each}
             {#if refinementScope.length}
-                <button class="filter-chip" onclick={() => refinementScope = []}>{refinementScope.length} {labels.scope} <X size={12} /></button>
+                <button class="filter-chip" onclick={() => { refinementScope = []; ownerScope = null; }}
+                    aria-label={i18n.lang === 'de' ? 'Dokumentbereich entfernen' : 'Remove document scope'}>{refinementScope.length} {labels.scope} <X size={12} /></button>
             {/if}
-            {#if smartSearch}<button class="filter-chip" onclick={() => smartSearch = false}>Smart <X size={12} /></button>{/if}
+            {#if ownerScope !== null}<button class="filter-chip" onclick={() => ownerScope = null}
+                aria-label={i18n.lang === 'de' ? 'Besitzerfilter entfernen' : 'Remove owner filter'}>{i18n.lang === 'de' ? 'Besitzer' : 'Owner'}: {ownerScope || (i18n.lang === 'de' ? 'Nicht angegeben' : 'Unspecified')} <X size={12} /></button>{/if}
+            {#if smartSearch}<button class="filter-chip" onclick={() => smartSearch = false} aria-label={i18n.lang === 'de' ? 'Smart-Suche entfernen' : 'Remove smart search'}>Smart <X size={12} /></button>{/if}
             <button class="reset-filters" onclick={resetFilters}>{labels.reset}</button>
         </div>
     {/if}
@@ -1864,6 +2176,7 @@
         </div>
     {/if}
     {#if searchOptionsChanged && !loading}<p class="search-help">{labels.changed}</p>{/if}
+    {#if resultLimitNotice}<p class="search-help" aria-live="polite">{resultLimitNotice}</p>{/if}
     {#if searchNotice}<div class="search-notice" role="status">{searchNotice}</div>{/if}
 
     <!-- ── Filters ─────────────────────────────────────────────────────────────── -->
@@ -1872,14 +2185,16 @@
         <div class="filter-row">
             <label class="filter-field">
                 <span>{labels.max}</span>
-                <select bind:value={limit} aria-label={labels.max}>
-                    {#each [10, 20, 50, 100, 200, 500] as n}<option value={n}>{n}</option>{/each}
+                <select bind:value={limit} aria-label={labels.max} onchange={() => resultLimitNotice = ''}>
+                    {#each resultLimitOptions as n}<option value={n}>{n}</option>{/each}
                 </select>
             </label>
+            {#if activeBackend !== 'remote'}
             <label class="filter-field" title="Include hits from drives that aren't currently mounted">
                 <input type="checkbox" bind:checked={includeUnmounted} />
                 <span>{labels.mounted}</span>
             </label>
+            {/if}
             <!-- P13.5 on-demand translation — target language for the
                  per-result "Translate to …" button.  m2m100 covers
                  100 langs any-to-any; this dropdown surfaces the
@@ -1979,10 +2294,103 @@
             </button>
         </div>
     {/if}
+    {#if corpusExportBusy || corpusExportNotice}
+        <div class="corpus-export-feedback" class:action-error={corpusExportError} role={corpusExportError ? 'alert' : 'status'}>
+            {#if corpusExportBusy}<Loader2 size={14} class="spin" /><span>{i18n.lang === 'de' ? 'Vollständiger Bericht für' : 'Complete report for'} “{corpusExportQuery}”</span>
+                {#if corpusExportRequestId}<button class="reset-filters" onclick={cancelCorpusExport} disabled={corpusExportCancelling}
+                    aria-label={i18n.lang === 'de' ? 'Vollständigen Export abbrechen' : 'Cancel complete export'}>{i18n.lang === 'de' ? 'Abbrechen' : 'Cancel'}</button>{/if}
+            {/if}
+            {#if corpusExportNotice}<span>{corpusExportNotice}</span>{/if}
+            {#if !corpusExportBusy}<button class="action-dismiss" onclick={() => corpusExportNotice = ''} aria-label={labels.dismissAction}><X size={14} /></button>{/if}
+        </div>
+    {/if}
 
     <!-- ── Results ────────────────────────────────────────────────────────────── -->
     <div class="results-and-preview">
     <div class="results-area" class:with-preview={previewing !== null} class:compact-results={compactResults}>
+        {#if executedRecipe && !loading && !error}
+            <section class="corpus-summary" aria-label={i18n.lang === 'de' ? 'Vollständige Texttreffer' : 'Complete full-text matches'}>
+                {#if canCountLexicalMatches(executedRecipe, activeBackend)}
+                    <div class="corpus-summary-heading">
+                        <strong>{activeBackend === 'remote'
+                            ? (i18n.lang === 'de' ? 'Gesamter Remote-Textindex' : 'Entire remote text index')
+                            : (i18n.lang === 'de' ? 'Gesamter Textindex' : 'Entire text index')}</strong>
+                        {#if summaryLoading}
+                            <span role="status"><Loader2 size={13} class="spin" /> {i18n.lang === 'de' ? 'Alle passenden Dokumente werden gezählt …' : 'Counting every matching document…'}</span>
+                            <button class="reset-filters" onclick={() => clearCorpusSummary(i18n.lang === 'de' ? 'Zählung abgebrochen.' : 'Match count cancelled.')}
+                                aria-label={i18n.lang === 'de' ? 'Trefferzählung abbrechen' : 'Cancel match count'}>{i18n.lang === 'de' ? 'Abbrechen' : 'Cancel'}</button>
+                        {:else}
+                            <button class="reset-filters" onclick={countAllMatches} disabled={searchOptionsChanged || corpusExportBusy}>
+                                {corpusSummary ? (i18n.lang === 'de' ? 'Gesamtzahlen aktualisieren' : 'Refresh all-match counts')
+                                    : (i18n.lang === 'de' ? 'Alle Texttreffer zählen' : 'Count all full-text matches')}
+                            </button>
+                        {/if}
+                    </div>
+                    <p class="corpus-scope">{i18n.lang === 'de'
+                        ? 'Exakte Dokumentzahlen über alle Texttreffer der ausgeführten Abfrage und Filter. Separate Katalog-Dateinamen sind ausgeschlossen. Die Zählung kann bei großen Indizes dauern.'
+                        : 'Exact document totals across all full-text matches for the executed query and filters. Separate catalog filename references are excluded. Large indexes can take time to count.'}</p>
+                    {#if activeBackend === 'remote'}<p class="corpus-scope">{i18n.lang === 'de'
+                        ? 'Gezählt werden gespeicherte Quellen im ausgewählten Serverindex. Lokal eingebundene Laufwerke ändern diesen Bereich nicht. Der Server muss vollständige, versionsgebundene Suchergebnisse unterstützen.'
+                        : 'Counts cover stored sources in the selected server index. Desktop drive mounts do not change this scope. The server must support complete search snapshots and will report an upgrade requirement if unavailable.'}</p>{/if}
+                    <div class="corpus-export-controls">
+                        <label>{i18n.lang === 'de' ? 'Vollständiges Berichtsformat' : 'Complete report format'}
+                            <select bind:value={corpusReportFormat} disabled={corpusExportBusy}><option value="csv">CSV</option><option value="json">JSON</option></select>
+                        </label>
+                        <label>{i18n.lang === 'de' ? 'Vollständige Berichtssortierung' : 'Complete report sort'}
+                            <select bind:value={corpusReportSort} disabled={corpusExportBusy}>
+                                <option value="filename">{i18n.lang === 'de' ? 'Dateiname' : 'Filename'}</option>
+                                <option value="title">{i18n.lang === 'de' ? 'Titel' : 'Title'}</option>
+                                <option value="year-desc">{i18n.lang === 'de' ? 'Neueste Publikationsjahre' : 'Newest publication years'}</option>
+                                <option value="year-asc">{i18n.lang === 'de' ? 'Älteste Publikationsjahre' : 'Oldest publication years'}</option>
+                                <option value="location">{i18n.lang === 'de' ? 'Quellpfad' : 'Source location'}</option>
+                            </select>
+                        </label>
+                        <button class="reset-filters" onclick={exportAllMatches} disabled={summaryLoading || corpusExportBusy || searchOptionsChanged}>
+                            {i18n.lang === 'de' ? 'Alle Texttreffer exportieren' : 'Export all full-text matches'}
+                        </button>
+                    </div>
+                    <p class="corpus-scope">{i18n.lang === 'de'
+                        ? 'Der vollständige Bericht verwendet die Abfragefilter und eine globale Metadatensortierung. Anzeige-Tags des Ergebnisfensters gelten hier nicht.'
+                        : 'The complete report uses the query filters and a global metadata sort. Returned-window display tags do not restrict this export.'}
+                        {#if corpusReportFormat === 'csv'} {i18n.lang === 'de' ? 'CSV enthält eine Berichts-Metadatenzeile vor den Dokumentzeilen.' : 'CSV includes a report metadata row before the document rows.'}{/if}</p>
+                    {#if corpusSummary}
+                        <p class="corpus-total" aria-live="polite"><strong>{corpusSummary.matchingDocuments.toLocaleString()}</strong>
+                            {i18n.lang === 'de' ? 'passende indexierte Dokumente insgesamt' : 'matching indexed documents in total'}
+                            · {grouped.filter(group => !group.best.catalog_source).length.toLocaleString()} {i18n.lang === 'de' ? 'im Ergebnisfenster' : 'in the returned window'}</p>
+                        <details class="corpus-facets">
+                            <summary>{i18n.lang === 'de' ? 'Facetten über alle Texttreffer' : 'Facets across all full-text matches'}</summary>
+                            <p class="corpus-scope">{i18n.lang === 'de'
+                                ? 'Ein Klick setzt einen Suchfilter und führt die Suche erneut aus. Tag-Zahlen zählen jedes Dokument einmal; ein Dokument kann mehrere Tags haben.'
+                                : 'Choose a value to apply a query filter and search again. Tag counts include each document once; a document can have several tags.'}</p>
+                            {#each corpusFacets as facet}
+                                {@const values = corpusSummary.facets[facet.key]}
+                                <div class="corpus-facet-group" role="group" aria-label={i18n.lang === 'de' ? facet.de : facet.en}>
+                                    <strong>{i18n.lang === 'de' ? facet.de : facet.en}</strong>
+                                    <div class="corpus-facet-values">
+                                        {#each values.values as value (value.value)}
+                                            <button class="filter-chip" disabled={searchOptionsChanged}
+                                                onclick={() => void applyCorpusFacet(facet.key, value.value)}
+                                                aria-label={`${i18n.lang === 'de' ? 'Filtern nach' : 'Filter by'} ${facet.en}: ${value.value} (${value.documents})`}>
+                                                {value.value} <span>{value.documents.toLocaleString()}</span>
+                                            </button>
+                                        {/each}
+                                    </div>
+                                    {#if values.omittedValues}<small>{i18n.lang === 'de'
+                                        ? `Häufigste ${values.values.length} von ${values.distinctValues} Werten; ${values.omittedValues} weitere Werte nicht angezeigt.`
+                                        : `Top ${values.values.length} of ${values.distinctValues} values; ${values.omittedValues} additional values are not displayed.`}</small>{/if}
+                                    {#if values.missingDocuments}<small>{values.missingDocuments.toLocaleString()} {i18n.lang === 'de' ? 'Dokumente ohne Wert' : 'documents without a value'}</small>{/if}
+                                </div>
+                            {/each}
+                        </details>
+                    {/if}
+                    {#if summaryNotice}<p class="corpus-notice" role="status">{summaryNotice}</p>{/if}
+                {:else}
+                    <p class="corpus-scope">{i18n.lang === 'de'
+                        ? 'Exakte Gesamtzahlen sind für Volltextsuche in lokalen und unterstützten Remote-Indizes verfügbar. Semantische und hybride Suchen zeigen das zurückgegebene Fenster.'
+                        : 'Exact totals are available for Full text search in local and supported remote indexes. Semantic and hybrid searches show the returned window.'}</p>
+                {/if}
+            </section>
+        {/if}
         {#if loading}
             <div class="state-msg" role="status"><Loader2 size={22} class="spin" /> {labels.loading}</div>
 
@@ -1996,10 +2404,10 @@
             </div>
 
         {:else if searched && grouped.length === 0}
-            <div class="state-hint">
+            <div class="state-hint" aria-live="polite">
                 <Search size={32} />
                 <p>{labels.noResults}</p><p class="hint-sub">{labels.noResultsHint}</p>
-                {#if activeFilterKeys.length || refinementScope.length || smartSearch}
+                {#if activeFilterKeys.length || refinementScope.length || ownerScope !== null || smartSearch}
                     <button class="reset-filters" onclick={() => { resetFilters(); void runSearch(); }}>{labels.reset}</button>
                 {/if}
             </div>
@@ -2021,31 +2429,38 @@
                 </div>
             {/if}
             <div class="result-count">
+                <span class="result-count-summary" aria-live="polite" aria-atomic="true">
                 {#if searchTags.size > 0}
-                    {displayedGroups.length} / {grouped.length} Dokument{grouped.length !== 1 ? 'e' : ''} · {results.length} Treffer
+                    {displayedGroups.length} / {grouped.length} {i18n.lang === 'de' ? 'Dokumente' : 'documents'} · {results.length} {i18n.lang === 'de' ? 'Textstellen' : 'passages'}
                 {:else}
-                    {grouped.length} Dokument{grouped.length !== 1 ? 'e' : ''} · {results.length} Treffer
+                    {grouped.length} {i18n.lang === 'de' ? 'Dokumente' : 'documents'} · {results.length} {i18n.lang === 'de' ? 'Textstellen' : 'passages'}
                 {/if}
+                </span>
                 {#if searchTagFacets.length > 0}
                     <button
                         class="tagcloud-toggle"
                         class:active={showSearchTagCloud}
                         onclick={() => showSearchTagCloud = !showSearchTagCloud}
-                        title="Tag-Wolke ein-/ausblenden"
+                        title={i18n.lang === 'de' ? 'Tags im Ergebnisfenster anzeigen' : 'Show tags in returned results'}
+                        aria-label={i18n.lang === 'de' ? 'Tags im Ergebnisfenster' : 'Tags in returned results'}
+                        aria-expanded={showSearchTagCloud}
                     >
                         <Tag size={11} /> Tags{#if searchTags.size > 0} ({searchTags.size}){/if}
                     </button>
                 {/if}
-                {#if grouped.length >= 2}
+                {#if displayedGroups.length > 0}
                     <button
                         class="tagcloud-toggle refine-btn"
                         onclick={refineSearch}
-                        title="Search within these {grouped.length} results (progressive narrowing)"
+                        disabled={!canRefineDisplayed}
+                        title={canRefineDisplayed ? `Search within these ${displayedGroups.length} displayed documents`
+                            : 'Refinement requires indexed documents from one owner. Use a single-owner search first.'}
+                        aria-label={i18n.lang === 'de' ? 'Angezeigte Dokumente durchsuchen' : 'Search within displayed documents'}
                     >
                         Refine
                     </button>
                 {/if}
-                {#if !activeFilterKeys.length && !refinementScope.length && !smartSearch}
+                {#if !activeFilterKeys.length && !refinementScope.length && ownerScope === null && !smartSearch && !searchTags.size && !searchOptionsChanged}
                 <button
                     class="tagcloud-toggle"
                     onclick={openSearchResultsContext}
@@ -2062,7 +2477,7 @@
                 {#if refinementScope.length > 0}
                     <span class="refine-badge" title="Searching within {refinementScope.length} docs from previous results">
                         Scoped to {refinementScope.length} docs
-                        <button class="clear-similar" onclick={() => refinementScope = []}>
+                        <button class="clear-similar" onclick={() => { refinementScope = []; ownerScope = null; }} aria-label={i18n.lang === 'de' ? 'Dokumentbereich aufheben' : 'Clear document scope'}>
                             <X size={10} />
                         </button>
                     </span>
@@ -2079,7 +2494,7 @@
                     <option value="location">{i18n.lang === 'de' ? 'Speicherort' : 'Location'}</option>
                 </select></label>
                 <label class="compact-toggle"><input type="checkbox" bind:checked={compactResults} />{i18n.lang === 'de' ? 'Kompakt' : 'Compact results'}</label>
-                <button onclick={() => batchSelection = new Set([...batchSelection, ...displayedGroups.map(group => group.doc_id)])}>{i18n.lang === 'de' ? 'Angezeigte auswählen' : 'Select displayed'}</button>
+                <button onclick={() => batchSelection = new Set([...batchSelection, ...displayedGroups.map(group => group.key)])}>{i18n.lang === 'de' ? 'Angezeigte auswählen' : 'Select displayed'}</button>
                 {#if batchSelection.size}<button onclick={() => batchSelection = new Set()}>{i18n.lang === 'de' ? 'Auswahl aufheben' : 'Clear selection'} ({batchSelection.size})</button>{/if}
                 <label>{i18n.lang === 'de' ? 'Berichtsformat' : 'Report format'}<select bind:value={reportFormat}><option value="html">HTML</option><option value="csv">CSV</option><option value="json">JSON</option></select></label>
                 <button onclick={() => exportSearchReport(false)} disabled={!executedRecipe || resultActionsBusy.has('report') || !displayedGroups.length}>{i18n.lang === 'de' ? 'Angezeigte exportieren' : 'Export displayed'}</button>
@@ -2087,13 +2502,30 @@
                 {#if batchSelection.size > selectedDisplayedCount}<span>{batchSelection.size - selectedDisplayedCount} {i18n.lang === 'de' ? 'ausgeblendet; nicht im Export' : 'hidden; excluded from export'}</span>{/if}
             </section>
             <p class="search-window-note">{i18n.lang === 'de'
-                ? 'Sortierung, Textstellenzählung und Export gelten für das gelieferte Ergebnisfenster, nicht für alle Treffer im Korpus.'
-                : 'Sorting, passage counts, and exports apply to this returned window, not every match in the corpus.'}
+                ? 'Sortierung, Tags, Textstellenzählung und Export gelten für das gelieferte Ergebnisfenster, nicht für alle Treffer im Korpus.'
+                : 'Sorting, tags, passage counts, and exports apply to this returned window, not every match in the corpus.'}
                 {#if executedRecipe} · {elapsedMs} ms · {i18n.lang === 'de' ? 'Angefordertes Limit' : 'Requested limit'} {executedRecipe.limit}{/if}
-                {#if executedRecipe && results.length >= executedRecipe.limit && executedRecipe.limit < 500}
+                {#if executedRecipe && results.length >= executedRecipe.limit && executedRecipe.limit < resultLimitMaximum}
                     <button class="reset-filters" onclick={loadMoreResults} disabled={searchOptionsChanged || loading}>{i18n.lang === 'de' ? 'Mehr Ergebnisse laden' : 'Load more results'}</button>
                 {/if}
             </p>
+            <p class="search-keyboard-note">{i18n.lang === 'de'
+                ? 'Tastatur: Strg/⌘ Umschalt F zur Suche · ↓ zu Ergebnissen · ↑/↓ zwischen Dokumenten · Enter zur Vorschau · Alt ↑/↓ in der Vorschau · Esc zum Schließen.'
+                : 'Keyboard: Ctrl/⌘ Shift F to search · ↓ to results · ↑/↓ between documents · Enter to preview · Alt ↑/↓ inside preview · Esc to close.'}</p>
+            {#if displayedGroups.length && !canRefineDisplayed}<p class="search-window-note">{i18n.lang === 'de'
+                ? 'Für eine genaue Suche innerhalb dieser Ergebnisse müssen die indexierten Dokumente einem einzigen Besitzer zugeordnet sein.'
+                : 'Refining these results requires indexed documents from one owner so the document scope remains exact.'}</p>{/if}
+
+            {#if searchTags.size}
+                <div class="active-filters display-filters" aria-label={i18n.lang === 'de' ? 'Tags für angezeigte Ergebnisse' : 'Displayed-result tag filters'}>
+                    <span>{i18n.lang === 'de' ? 'Angezeigte Ergebnisse:' : 'Displayed results:'}</span>
+                    {#each [...searchTags] as tag}
+                        <button class="filter-chip" onclick={() => toggleSearchTag(tag)}
+                            aria-label={i18n.lang === 'de' ? `Anzeige-Tag ${tag} entfernen` : `Remove displayed tag ${tag}`}>{tag} <X size={12} /></button>
+                    {/each}
+                    <button class="reset-filters" onclick={() => searchTags = new Set()}>{i18n.lang === 'de' ? 'Anzeige-Filter aufheben' : 'Clear display filters'}</button>
+                </div>
+            {/if}
 
             {#if showSearchTagCloud && searchTagFacets.length > 0}
                 <div class="search-tagcloud-wrap">
@@ -2117,7 +2549,7 @@
                         <p class="hint">Select one more result to compare metadata and snippets.</p>
                     {:else}
                         <div class="compare-columns">
-                            {#each compareResults as item (`${item.doc_id}:${item.chunk_index}`)}
+                            {#each compareResults as item (`${resultIdentity(item)}:${item.chunk_index}`)}
                                 <article>
                                     <strong>{item.title || item.filename || item.doc_id}</strong>
                                     <code title={item.location_uri}>{compareLabel(item.location_uri)}</code>
@@ -2135,20 +2567,32 @@
                 </section>
             {/if}
 
-            {#each displayedGroups as group (group.doc_id)}
+            {#if !displayedGroups.length}
+                <div class="state-hint" aria-live="polite">
+                    <p>{i18n.lang === 'de' ? 'Kein Dokument in diesem Fenster hat alle ausgewählten Tags.' : 'No document in this returned window has all selected tags.'}</p>
+                    <button class="reset-filters" onclick={() => searchTags = new Set()}>{i18n.lang === 'de' ? 'Anzeige-Filter aufheben' : 'Clear display filters'}</button>
+                </div>
+            {/if}
+
+            {#each displayedGroups as group (group.key)}
                 {@const r = group.best}
+                {@const coverage = resultContainerCoverage(r)}
+                {@const member = resultContainerMember(r)}
                 {@const resultName = r.title || r.filename || r.doc_id.slice(0, 20) + '…'}
-                {@const chunksId = `library-result-chunks-${encodeURIComponent(group.doc_id)}`}
-                <div class="result-card" data-document-id={group.doc_id}>
+                {@const chunksId = `library-result-chunks-${encodeURIComponent(group.key)}`}
+                <div class="result-card" data-document-id={group.doc_id} data-owner-id={group.owner_id} data-result-key={group.key}>
                     <!-- Doc header -->
                     <div class="result-header">
 
                         <div class="ext-badge ext-{(r.ext ?? '').toLowerCase()}">{(r.ext ?? '?').toUpperCase()}</div>
 
                         <div class="result-meta">
-                            <span class="result-title">
+                            <button class="result-title" data-document-id={group.doc_id} data-result-key={group.key}
+                                onclick={event => openResultPreview(r, event.currentTarget)}
+                                aria-label={i18n.lang === 'de' ? `Vorschau: ${resultName}` : `Preview ${resultName}`}
+                                aria-keyshortcuts="ArrowDown ArrowUp Home End Enter">
                                 {resultName}
-                            </span>
+                            </button>
                             {#if r.author || r.year}
                                 <span class="result-byline">{r.author ?? ''}{r.author && r.year ? ' · ' : ''}{r.year ?? ''}</span>
                             {/if}
@@ -2158,7 +2602,25 @@
                                     catalog: {catalogName(r.catalog_source)}
                                 </span>
                             {/if}
-                            <span class="result-path" title={r.location_uri}>{r.filename ?? r.location_uri}</span>
+                            <span class="result-path" title={resultSourceLabel(r)}>{resultSourceLabel(r)}</span>
+                            {#if isContainerMemberUri(r.location_uri)}
+                                <span class="result-origin">{i18n.lang === 'de' ? 'Eigenständiges Dokument im Container' : 'Document inside a container'}</span>
+                            {/if}
+                            {#if coverage}
+                                <span class="result-origin" aria-label="Container extraction coverage">{coverage.extracted} {i18n.lang === 'de' ? 'indizierte Einträge' : 'indexed members'} · {coverage.skipped} {i18n.lang === 'de' ? 'ausgelassen' : 'omitted'}</span>
+                                {#if coverage.skipped > 0}
+                                    <details class="container-coverage">
+                                        <summary>{i18n.lang === 'de' ? 'Extraktionsabdeckung prüfen' : 'Review extraction coverage'}</summary>
+                                        <ul>{#each coverage.omissions as omission}<li>{omission.path}: {omission.reason}</li>{/each}</ul>
+                                        {#if coverage.omittedDetails}<p>{coverage.omittedDetails} {i18n.lang === 'de' ? 'weitere ausgelassene Einträge' : 'additional omitted entries'}</p>{/if}
+                                    </details>
+                                {/if}
+                            {/if}
+                            <span class="result-origin">{r.catalog_source
+                                ? (i18n.lang === 'de' ? 'Dateinamen-Treffer im Katalog' : 'Catalog filename match')
+                                : r.chunk_index >= 0
+                                    ? `${i18n.lang === 'de' ? 'Indizierte Textstelle' : 'Indexed passage'} ${r.chunk_index + 1}`
+                                    : (i18n.lang === 'de' ? 'Dokumentmetadaten' : 'Document metadata')}</span>
                         </div>
 
                         <div class="result-right" role="group" aria-label={i18n.lang === 'de' ? `Aktionen für ${resultName}` : `Actions for ${resultName}`}>
@@ -2168,18 +2630,18 @@
                             </div>
                             {#if group.chunks.length > 1}
                                 <button type="button" class="expand-result"
-                                    aria-expanded={expanded.has(group.doc_id)} aria-controls={chunksId}
+                                    aria-expanded={expanded.has(group.key)} aria-controls={chunksId}
                                     aria-label={i18n.lang === 'de'
                                         ? `${group.chunks.length} passende Textstellen für ${resultName}`
                                         : `${group.chunks.length} matching passages for ${resultName}`}
-                                    onclick={() => toggleExpand(group.doc_id)}>
-                                    {#if expanded.has(group.doc_id)}<ChevronDown size={14} />{:else}<ChevronRight size={14} />{/if}
+                                    onclick={() => toggleExpand(group.key)}>
+                                    {#if expanded.has(group.key)}<ChevronDown size={14} />{:else}<ChevronRight size={14} />{/if}
                                     {group.chunks.length} {i18n.lang === 'de' ? 'Textstellen' : 'passages'}
                                 </button>
                             {/if}
                             <button class="open-btn"
-                                class:active={previewing && previewing.doc_id === group.doc_id}
-                                aria-pressed={previewing?.doc_id === group.doc_id}
+                                class:active={previewing && resultIdentity(previewing) === group.key}
+                                aria-pressed={previewing != null && resultIdentity(previewing) === group.key}
                                 onclick={(e) => { e.stopPropagation(); void openPreview(r, e.currentTarget); }}
                                 title="Vorschau (Preview)">
                                 <Eye size={13} />
@@ -2188,33 +2650,36 @@
                                 <button class="open-btn inspect-text" onclick={event => inspectPassage(r, event.currentTarget)} title={i18n.lang === 'de' ? 'Indizierte Textstelle prüfen' : 'Inspect indexed passage'}><FileText size={13} /><span>{i18n.lang === 'de' ? 'Text' : 'Text'}</span></button>
                             {/if}
                             <button class="open-btn"
-                                class:active={compareResults.some((item) => item.doc_id === r.doc_id)}
-                                aria-pressed={compareResults.some((item) => item.doc_id === r.doc_id)}
+                                class:active={compareResults.some((item) => resultIdentity(item) === resultIdentity(r))}
+                                aria-pressed={compareResults.some((item) => resultIdentity(item) === resultIdentity(r))}
                                 onclick={(e) => { e.stopPropagation(); toggleCompare(r); }}
                                 title="Compare with another result">
                                 ⇄
                             </button>
                             <button class="open-btn"
-                                class:active={batchSelection.has(r.doc_id)}
-                                aria-pressed={batchSelection.has(r.doc_id)}
+                                class:active={batchSelection.has(group.key)}
+                                aria-pressed={batchSelection.has(group.key)}
                                 onclick={(e) => { e.stopPropagation(); toggleBatchSelection(r); }}
-                                title={batchSelection.has(r.doc_id) ? 'Remove from batch selection' : 'Select for batch sorter'}>
+                                title={batchSelection.has(group.key) ? (member ? 'Remove from report selection' : 'Remove from batch selection') : member ? 'Select contained document for report' : 'Select for batch sorter'}>
                                 <ListPlus size={13} />
                             </button>
                             <button class="open-btn"
                                 disabled={resultActionsBusy.has(`open:${r.location_uri}`)}
-                                onclick={(e) => { e.stopPropagation(); openFile(r.location_uri); }}
-                                title="Datei öffnen">
+                                onclick={(e) => { e.stopPropagation(); void openFile(r); }}
+                                title={isContainerMemberUri(r.location_uri) ? (i18n.lang === 'de' ? 'Geprüfte Kopie des Eintrags öffnen' : 'Open verified member copy') : 'Datei öffnen'}>
                                 <ExternalLink size={13} />
                             </button>
-                            {#if driveUriParts(r.location_uri) || localPathFromSearchUri(r.location_uri)}
                                 <button class="open-btn"
                                     disabled={resultActionsBusy.has(`copy:${r.location_uri}`)}
-                                    onclick={(e) => { e.stopPropagation(); void copyResultPath(r.location_uri); }}
+                                    onclick={(e) => { e.stopPropagation(); void copyResultPath(r.location_uri, r); }}
                                     title="Copy path">
                                     <Copy size={13} />
                                 </button>
-                            {/if}
+                            <button class="open-btn" onclick={() => copyResultCitation(r)}
+                                disabled={resultActionsBusy.has(`citation:${translationKey(r)}`)}
+                                title={i18n.lang === 'de' ? 'Quellenangabe kopieren' : 'Copy citation'}>
+                                <Copy size={13} /><span>{i18n.lang === 'de' ? 'Quelle' : 'Cite'}</span>
+                            </button>
                             {#if driveUriParts(r.location_uri)}
                                 <button class="open-btn"
                                     onclick={(e) => { e.stopPropagation(); openDriveInContext(r.location_uri); }}
@@ -2274,6 +2739,12 @@
                                     <ListPlus size={13} />
                                 </button>
                             {/if}
+                            {#if member && localPathFromSearchUri(member.rootLocationUri)}
+                                <button class="open-btn" onclick={() => openLocalInContext(member.rootLocationUri)}
+                                    title={i18n.lang === 'de' ? 'Container im Dateikontext anzeigen' : 'Show source container in file context'}>
+                                    <FolderOpen size={13} />
+                                </button>
+                            {/if}
                             {#if cbArchiveOriginalPath(r.location_uri)}
                                 <button class="open-btn"
                                     disabled={promoteBusy === r.doc_id}
@@ -2301,14 +2772,14 @@
                             </button>
                             {#if $caps.desktop}
                             <button class="open-btn"
-                                disabled={!r.snippet || resultActionsBusy.has(`export:${r.doc_id}:${r.chunk_index}`)}
+                                disabled={!r.snippet || resultActionsBusy.has(`export:${translationKey(r)}`)}
                                 onclick={(e) => { e.stopPropagation(); exportDoc(r, 'html'); }}
                                 title={labels.exportExcerpt}>
                                 ⤓
                             </button>
                             {/if}
                             <button class="open-btn"
-                                disabled={!r.snippet || resultActionsBusy.has(`reading:${r.doc_id}:${r.chunk_index}`)}
+                                disabled={!r.snippet || resultActionsBusy.has(`reading:${translationKey(r)}`)}
                                 onclick={(e) => { e.stopPropagation(); highlightPassage(r); }}
                                 title="Add to reading list">
                                 ★
@@ -2327,7 +2798,7 @@
                     {#if r.snippet}
                         <div class="chunk-preview">
                             <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-                            {@html highlightSnippet(r.snippet, executedQuery || query)}{#if r.snippet.length >= 400}…{/if}
+                            {@html highlightSnippet(r.snippet, executedRecipe ? executedQuery : '')}{#if r.snippet.length >= 400}…{/if}
                         </div>
                     {:else}
                         <div class="chunk-preview no-snippet">(Kein Textauszug verfügbar)</div>
@@ -2543,14 +3014,14 @@
 
                     <!-- Expanded: all chunks -->
                     {#if group.chunks.length > 1}
-                        <div class="chunk-list" id={chunksId} hidden={!expanded.has(group.doc_id)}>
+                        <div class="chunk-list" id={chunksId} hidden={!expanded.has(group.key)}>
                             {#each group.chunks as chunk (chunk.chunk_index)}
                                 <div class="chunk-item">
                                     <span class="chunk-idx">#{chunk.chunk_index + 1}</span>
                                     <div class="chunk-text">
                                         {#if chunk.snippet}
                                             <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-                                            {@html highlightSnippet(chunk.snippet.slice(0, 280), executedQuery || query)}{#if chunk.snippet.length > 280}…{/if}
+                                            {@html highlightSnippet(chunk.snippet.slice(0, 280), executedRecipe ? executedQuery : '')}{#if chunk.snippet.length > 280}…{/if}
                                         {:else}
                                             <span style="color:#52525b">(leer)</span>
                                         {/if}
@@ -2558,7 +3029,7 @@
                                     <span class="chunk-score">{chunk.score.toFixed(3)}</span>
                                     <button class="chunk-compare" onclick={event => inspectPassage(chunk, event.currentTarget)} title={i18n.lang === 'de' ? 'Diese Textstelle prüfen' : 'Inspect this passage'}><FileText size={12} /></button>
                                     <button class="chunk-compare"
-                                        class:active={compareResults.some((item) => item.doc_id === chunk.doc_id && item.chunk_index === chunk.chunk_index)}
+                                        class:active={compareResults.some((item) => resultIdentity(item) === resultIdentity(chunk) && item.chunk_index === chunk.chunk_index)}
                                         onclick={(e) => { e.stopPropagation(); toggleCompare(chunk); }}
                                         title="Compare this chunk">
                                         ⇄
@@ -2587,8 +3058,15 @@
             <div class="preview-navigation" role="group" aria-label={i18n.lang === 'de' ? 'Dokumentnavigation' : 'Document navigation'}>
                 <button onclick={() => movePreview(-1)} disabled={displayedGroups.length < 2}>{i18n.lang === 'de' ? 'Vorheriges Dokument' : 'Previous document'}</button>
                 <button onclick={() => movePreview(1)} disabled={displayedGroups.length < 2}>{i18n.lang === 'de' ? 'Nächstes Dokument' : 'Next document'}</button>
-                <button aria-pressed={previewTab === 'original'} onclick={() => previewTab = 'original'}>{i18n.lang === 'de' ? 'Originaldatei' : 'Original file'}</button>
-                {#if previewing.chunk_index >= 0 && !previewing.catalog_source}<button aria-pressed={previewTab === 'indexed'} onclick={() => previewTab = 'indexed'}>{i18n.lang === 'de' ? 'Indizierter Text' : 'Indexed text'}</button>{/if}
+                <button aria-pressed={previewTab === 'original'} onclick={() => { previewTab = 'original'; previewPreference = 'original'; }}>{i18n.lang === 'de' ? 'Originaldatei' : 'Original file'}</button>
+                {#if previewing.chunk_index >= 0 && !previewing.catalog_source}<button aria-pressed={previewTab === 'indexed'} onclick={() => { previewTab = 'indexed'; previewPreference = 'indexed'; }}>{i18n.lang === 'de' ? 'Indizierter Text' : 'Indexed text'}</button>{/if}
+            </div>
+            <div class="preview-source-context">
+                <code>{resultSourceLabel(previewing)}</code>
+                <span>{isContainerMemberUri(previewing.location_uri)
+                    ? (i18n.lang === 'de' ? 'Der Eintrag wird vor dem Öffnen gegen den indizierten Container geprüft.' : 'Opening verifies this member against the indexed source container.')
+                    : (i18n.lang === 'de' ? 'Die Originaldatei kann seit der Indizierung geändert worden sein.' : 'The original file may have changed since indexing.')}</span>
+                <button class="reset-filters" onclick={() => previewing && copyResultCitation(previewing)}>{i18n.lang === 'de' ? 'Quellenangabe kopieren' : 'Copy citation'}</button>
             </div>
             {#if localPathFromSearchUri(previewing.location_uri)}
                 <div class="document-actions">
@@ -2599,7 +3077,19 @@
             {/if}
             <div class="preview-body">
                 {#if previewTab === 'indexed' && previewing.chunk_index >= 0}
-                    <SearchPassage docId={previewing.doc_id} chunkIndex={previewing.chunk_index} query={executedQuery || query} sourceHash={previewing.source_hash || ''} />
+                    <SearchPassage docId={previewing.doc_id} ownerId={previewing.owner_id} chunkIndex={previewing.chunk_index} query={executedRecipe ? executedQuery : ''} sourceHash={previewing.source_hash || ''}
+                        mode={executedRecipe?.mode ?? mode} queryIntent={executedRecipe?.queryIntent ?? queryIntent}
+                        fuzzy={executedRecipe?.filters.fuzzy ?? false} synonyms={executedRecipe?.filters.synonyms ?? false} />
+                {:else if isContainerMemberUri(previewing.location_uri)}
+                    {#if memberPreviewBusy}
+                        <p class="hint" role="status"><Loader2 size={14} class="spin" /> {i18n.lang === 'de' ? 'Quelle prüfen und Eintrag vorbereiten…' : 'Verifying the source and preparing its member…'}</p>
+                    {:else if memberPreviewError}
+                        <p class="error" role="alert">{memberPreviewError}</p>
+                        <button class="reset-filters" onclick={() => memberPreviewAttempt += 1}>{i18n.lang === 'de' ? 'Erneut prüfen' : 'Verify again'}</button>
+                    {:else if memberPreview}
+                        <p class="hint">{i18n.lang === 'de' ? 'Geprüfte, schreibgeschützte Kopie des Container-Eintrags.' : 'Verified, read-only copy of the container member.'}</p>
+                        <DocumentViewer locationUri={memberPreview.path} filename={memberPreview.filename} readOnly />
+                    {/if}
                 {:else}
                 <DocumentDecisionPanel document={previewing} onUse={useReviewedFields} />
                 <FieldEvidencePanel docId={previewing.doc_id}
@@ -2823,6 +3313,23 @@
 </div>
 
 <style>
+    .query-intent-control { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; font-size: 0.75rem; }
+    .query-intent-control select { max-width: 100%; border: 1px solid var(--border-color, #454545); border-radius: 0.35rem; padding: 0.25rem 0.4rem; color: inherit; background: var(--bg-secondary, #242424); }
+
+    .corpus-export-controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; margin-top: 10px; }
+    .corpus-export-controls label { display: flex; flex-direction: column; gap: 4px; font-size: .7rem; color: #a1a1aa; }
+    .corpus-export-controls select { color: #e4e4e7; background: #18181b; border: 1px solid #52525b; border-radius: 4px; padding: 5px; }
+    .corpus-export-feedback { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 9px 12px; border: 1px solid #334155; border-radius: 6px; background: #111c2e; color: #bfdbfe; font-size: .78rem; overflow-wrap: anywhere; }
+    .corpus-summary { margin: 10px 16px; padding: 10px 12px; border: 1px solid #334155; border-radius: 7px; background: #111c2e; font-size: .78rem; }
+    .corpus-summary-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+    .corpus-summary-heading span { display: inline-flex; align-items: center; gap: 6px; }
+    .corpus-scope, .corpus-notice { color: #a1a1aa; font-size: .73rem; margin: 7px 0 0; line-height: 1.5; }
+    .corpus-total { margin: 9px 0; color: #dbeafe; }
+    .corpus-facets summary { cursor: pointer; margin-top: 8px; }
+    .corpus-facet-group { display: grid; gap: 5px; margin-top: 11px; }
+    .corpus-facet-values { display: flex; flex-wrap: wrap; gap: 5px; }
+    .corpus-facet-values .filter-chip span { opacity: .7; }
+    .corpus-facet-group small { color: #a1a1aa; }
     .inspection-toolbar { display:flex;align-items:flex-end;flex-wrap:wrap;gap:8px;padding:10px 16px;background:#111116;border-block:1px solid #27272a;font-size:.73rem; }
     .inspection-toolbar label { display:flex;flex-direction:column;gap:4px;color:#a1a1aa; }
     .inspection-toolbar .compact-toggle { flex-direction:row;align-items:center;align-self:center; }
@@ -2832,6 +3339,11 @@
     .inspection-toolbar button:focus-visible,.inspection-toolbar select:focus-visible,.preview-navigation button:focus-visible { outline:2px solid #93c5fd;outline-offset:2px; }
     .inspection-toolbar span { color:#fbbf24;font-size:.7rem; }
     .search-window-note { font-size:.7rem;color:#a1a1aa;margin:8px 16px 12px;line-height:1.6; }
+    .search-keyboard-note { font-size:.7rem;color:#a1a1aa;margin:0 16px 10px;line-height:1.6; }
+    .display-filters { padding:0 16px 10px;font-size:.74rem;color:#d4d4d8; }
+    .preview-source-context { display:flex;flex-direction:column;gap:6px;padding:8px 12px;border-bottom:1px solid #3f3f46;font-size:.72rem;color:#a1a1aa; }
+    .preview-source-context code { color:#d4d4d8;overflow-wrap:anywhere; }
+    .preview-source-context button { align-self:flex-start; }
     .preview-navigation { display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px;border-bottom:1px solid #27272a;flex-shrink:0; }
     .preview-navigation button[aria-pressed=true] { background:#1e3a8a;border-color:#60a5fa; }
     .inspect-text { display:inline-flex;gap:4px;align-items:center; }
@@ -3139,9 +3651,13 @@
     .ext-epub { background: #4c1d9533; color: #c4b5fd; }
 
     .result-meta { flex: 1 1 160px; min-width: 0; }
-    .result-title { display: block; font-size: 0.9rem; font-weight: 600; color: #e4e4e7; overflow-wrap: anywhere; }
+    .result-title { display: block; font-size: 0.9rem; font-weight: 600; color: #e4e4e7; overflow-wrap: anywhere;
+        width:100%;max-width:100%;padding:0;background:none;border:0;text-align:left;font-family:inherit;cursor:pointer;border-radius:3px; }
+    .result-title:focus-visible { outline:2px solid #93c5fd;outline-offset:3px; }
+    .result-title:hover { color:#93c5fd; }
     .result-byline { display: block; font-size: 0.78rem; color: #a1a1aa; margin-top: 2px; overflow-wrap: anywhere; }
-    .result-path { display: block; font-size: 0.72rem; color: #52525b; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .result-path { display: block; font-size: 0.72rem; color: #a1a1aa; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .result-origin { display:block;margin-top:3px;font-size:.7rem;color:#a1a1aa; }
 
     .result-right { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; flex: 0 1 auto; min-width: 0; max-width: 100%; }
     .score-wrap { display: flex; align-items: center; gap: 5px; }

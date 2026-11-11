@@ -113,6 +113,9 @@ pdf-extract = "0.10.0"
 # archives without a full-DOM XML parser. zip 7 matches the version
 # already pulled in transitively via candle-core (mistral.rs).
 zip = "7"
+flate2 = "=1.1.9"
+tar = { version = "=0.4.46", default-features = false }
+sevenz-rust2 = { version = "=0.25.0", default-features = false }
 # EXIF reader for L2 metadata extraction from JPG / TIFF / WebP / PNG
 # images. Pure Rust, no system deps.
 kamadak-exif = "0.6"
@@ -226,7 +229,7 @@ arrow-array  = { version = "57", default-features = false }
 arrow-schema = { version = "57", default-features = false }
 arrow-select = { version = "57", default-features = false }
 uuid         = { version = "1", features = ["v4", "serde"] }
-rusqlite     = { version = "0.39.0", features = ["bundled"] }
+rusqlite     = { version = "0.39.0", features = ["bundled", "hooks"] }
 async-trait  = "0.1"
 # ort pinned to match fastembed 5.13.0; used directly for EP types and path-based ONNX loading.
 ort          = "=2.0.0-rc.11"

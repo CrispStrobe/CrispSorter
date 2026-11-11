@@ -502,7 +502,7 @@
             const selected = await open({
                 multiple: true,
                 // Picker and drag/drop accept the same document and media types.
-                filters: [{ name: 'Documents, Audio & Video', extensions: [...MULTIMODAL_EXTENSIONS] }]
+                filters: [{ name: 'Documents, Mail, Presentations, ZIP Archives, Audio & Video', extensions: [...MULTIMODAL_EXTENSIONS] }]
             });
             const paths = Array.isArray(selected) ? selected : selected ? [selected] : [];
             for (const path of paths) {

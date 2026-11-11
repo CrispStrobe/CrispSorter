@@ -1,0 +1,1762 @@
+{
+  "all_queries_succeeded": false,
+  "completed": true,
+  "cutoff": 100,
+  "documents": 5183,
+  "execution": {
+    "buildProfile": "dev",
+    "buildSeconds": 9.571393747000002,
+    "dirtyWorkingTree": [],
+    "executableSha256": "63c23a9a5b510f1169172200367f473ea2ae86f9c67bcb3e76f01c22fd3feb72",
+    "logicalCpus": 9,
+    "machine": "x86_64",
+    "nativeThreadEnvironment": {
+      "OMP_NUM_THREADS": "2",
+      "OMP_THREAD_LIMIT": null,
+      "RAYON_NUM_THREADS": "2",
+      "TOKIO_WORKER_THREADS": null
+    },
+    "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+    "revision": "57bd68c3a6c0311c3ed2d5b2184d7490f2d6877e",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.1\nLLVM version: 23.1.1",
+    "scope": "Focused production native search/index harness; full desktop, network, and model-adapter integration are separate gates.",
+    "sourceSha256": {
+      "crates/crisp-search-query/Cargo.toml": "6a924275559182ea6e53ba0b62ee271cc2da8bf9234d16898d84670b1f7448f4",
+      "crates/crisp-search-query/src/explanation.rs": "f1f225ae1130577cbede1ba0a9bfc23b567296874a2ec984b23da66bbf43e2a3",
+      "crates/crisp-search-query/src/lib.rs": "6e55aa78421c57a9eba02ab9bd6195eda8527c2f000277a5c70c708d2ae5d3ca",
+      "crates/crisp-search-query/src/query_plan.rs": "ad7bb7fd38fbcc8faced20a519da6680a3522edc6e39a30827b1b627561cdcc3",
+      "crates/crisp-search-query/src/synonyms.rs": "fbec936f22a0f324b53e2b68d31078c7a2ebaf6eeb17df0ab01891032680cd9e",
+      "crisp-index-protocol/Cargo.toml": "739a4a559760e72a4b104e37fec81867286f9d4e724c04e10181158e055b7f50",
+      "crisp-index-protocol/src/complete.rs": "9799e1ee51508dca9d6f559363ffde368514ad112960e11ee5d9edc562454d82",
+      "crisp-index-protocol/src/container.rs": "3faf62492048cee9292bd688f51f8ca1bbdc9b36721f002b4eab15fb9bf76195",
+      "crisp-index-protocol/src/explanation.rs": "2baed7a1010cc5436cc35148f5faff5fc17198be68384b57dec414cbe7a5a51e",
+      "crisp-index-protocol/src/lib.rs": "a6eb1a2aaa6a5928ad4fe4bd2b28871489d2088874b75b4672c4f7eb65d46ad2",
+      "crisp-index-protocol/src/member.rs": "fb6ce5e8e5b1625ddbd8f3666b6c5635bf9faa855b8f3b5c0b757dd42366c6c2",
+      "crisp-index-protocol/src/passage.rs": "5c38f2d04249d247842ba3f943243fd99c9332b0812a5a13976767a0d293d7ac",
+      "crisp-index-protocol/src/sync.rs": "4c940161f897436ee0e7acecded830257fe0d0a3fda1a986105d87f60a3c6db7",
+      "crisp-index-server/src/auth.rs": "229550ed63e9ccd85900cb2a1e7e170cb4754b355e0fe4e9fb6a39a5964815e4",
+      "crisp-index-server/src/complete_search.rs": "c013a505fb8d27474e8cd9e7267b67084d86480f9c78138bdc6baf84f09a381a",
+      "crisp-index-server/src/container_members.rs": "1c81fcb5f5c2bc4761f29402cb1f355d3faeea3f323b59c66eacd2ef6559eb23",
+      "crisp-index-server/src/embedder.rs": "c9bed08b3103c87b44994381eb74b9e68d58f3392b6eb1805949b1edda61498a",
+      "crisp-index-server/src/fts.rs": "628aa7d6d6f3f1b1f1b809f10310a7edc56b05432255eca0677f3826d36a8938",
+      "crisp-index-server/src/index.rs": "c46c6542c9a319e6cb117333fb45c2a2e8e49b3dba513ef4f6132ce7b9d7567d",
+      "crisp-index-server/src/index_contract_tests.rs": "9dd877861f48fb04baa1519a6669d3054bdade46c46b207ee3f41cb0e52d1074",
+      "crisp-index-server/src/main.rs": "18d2e20faa8976d284d87620e3d2f78886dd6560d5634a511dfe456c9e7b389c",
+      "crisp-index-server/src/queue.rs": "5e62c248bd9135107acc2973e0d9d28dd48253e7a7271aae391a8cb60c3fd1b4",
+      "crisp-index-server/src/routes/admin.rs": "994b2b039e0ed18d6571fab9d448002312df099b2190666007466632fa42dc2d",
+      "crisp-index-server/src/routes/capabilities.rs": "d1effdf83a6566b428366e0738504a252a4410a73abf92d93db7a9c22a7ebe53",
+      "crisp-index-server/src/routes/complete.rs": "4c7b9e08e5505d9d0dbb04b97b9e15a310f3c6cb17b57174a5051a9d57f5a5d6",
+      "crisp-index-server/src/routes/docs.rs": "1b3b482838afb410fd949cfb99f076a5dda7787607852b18655da7f6a54d715d",
+      "crisp-index-server/src/routes/explanations.rs": "265f7081cd13e18cd6889ed7d6d1a153dec40aebd15532671b962742ff84b6b0",
+      "crisp-index-server/src/routes/health.rs": "0b162a1b35bed955cfaa3f8aad231cbbd4be35f782a0a1396d394d558dd0372c",
+      "crisp-index-server/src/routes/ingest.rs": "2ab4e66c1f647817936a0df2d1bb3206ea2cb86263f5fd76695054f96a9044d8",
+      "crisp-index-server/src/routes/members.rs": "0ecc4dab9fc5da3f9797a014806ef048ea5bf76796e501456b23aa8a439d7490",
+      "crisp-index-server/src/routes/mod.rs": "97e60e6c09e012bde06f6cf78c6c6b1da2dd569771fc6117df08727a4a52c9b7",
+      "crisp-index-server/src/routes/passages.rs": "8022dd6bf663df5a381dcaaf74415c1220863efefb4cc8fd8612acf220ab0774",
+      "crisp-index-server/src/routes/search.rs": "1ac175d294593fc3afd4eb23090220a465cf03857248548f9790a640dea277af",
+      "crisp-index-server/src/routes/stats.rs": "70451ba762e464940c70830118f90d0057fe0d3bc58a8b6d4002ac3f75d676ee",
+      "crisp-index-server/src/routes/sync.rs": "3dbcf5d4746c5f13afcd2de50a1eabce90b2b8869c75b965e934fb797e41f542",
+      "crisp-index-server/src/routes/tasks.rs": "ff3842fce5263c5d5ebdb85d28c0fd852ecd19aea1acbb506ac2eb68c30603f3",
+      "crisp-index-server/src/state.rs": "1e83e7548208450bb29d16ddf1594ead17c9189aaa2f340f88f06aba7c11ad52",
+      "crisp-index-server/src/sync_cursor.rs": "27b00d04f0f0935ebb480626ddaacbfc93eaa56c87e99972b623ff49c3f976eb",
+      "crisp-index-server/src/sync_cursor_contract_tests.rs": "7d81fb53ea2e14837c7e92976d7bdda9e22c5ddbb63dfdda408b1cbe62297185",
+      "shared/query_explanation.rs": "281b920dc62359c7f5b538e0240ef4ca56d39e5724bef86ec888174d8c9c3380",
+      "shared/source_identity.rs": "b99c2b12403684e150a65b46a0d7b403b52a7fbb16c4eedcf0e6e67c3e7011fa",
+      "shared/source_paths.rs": "0cb388d7518aec29d2589b69d48d157b2d804155325410f070ae2118d7a0db3e",
+      "shared/stored_passage.rs": "49d5b505a6a97ee7ad335d7acdc52417c64bc0f155e6079471020c8286b6ba2a",
+      "tests/server-search-contract/Cargo.lock": "33d52221b8152f195c954cffd2ffbc5987702e4b03fb0f06c0edc50e476e7404",
+      "tests/server-search-contract/Cargo.toml": "240ec9685ed9eebf87ecd493c28a900bd0abce5e1983e7f05d873b77f9e165fb",
+      "tests/server-search-contract/adapters.rs": "63dbe5aa0454828b68a2921818ff15a67d9b062eb88198abdfe44998b966a086",
+      "tests/server-search-contract/build.rs": "82b67df4a9f511a46c17f167c7db486684d68722df5553d743e62c52864d1c27",
+      "tests/server-search-contract/complete_contract.rs": "a31ce47a1d71dd3168a4b5ae6bd09224b8c5bb72b0d20b608a80e708e88d4bea",
+      "tests/server-search-contract/container_contract.rs": "3b75808d6b7d451aa4a8e05619caaf644f55dba8fe26c13cb6d97915798852dd",
+      "tests/server-search-contract/desktop.rs": "179c30c70bada156a9fce6727dff89d1bb4b7296db5961fc6f3f2661b3016b64",
+      "tests/server-search-contract/explanation_contract.rs": "b268b0d18d25a9974cfde7865c095fbb64c8e75c5768f79957164f5b649ecd66",
+      "tests/server-search-contract/http_contract.rs": "2157bee0632aec99ce7dcd6a3579e40ba341a619d0d5c1343c1171ff45e79088",
+      "tests/server-search-contract/lib.rs": "6b210236b7c8d48f2abd16fba939bd33eb0cdb0df84c1436be203edd4905aea6",
+      "tests/server-search-contract/passage_contract.rs": "22533dc25a692801381e7a12d4dc2447458a1c78bbcc47f34b2e8c80647ad6b0",
+      "tests/server-search-contract/remote_client_complete_contract.rs": "07331d5cafb928b016e46a00b74938064a3248120ea961a205ab484d21e876da",
+      "tests/server-search-contract/remote_client_member_contract.rs": "80318fa1ba7320ef085e545fa8ea0a788d0736b8634f43c75dc1525169e6270f",
+      "tests/server-search-contract/retrieval_benchmark.rs": "863d24d1115c08045bceff2bf7da7843f79c36e8e12c383cd8e8f0a338915cec",
+      "tests/server-search-contract/sync_contract.rs": "6b38d23fe349f646107667d1e386e235db2b5ddc2c48f0c48ec3f27def5bda05"
+    }
+  },
+  "ingestion_ms": 15590.081948,
+  "lexical_any_term": "Explicit comparison using normalized literal OR terms; separate from the shipped strict lexical query mode.",
+  "modes": [
+    {
+      "failed_queries": [
+        {
+          "error": "'+' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "42"
+        },
+        {
+          "error": "'.' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "171"
+        },
+        {
+          "error": "'.' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "431"
+        },
+        {
+          "error": "'.' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "516"
+        },
+        {
+          "error": "'.' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "521"
+        },
+        {
+          "error": "'/' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "528"
+        },
+        {
+          "error": "'.' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "551"
+        },
+        {
+          "error": "'.' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "768"
+        },
+        {
+          "error": "'.' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "775"
+        },
+        {
+          "error": "'.' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "823"
+        },
+        {
+          "error": "'-' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "993"
+        },
+        {
+          "error": "A field name is required before ':' at byte 64.",
+          "query_id": "1280"
+        },
+        {
+          "error": "'.' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "1395"
+        }
+      ],
+      "latency_ms": {
+        "mean": 63.62445652999997,
+        "p50": 59.502871,
+        "p95": 121.20853600000001,
+        "p99": 146.238124
+      },
+      "metrics": {
+        "average_precision_at_100": 0.027083333333333334,
+        "ndcg_at_10": 0.027487674629135768,
+        "recall_at_100": 0.0275,
+        "reciprocal_rank_at_10": 0.028333333333333332
+      },
+      "mode": "lexical_strict",
+      "queries": 300,
+      "zero_results": 289
+    },
+    {
+      "failed_queries": [],
+      "latency_ms": {
+        "mean": 213.83734980333327,
+        "p50": 208.315477,
+        "p95": 296.150391,
+        "p99": 331.114309
+      },
+      "metrics": {
+        "average_precision_at_100": 0.518081885967843,
+        "ndcg_at_10": 0.5492904125533247,
+        "recall_at_100": 0.8342222222222223,
+        "reciprocal_rank_at_10": 0.5253611111111113
+      },
+      "mode": "lexical_any_term",
+      "queries": 300,
+      "zero_results": 0
+    },
+    {
+      "failed_queries": [],
+      "latency_ms": {
+        "mean": 326.16760889999983,
+        "p50": 291.689218,
+        "p95": 500.80700600000006,
+        "p99": 1013.2657320000001
+      },
+      "metrics": {
+        "average_precision_at_100": 0.6030740834806816,
+        "ndcg_at_10": 0.6450816521455768,
+        "recall_at_100": 0.925,
+        "reciprocal_rank_at_10": 0.6047248677248677
+      },
+      "mode": "dense",
+      "queries": 300,
+      "zero_results": 0
+    },
+    {
+      "failed_queries": [
+        {
+          "error": "'+' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "42"
+        },
+        {
+          "error": "'.' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "171"
+        },
+        {
+          "error": "'.' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "431"
+        },
+        {
+          "error": "'.' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "516"
+        },
+        {
+          "error": "'.' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "521"
+        },
+        {
+          "error": "'/' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "528"
+        },
+        {
+          "error": "'.' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "551"
+        },
+        {
+          "error": "'.' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "768"
+        },
+        {
+          "error": "'.' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "775"
+        },
+        {
+          "error": "'.' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "823"
+        },
+        {
+          "error": "'-' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "993"
+        },
+        {
+          "error": "A field name is required before ':' at byte 64.",
+          "query_id": "1280"
+        },
+        {
+          "error": "'.' contains no indexed word. Indexed words must be shorter than 40 bytes.",
+          "query_id": "1395"
+        }
+      ],
+      "latency_ms": {
+        "mean": 977.0323470666673,
+        "p50": 444.325333,
+        "p95": 2849.430596,
+        "p99": 3467.332491
+      },
+      "metrics": {
+        "average_precision_at_100": 0.4377529083595064,
+        "ndcg_at_10": 0.46671884698418237,
+        "recall_at_100": 0.6583333333333333,
+        "reciprocal_rank_at_10": 0.43853042328042324
+      },
+      "mode": "hybrid",
+      "queries": 300,
+      "zero_results": 85
+    },
+    {
+      "failed_queries": [],
+      "latency_ms": {
+        "mean": 202.26817376666665,
+        "p50": 191.755879,
+        "p95": 269.905416,
+        "p99": 468.98746400000005
+      },
+      "metrics": {
+        "average_precision_at_100": 0.518081885967843,
+        "ndcg_at_10": 0.5492904125533247,
+        "recall_at_100": 0.8342222222222223,
+        "reciprocal_rank_at_10": 0.5253611111111113
+      },
+      "mode": "natural_lexical",
+      "queries": 300,
+      "zero_results": 0
+    },
+    {
+      "failed_queries": [],
+      "latency_ms": {
+        "mean": 487.84299781333317,
+        "p50": 448.31638899999996,
+        "p95": 797.3040169999999,
+        "p99": 1048.972542
+      },
+      "metrics": {
+        "average_precision_at_100": 0.6093016369321845,
+        "ndcg_at_10": 0.6483459834757214,
+        "recall_at_100": 0.9410000000000001,
+        "reciprocal_rank_at_10": 0.6133544973544973
+      },
+      "mode": "natural_hybrid",
+      "queries": 300,
+      "zero_results": 0
+    }
+  ],
+  "natural_language": "Production Natural query intent with fuzzy and synonym expansion disabled. Original query text supplies the frozen embedding; generated lexical terms do not become mandatory constraints on hybrid retrieval.",
+  "original_result_sha256": "8a9847c181b769a66d1b903b8aa833594d3bda5967e4c710f1e41c4d0bce68b7",
+  "policy": "All test queries count in every mean; failed and zero-result queries score zero. One warm run per mode/query after ten unmeasured warmup queries. No test-judgment tuning or query removal.",
+  "preparation": {
+    "completed": true,
+    "corpus": "BEIR SciFact test",
+    "encoding": {
+      "documents": {
+        "batches": [
+          {
+            "rows": 16,
+            "seconds": 1.3086242960002892
+          },
+          {
+            "rows": 16,
+            "seconds": 1.1661512649998258
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9802043039999262
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8995265399998971
+          },
+          {
+            "rows": 16,
+            "seconds": 1.2597443609997754
+          },
+          {
+            "rows": 16,
+            "seconds": 1.1231202200001462
+          },
+          {
+            "rows": 16,
+            "seconds": 1.7226005830002578
+          },
+          {
+            "rows": 16,
+            "seconds": 0.913412709000113
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9878011000000696
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9078575329999694
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8877180160002354
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8628258220001044
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9780882899999596
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8872014549997402
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9023101880002288
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8295492980000745
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8243246709998857
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9861595639999904
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9202162690003206
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9259932879999724
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8645685279998361
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8871570300002531
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8352680259999943
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8581779689998257
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8843040399997335
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8783892899996317
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9882493850000174
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9458609299999808
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9521680550001292
+          },
+          {
+            "rows": 16,
+            "seconds": 1.017506049000076
+          },
+          {
+            "rows": 16,
+            "seconds": 0.846050238999851
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8983520189999581
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8012512609998339
+          },
+          {
+            "rows": 16,
+            "seconds": 0.802701984000123
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8746565520000331
+          },
+          {
+            "rows": 16,
+            "seconds": 1.1007204089996776
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9440024939999604
+          },
+          {
+            "rows": 16,
+            "seconds": 1.0782087999996293
+          },
+          {
+            "rows": 16,
+            "seconds": 0.973688033000144
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9726542129997142
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8978559840002163
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9189623309998752
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8600550930000281
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8245316329998786
+          },
+          {
+            "rows": 16,
+            "seconds": 1.0507240239999192
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8718063229998734
+          },
+          {
+            "rows": 16,
+            "seconds": 1.0286633800001257
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8553855579998526
+          },
+          {
+            "rows": 16,
+            "seconds": 1.0610052899996845
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8724511489999713
+          },
+          {
+            "rows": 16,
+            "seconds": 1.011070663999817
+          },
+          {
+            "rows": 16,
+            "seconds": 1.0777348829997209
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9808686020001004
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8491492470002413
+          },
+          {
+            "rows": 16,
+            "seconds": 0.923583728000267
+          },
+          {
+            "rows": 16,
+            "seconds": 1.0319034979997923
+          },
+          {
+            "rows": 16,
+            "seconds": 1.101654776000032
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9220597189996624
+          },
+          {
+            "rows": 16,
+            "seconds": 1.027436525000212
+          },
+          {
+            "rows": 16,
+            "seconds": 1.109495593000247
+          },
+          {
+            "rows": 16,
+            "seconds": 1.1342219639996074
+          },
+          {
+            "rows": 16,
+            "seconds": 2.102745480000067
+          },
+          {
+            "rows": 16,
+            "seconds": 1.4619278069999382
+          },
+          {
+            "rows": 16,
+            "seconds": 2.414102433000153
+          },
+          {
+            "rows": 16,
+            "seconds": 2.0144042540000555
+          },
+          {
+            "rows": 16,
+            "seconds": 2.2911653159999332
+          },
+          {
+            "rows": 16,
+            "seconds": 2.1774651489999997
+          },
+          {
+            "rows": 16,
+            "seconds": 2.042809554000087
+          },
+          {
+            "rows": 16,
+            "seconds": 2.007515945999785
+          },
+          {
+            "rows": 16,
+            "seconds": 1.7768749930000922
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9989429510001172
+          },
+          {
+            "rows": 16,
+            "seconds": 1.2235015759997625
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9654100929997184
+          },
+          {
+            "rows": 16,
+            "seconds": 1.029776390999814
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8955694299997958
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9423390279998785
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9061196820002806
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8466207999999824
+          },
+          {
+            "rows": 16,
+            "seconds": 1.0422618220000004
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9025835870002084
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9242202820000784
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9389461719997598
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9504278409999642
+          },
+          {
+            "rows": 16,
+            "seconds": 1.0722565390001364
+          },
+          {
+            "rows": 16,
+            "seconds": 1.1798310680001125
+          },
+          {
+            "rows": 16,
+            "seconds": 1.088058663999618
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9822763339998346
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9974773600001754
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9253416199999264
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9235498709999774
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8722091560002809
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9148563280000416
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9100386039999648
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8018611320003401
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8822251809997397
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9371519389997048
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8956672120002622
+          },
+          {
+            "rows": 16,
+            "seconds": 1.173530129000028
+          },
+          {
+            "rows": 16,
+            "seconds": 1.1929807989999972
+          },
+          {
+            "rows": 16,
+            "seconds": 1.069886937999854
+          },
+          {
+            "rows": 16,
+            "seconds": 1.4069807119999496
+          },
+          {
+            "rows": 16,
+            "seconds": 1.2549316549998366
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9023769350001204
+          },
+          {
+            "rows": 16,
+            "seconds": 1.1167184979999547
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8376439319999918
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8379160370000136
+          },
+          {
+            "rows": 16,
+            "seconds": 0.994395822000115
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9107835080003496
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8474180700000034
+          },
+          {
+            "rows": 16,
+            "seconds": 1.1764105479996942
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9131047150003724
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8793030120000367
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9982907529997648
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8445649419995789
+          },
+          {
+            "rows": 16,
+            "seconds": 0.7908604440003728
+          },
+          {
+            "rows": 16,
+            "seconds": 1.048354793999806
+          },
+          {
+            "rows": 16,
+            "seconds": 0.7830940310000187
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8990234839998266
+          },
+          {
+            "rows": 16,
+            "seconds": 1.016139488000135
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8420070309998664
+          },
+          {
+            "rows": 16,
+            "seconds": 0.7910470699998768
+          },
+          {
+            "rows": 16,
+            "seconds": 1.0541074940001636
+          },
+          {
+            "rows": 16,
+            "seconds": 0.899111196999911
+          },
+          {
+            "rows": 16,
+            "seconds": 0.983146339999621
+          },
+          {
+            "rows": 16,
+            "seconds": 0.987637328999881
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8773950630002219
+          },
+          {
+            "rows": 16,
+            "seconds": 1.0872600249999778
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8729237229999853
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8800211949996992
+          },
+          {
+            "rows": 16,
+            "seconds": 1.018427022999731
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8545519730000706
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9954152249997604
+          },
+          {
+            "rows": 16,
+            "seconds": 1.0108060050001768
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8493784470001629
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8942983249999088
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9743692570000348
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9475416619998214
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9260338929998396
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8327312309997978
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8600365799998144
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8172793019998608
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8277174739996553
+          },
+          {
+            "rows": 16,
+            "seconds": 1.0463209790000292
+          },
+          {
+            "rows": 16,
+            "seconds": 0.848875451999902
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8652757280001424
+          },
+          {
+            "rows": 16,
+            "seconds": 0.942295804999958
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8719087380000019
+          },
+          {
+            "rows": 16,
+            "seconds": 0.908254738999858
+          },
+          {
+            "rows": 16,
+            "seconds": 1.1830472250003368
+          },
+          {
+            "rows": 16,
+            "seconds": 0.917739067000184
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9067572059998384
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8980212470000879
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9218054879997908
+          },
+          {
+            "rows": 16,
+            "seconds": 1.0294168409996018
+          },
+          {
+            "rows": 16,
+            "seconds": 1.117553931999737
+          },
+          {
+            "rows": 16,
+            "seconds": 1.03633236900032
+          },
+          {
+            "rows": 16,
+            "seconds": 1.0374748569997791
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9478277299999718
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9290062490003947
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8889127699999335
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9623707819996524
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9355138650003028
+          },
+          {
+            "rows": 16,
+            "seconds": 1.165509711000141
+          },
+          {
+            "rows": 16,
+            "seconds": 1.01869841000007
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9361014889996112
+          },
+          {
+            "rows": 16,
+            "seconds": 1.2085943600000064
+          },
+          {
+            "rows": 16,
+            "seconds": 1.294281013999807
+          },
+          {
+            "rows": 16,
+            "seconds": 2.1724965500002327
+          },
+          {
+            "rows": 16,
+            "seconds": 1.2569158819997028
+          },
+          {
+            "rows": 16,
+            "seconds": 2.4619787629999337
+          },
+          {
+            "rows": 16,
+            "seconds": 2.4326824039999337
+          },
+          {
+            "rows": 16,
+            "seconds": 2.0867417609997574
+          },
+          {
+            "rows": 16,
+            "seconds": 1.8117901509999683
+          },
+          {
+            "rows": 16,
+            "seconds": 0.981967854999766
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8877993700002662
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8691027079999003
+          },
+          {
+            "rows": 16,
+            "seconds": 1.0780378680001377
+          },
+          {
+            "rows": 16,
+            "seconds": 1.2209944309997809
+          },
+          {
+            "rows": 16,
+            "seconds": 0.847511854000004
+          },
+          {
+            "rows": 16,
+            "seconds": 1.1721902730000693
+          },
+          {
+            "rows": 16,
+            "seconds": 1.0189939400002004
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8257238200003485
+          },
+          {
+            "rows": 16,
+            "seconds": 1.044063726999866
+          },
+          {
+            "rows": 16,
+            "seconds": 1.0111772489999566
+          },
+          {
+            "rows": 16,
+            "seconds": 0.876287666999815
+          },
+          {
+            "rows": 16,
+            "seconds": 1.100157481000224
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9404380850000962
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8457731009998497
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9295398770000248
+          },
+          {
+            "rows": 16,
+            "seconds": 1.2322709559998657
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8163691439999639
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8060563700000785
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9616873150002904
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9722142010000424
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9141093260000162
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9319912610003483
+          },
+          {
+            "rows": 16,
+            "seconds": 1.112054955000076
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9084018059998016
+          },
+          {
+            "rows": 16,
+            "seconds": 1.1466858680000769
+          },
+          {
+            "rows": 16,
+            "seconds": 1.0108199559999775
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8095054790001086
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8844494049999412
+          },
+          {
+            "rows": 16,
+            "seconds": 1.1898295420000975
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9012153290000242
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8651783280001837
+          },
+          {
+            "rows": 16,
+            "seconds": 1.0126529230001324
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8408594640000047
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8166769370000111
+          },
+          {
+            "rows": 16,
+            "seconds": 1.032745745000284
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9269157629996698
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8354906959998516
+          },
+          {
+            "rows": 16,
+            "seconds": 1.071929383999759
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8622893269998713
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8217880140000489
+          },
+          {
+            "rows": 16,
+            "seconds": 1.0909733510002295
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9128875569999764
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9306492139999136
+          },
+          {
+            "rows": 16,
+            "seconds": 1.0554105599999275
+          },
+          {
+            "rows": 16,
+            "seconds": 1.1494854780003152
+          },
+          {
+            "rows": 16,
+            "seconds": 0.7921207449999201
+          },
+          {
+            "rows": 16,
+            "seconds": 1.1275941449998754
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8279653199997483
+          },
+          {
+            "rows": 16,
+            "seconds": 0.7915959820002172
+          },
+          {
+            "rows": 16,
+            "seconds": 1.4263874309999665
+          },
+          {
+            "rows": 16,
+            "seconds": 1.1322957019997375
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9384615760000088
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9967461360001836
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8349156029998994
+          },
+          {
+            "rows": 16,
+            "seconds": 0.958269265999661
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9213001740004074
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8428523900001892
+          },
+          {
+            "rows": 16,
+            "seconds": 1.1025096510002186
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9025247049999052
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8605899780000072
+          },
+          {
+            "rows": 16,
+            "seconds": 1.2195126490000805
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8801799519997076
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9631677320003292
+          },
+          {
+            "rows": 16,
+            "seconds": 0.863308760000109
+          },
+          {
+            "rows": 16,
+            "seconds": 1.1127728860001298
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8330223019997902
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8855612369998198
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8719160790001297
+          },
+          {
+            "rows": 16,
+            "seconds": 0.954562347999854
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8232454799999687
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8439535359998445
+          },
+          {
+            "rows": 16,
+            "seconds": 1.1201418310001827
+          },
+          {
+            "rows": 16,
+            "seconds": 1.1864880130001438
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8838822970001274
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8439652259999093
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8691083869998693
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8986230440000327
+          },
+          {
+            "rows": 16,
+            "seconds": 0.7542254600002707
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8396971410002152
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8687601980000181
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9034348279997176
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8191867239997919
+          },
+          {
+            "rows": 16,
+            "seconds": 0.7685285310003565
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8539626080000744
+          },
+          {
+            "rows": 16,
+            "seconds": 0.918313556999692
+          },
+          {
+            "rows": 16,
+            "seconds": 0.950956196000334
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8325412609997329
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9048977389998072
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9209404550001636
+          },
+          {
+            "rows": 16,
+            "seconds": 0.904450289000124
+          },
+          {
+            "rows": 16,
+            "seconds": 0.942823462999968
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9033533720003106
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9138963539999168
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8839129139996658
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8264527669998643
+          },
+          {
+            "rows": 16,
+            "seconds": 1.0516180429999622
+          },
+          {
+            "rows": 16,
+            "seconds": 0.895381174999784
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9021299380001436
+          },
+          {
+            "rows": 16,
+            "seconds": 0.853729076000036
+          },
+          {
+            "rows": 16,
+            "seconds": 0.973047139999835
+          },
+          {
+            "rows": 16,
+            "seconds": 1.1906820180001887
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9187543360003474
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8934034869998868
+          },
+          {
+            "rows": 16,
+            "seconds": 1.252565809999851
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8870667800001684
+          },
+          {
+            "rows": 16,
+            "seconds": 1.1658663889998024
+          },
+          {
+            "rows": 16,
+            "seconds": 1.0054888879999453
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9569791629996872
+          },
+          {
+            "rows": 16,
+            "seconds": 1.1350127720002092
+          },
+          {
+            "rows": 16,
+            "seconds": 0.975763621999704
+          },
+          {
+            "rows": 16,
+            "seconds": 0.853714459999992
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9540507460001209
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8456095470000946
+          },
+          {
+            "rows": 16,
+            "seconds": 1.034886951000317
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9206532670000342
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8658082290003222
+          },
+          {
+            "rows": 16,
+            "seconds": 1.0200635539999894
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8209066529998381
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8418620370002827
+          },
+          {
+            "rows": 16,
+            "seconds": 1.0190022319998209
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8794695629999296
+          },
+          {
+            "rows": 16,
+            "seconds": 1.0840053629999602
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8752495710000403
+          },
+          {
+            "rows": 16,
+            "seconds": 0.940390073999879
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9879165649999776
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8699215080000613
+          },
+          {
+            "rows": 16,
+            "seconds": 1.0063022209997143
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8216037340002913
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8804008990000511
+          },
+          {
+            "rows": 16,
+            "seconds": 1.0576430099999925
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9352947289999064
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9407688349997444
+          },
+          {
+            "rows": 16,
+            "seconds": 0.880206077999901
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8565248340000835
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8309457749996909
+          },
+          {
+            "rows": 16,
+            "seconds": 0.9123964489999709
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8933854840001914
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8473818339998616
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8425083380002434
+          },
+          {
+            "rows": 16,
+            "seconds": 0.87450968200028
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8531631930000003
+          },
+          {
+            "rows": 16,
+            "seconds": 0.7977720859998954
+          },
+          {
+            "rows": 16,
+            "seconds": 1.080035677000069
+          },
+          {
+            "rows": 16,
+            "seconds": 1.0271530119998715
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8419136739998976
+          },
+          {
+            "rows": 16,
+            "seconds": 1.1853578400000515
+          },
+          {
+            "rows": 16,
+            "seconds": 1.2501596069996594
+          },
+          {
+            "rows": 16,
+            "seconds": 0.8939733560000604
+          },
+          {
+            "rows": 16,
+            "seconds": 1.117328384999837
+          },
+          {
+            "rows": 15,
+            "seconds": 0.8189840650002225
+          }
+        ],
+        "inferenceSeconds": 326.3549094449954,
+        "rows": 5183,
+        "sha256": "4cb37a9e3f9c560ef9511443d94e6924374c60fefad5510dae5d1e9e0d850a19",
+        "truncatedRows": 3681
+      },
+      "queries": {
+        "batches": [
+          {
+            "rows": 16,
+            "seconds": 0.10234022000031472
+          },
+          {
+            "rows": 16,
+            "seconds": 0.15158112499966592
+          },
+          {
+            "rows": 16,
+            "seconds": 0.12759236700003385
+          },
+          {
+            "rows": 16,
+            "seconds": 0.1323089210000035
+          },
+          {
+            "rows": 16,
+            "seconds": 0.19224901699999464
+          },
+          {
+            "rows": 16,
+            "seconds": 0.11035022700025364
+          },
+          {
+            "rows": 16,
+            "seconds": 0.18554695599959817
+          },
+          {
+            "rows": 16,
+            "seconds": 0.2693547660001059
+          },
+          {
+            "rows": 16,
+            "seconds": 0.5436312480001106
+          },
+          {
+            "rows": 16,
+            "seconds": 0.12991225699988718
+          },
+          {
+            "rows": 16,
+            "seconds": 0.12005544600015128
+          },
+          {
+            "rows": 16,
+            "seconds": 0.107866613999704
+          },
+          {
+            "rows": 16,
+            "seconds": 0.11962856399986777
+          },
+          {
+            "rows": 16,
+            "seconds": 0.09490290900021137
+          },
+          {
+            "rows": 16,
+            "seconds": 0.0944806319998861
+          },
+          {
+            "rows": 16,
+            "seconds": 0.1178059089997987
+          },
+          {
+            "rows": 16,
+            "seconds": 0.12554303099977915
+          },
+          {
+            "rows": 16,
+            "seconds": 0.11328847000004316
+          },
+          {
+            "rows": 12,
+            "seconds": 0.08329911300006643
+          }
+        ],
+        "inferenceSeconds": 2.921737791999476,
+        "rows": 300,
+        "sha256": "f3fe64a00367bc629b61e7be284065aefd8f862b8c3148f001ac14bd77b19c61",
+        "truncatedRows": 0
+      }
+    },
+    "inputs": {
+      "corpus.jsonl": {
+        "bytes": 8106566,
+        "sha256": "dec31c8182f3d744c7d2c09423756fd1d17cbef75808db13ba01cc0aab4d1ac6"
+      },
+      "qrels/test.tsv": {
+        "bytes": 5389,
+        "sha256": "0864bb985e0ca2367ba217977e72004d549054b2b06666ed9d4825ac7c21284c"
+      },
+      "queries.jsonl": {
+        "bytes": 209731,
+        "sha256": "8ff84a7c903f722981cd8d595c022660140c51867b27608a6d4910db86080313"
+      }
+    },
+    "model": {
+      "dimensions": 384,
+      "documentText": "title + newline + body",
+      "id": "sentence-transformers/all-MiniLM-L6-v2",
+      "maximumTokens": 256,
+      "pooling": "attention-masked mean, L2 normalization",
+      "provider": "CPUExecutionProvider",
+      "revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+      "sha256": "6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452",
+      "threads": 2,
+      "tokenizerSha256": "be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037",
+      "warmupSeconds": 0.004155068000272877
+    },
+    "preparedFiles": {
+      "documents.f32": {
+        "bytes": 7961088,
+        "sha256": "4cb37a9e3f9c560ef9511443d94e6924374c60fefad5510dae5d1e9e0d850a19"
+      },
+      "documents.json": {
+        "bytes": 8613954,
+        "sha256": "0080182564a6b3e6410206a603736f247c43b7e13dc12969365183e0cd1787b0"
+      },
+      "queries.f32": {
+        "bytes": 460800,
+        "sha256": "f3fe64a00367bc629b61e7be284065aefd8f862b8c3148f001ac14bd77b19c61"
+      },
+      "queries.json": {
+        "bytes": 53967,
+        "sha256": "18230768a021861470fd4a8f7a12d71fa6a15b689818d94bf755fc34ad064cfa"
+      }
+    },
+    "runtime": {
+      "logicalCpus": 9,
+      "machine": "x86_64",
+      "numpy": "2.5.4",
+      "onnxruntime": "1.23.2",
+      "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+      "python": "3.12.14",
+      "tokenizers": "0.22.2"
+    },
+    "schema": "crispsorter-native-retrieval-input-v1",
+    "scope": "Public English scientific-abstract retrieval; not a user-corpus, OCR, multilingual, or full-desktop qualification"
+  },
+  "queries": 300,
+  "query_trace_sha256": "036324637fec6b6f2daf1da6a7f26c88e8429f64dab37ebae664ca248fc12af9",
+  "receipt_note": "Complete aggregate result retains exact preparation and execution metadata, all six mode metrics, every failed-query entry, denominators, source hashes, and the raw trace hash. Raw query/source text, model weights, vectors, and per-query traces remain outside Git. Compare the six modes within this run: regenerated embedding bytes differ from the earlier receipt despite matching pinned model, inputs, and inference configuration. Modes ran sequentially once in the listed order (strict lexical, literal any-term, dense, advanced hybrid, natural lexical, natural hybrid), each after 10 unmeasured warm-up queries; there was no randomized mode order or repeated measured pass. Development-profile native timings are diagnostic and exclude model inference, HTTP, UI, extraction, and desktop rendering; they are not a randomized performance comparison or a desktop latency claim.",
+  "revision": "57bd68c3a6c0311c3ed2d5b2184d7490f2d6877e",
+  "schema": "crispsorter-native-retrieval-result-v1",
+  "scope": "Production server index, CPU model inference prepared separately. Native retrieval latency excludes embedding, HTTP, and UI. Public-corpus judgments are not a user-corpus or full-desktop qualification.",
+  "vector_index": "Exact vector scan; no approximate vector index is built for this corpus"
+}

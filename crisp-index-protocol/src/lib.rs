@@ -15,6 +15,7 @@
 //! POST   /v1/ingest/batch    IngestBatch → BatchIngestResponse (202)
 //! GET    /v1/tasks/:id                  — TaskStatusResponse
 //! POST   /v1/search       SearchRequest → Vec<SearchHit>
+//! POST   /v1/passages/read StoredPassageRequest → StoredPassage
 //! DELETE /v1/docs/:id                   — DeleteResponse
 //! POST   /v1/docs/:id/location  UpdateLocationBody → UpdateLocationResponse
 //! POST   /v1/admin/build-ivf-pq         — { "built": true }
@@ -42,8 +43,21 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod complete;
+pub use complete::*;
+pub mod explanation;
+pub use explanation::*;
+pub mod member;
+pub use member::*;
+pub mod container;
+pub use container::*;
+
 pub mod sync;
 pub use sync::{SyncCursor, SyncDeletion, SyncPage, SYNC_CURSOR_VERSION};
+pub mod passage;
+pub use passage::{StoredPassage, StoredPassageRequest, MAX_STORED_DOCUMENT_CHUNKS,
+    MAX_STORED_PASSAGE_BYTES, MAX_STORED_PASSAGE_RESPONSE_BYTES,
+    STORED_PASSAGE_VERSION, STORED_PASSAGE_VERSION_HEADER};
 
 // ── Ingest ──────────────────────────────────────────────────────────────────
 
@@ -54,7 +68,7 @@ pub use sync::{SyncCursor, SyncDeletion, SyncPage, SYNC_CURSOR_VERSION};
 /// `embedding` is a pre-computed dense vector (typically 1024-dim BGE-M3).
 /// Its length must equal the server's configured `EMBED_DIMS`; servers
 /// reject mismatches with HTTP 422.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IngestChunk {
     /// Stable document identifier. Explicit identifiers remain authoritative;
     /// ordinary per-file clients can opt into source occurrence resolution.
@@ -112,6 +126,44 @@ pub struct IngestChunk {
     /// User-supplied tags. Always serialised, empty `[]` if none.
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Source parent directory or URI prefix.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_dir: Option<String>,
+    /// Mounted source volume identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume_id: Option<String>,
+    /// Original source URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Stored translated document text, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_translated: Option<String>,
+    /// Language of the stored translated text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_translated_lang: Option<String>,
+    /// Document review status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc_status: Option<String>,
+    /// Audio duration in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_duration_seconds: Option<f64>,
+    /// Camera manufacturer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_camera_make: Option<String>,
+    /// Camera model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_camera_model: Option<String>,
+
+    /// Typed provenance for an independently indexed member document.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_member: Option<ContainerMemberLocator>,
+    /// Captured source bytes for the root of one complete member group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_source: Option<ContainerSourceReceipt>,
+    /// Explicit extraction coverage retained with roots and nested containers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_coverage: Option<ContainerCoverage>,
+
 }
 
 /// Response for `POST /v1/ingest`.
@@ -184,6 +236,10 @@ pub struct TaskStatusResponse {
 /// Server response is `IngestResponse` with `chunk_count = chunks.len()`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IngestBatch {
+    /// Versioned complete root/member publication. Requires the dedicated
+    /// container endpoint; older servers cannot silently accept this payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_group_version: Option<u32>,
     /// Pre-embedded chunks. Every element is validated against the
     /// server's `EMBED_DIMS` exactly the way the singular endpoint
     /// does; one mismatch rejects the whole batch with HTTP 422 to
@@ -197,19 +253,48 @@ pub const QUERY_LANGUAGE_VERSION: u32 = 1;
 
 /// Response header proving which parser handled a negotiated search request.
 pub const QUERY_VERSION_HEADER: &str = "x-crisp-query-version";
+/// Receipt for separate original-query semantic embedding.
+pub const EMBEDDING_QUERY_VERSION_HEADER: &str = "x-crisp-embedding-query-version";
+/// Receipt for explicit natural-language query planning.
+pub const QUERY_PLAN_VERSION_HEADER: &str = "x-crisp-query-plan-version";
+/// Current query plan semantics.
+pub const QUERY_PLAN_VERSION: u32 = 1;
+
+/// Metadata filter semantics: extension, exact tag, hash prefix and document scope.
+pub const METADATA_FILTER_VERSION: u32 = 2;
+/// Response receipt for metadata predicates applied before ranking and limiting.
+pub const METADATA_FILTER_VERSION_HEADER: &str = "x-crisp-metadata-filter-version";
 
 /// Current server full-text schema. Older generations remain preserved on disk.
-pub const FTS_SCHEMA_VERSION: u32 = 2;
+pub const FTS_SCHEMA_VERSION: u32 = 3;
 
 /// Negotiated search support returned by `GET /v1/capabilities`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SearchCapabilities {
+    /// Explicit natural-language planning; zero preserves legacy advanced syntax.
+    #[serde(default)]
+    pub query_plan_version: u32,
     /// HTTP API generation.
     pub api_version: u32,
+    /// Missing on legacy servers, which must not receive extended filters.
+    #[serde(default)]
+    pub metadata_filter_version: u32,
+    /// Missing on legacy servers, which cannot serve verified stored passages.
+    #[serde(default)]
+    pub stored_passage_version: u32,
+    /// Actual document-clause truth and bounded source-passage byte spans.
+    #[serde(default)]
+    pub query_explanation_version: u32,
     /// Exact Boolean, field, phrase, fuzzy, wildcard, and proximity grammar.
     pub query_language_version: u32,
-    /// Active full-text index schema generation.
+    /// Baseline compatible lexical schema (2 remains supported for older clients).
     pub fts_schema_version: u32,
+    /// Actual active on-disk full-text schema generation.
+    #[serde(default)]
+    pub active_fts_schema_version: u32,
+    /// Highest metadata predicate generation supported; zero falls back to the legacy field.
+    #[serde(default)]
+    pub metadata_filter_max_version: u32,
     /// Whether the current generation is published and all pending writes repaired.
     pub fts_ready: bool,
     /// Whether hybrid candidates obey explicit lexical constraints.
@@ -218,6 +303,23 @@ pub struct SearchCapabilities {
     pub searchable_fields: Vec<String>,
     /// How source chunks with unknown boundaries affect positional queries.
     pub chunk_boundary_policy: String,
+    /// Complete lexical summaries and paged metadata enumeration (zero on old servers).
+    #[serde(default)]
+    pub complete_search_version: u32,
+    /// Stored metadata schema generation, including optional nullable columns.
+    #[serde(default)]
+    pub metadata_schema_version: u32,
+    /// Metadata predicate names implemented by this server.
+    #[serde(default)]
+    pub metadata_fields: Vec<String>,
+
+    /// Supports a separate original query for semantic embedding.
+    #[serde(default)]
+    pub embedding_query_version: u32,
+    /// Complete container group publication and stored member metadata lookup.
+    #[serde(default)]
+    pub container_members_version: u32,
+
 }
 
 impl SearchCapabilities {
@@ -225,10 +327,29 @@ impl SearchCapabilities {
     pub fn supports_strict_search(&self, hybrid: bool) -> bool {
         self.api_version == 1
             && self.query_language_version == QUERY_LANGUAGE_VERSION
-            && self.fts_schema_version == FTS_SCHEMA_VERSION
+            && matches!(self.fts_schema_version, 2 | FTS_SCHEMA_VERSION)
             && self.fts_ready
             && (!hybrid || self.strict_hybrid_constraints)
     }
+}
+
+/// A reproducible intent declaration. The server recomputes its lexical query
+/// and constraint policy; clients cannot supply an unchecked policy override.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SearchQueryPlan {
+    /// Negotiated semantics, currently 1.
+    pub version: u32,
+    /// `natural` or `advanced`; absence of the whole plan is legacy advanced.
+    pub intent: String,
+    /// Unmodified text supplied to the embedding model.
+    pub original_query: String,
+    /// Apply bounded fuzzy word expansion.
+    #[serde(default)]
+    pub fuzzy: bool,
+    /// Apply the shared offline synonym dictionary.
+    #[serde(default)]
+    pub synonyms: bool,
 }
 
 // ── Search ──────────────────────────────────────────────────────────────────
@@ -241,6 +362,9 @@ impl SearchCapabilities {
 /// - `hybrid` — RRF (k=60) merge of both; requires both. Default.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SearchRequest {
+    /// Original intent and expansions, verified against the lexical request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query_plan: Option<SearchQueryPlan>,
     /// Plain-text BM25 query. Required for `text` and `hybrid` modes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query: Option<String>,
@@ -256,6 +380,9 @@ pub struct SearchRequest {
     /// Required lexical grammar version negotiated through `/v1/capabilities`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query_language_version: Option<u32>,
+    /// Negotiated metadata predicates; unknown versions are refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata_filter_version: Option<u32>,
 
     // ── Filters (flat for backwards compatibility; matches existing wire). ──
     /// Restrict to one owner.
@@ -270,11 +397,61 @@ pub struct SearchRequest {
     /// Upper bound (inclusive) on `year`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub year_max: Option<i32>,
+    /// Match any lower-case file extension (without a leading dot).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ext: Vec<String>,
+    /// Require this exact tag value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    /// Require a hexadecimal source fingerprint prefix.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_hash_prefix: Option<String>,
+    /// Restrict to these document IDs; an empty list leaves scope unrestricted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub doc_id_scope: Vec<String>,
+    /// Require every exact tag in this bounded list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// Literal source parent-directory prefix.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_dir_prefix: Option<String>,
+    /// Literal substring of source URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url_domain: Option<String>,
+    /// Inclusive minimum audio duration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_duration_min_seconds: Option<f64>,
+    /// Inclusive maximum audio duration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_duration_max_seconds: Option<f64>,
+    /// Literal substring of camera manufacturer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_camera_make: Option<String>,
+    /// Literal substring of camera model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_camera_model: Option<String>,
+    /// Require actual translated text in this language.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefer_translated_lang: Option<String>,
+    /// Exact document review status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc_status: Option<String>,
+    /// Include unassigned sources and these mounted volumes; an empty list includes only unassigned sources.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mounted_volume_ids: Option<Vec<String>>,
+
+    /// Original query for server-side embedding when lexical syntax was expanded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding_query: Option<String>,
+    /// Negotiated semantics for `embedding_query` (currently 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding_query_version: Option<u32>,
+
 }
 
 /// Filters in struct form, used internally by both client and server. Wire
 /// representation is the flat fields on [`SearchRequest`].
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct SearchFilters {
     /// Restrict to one owner.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -288,9 +465,131 @@ pub struct SearchFilters {
     /// Upper bound (inclusive) on `year`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub year_max: Option<i32>,
+    /// Match any lower-case file extension (without a leading dot).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ext: Vec<String>,
+    /// Require this exact tag value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    /// Require a hexadecimal source fingerprint prefix.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_hash_prefix: Option<String>,
+    /// Restrict to these document IDs; an empty list leaves scope unrestricted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub doc_id_scope: Vec<String>,
+    /// Require every exact tag in this bounded list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// Literal source parent-directory prefix.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_dir_prefix: Option<String>,
+    /// Literal substring of source URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url_domain: Option<String>,
+    /// Inclusive minimum audio duration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_duration_min_seconds: Option<f64>,
+    /// Inclusive maximum audio duration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_duration_max_seconds: Option<f64>,
+    /// Literal substring of camera manufacturer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_camera_make: Option<String>,
+    /// Literal substring of camera model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_camera_model: Option<String>,
+    /// Require actual translated text in this language.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefer_translated_lang: Option<String>,
+    /// Exact document review status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc_status: Option<String>,
+    /// Include unassigned sources and these mounted volumes; an empty list includes only unassigned sources.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mounted_volume_ids: Option<Vec<String>>,
+
+}
+
+impl SearchRequest {
+    /// Copy every supported metadata predicate into the shared filter model.
+    pub fn filters(&self) -> SearchFilters {
+        SearchFilters {
+            owner_id: self.owner_id.clone(), language: self.language.clone(),
+            year_min: self.year_min, year_max: self.year_max, ext: self.ext.clone(),
+            tag: self.tag.clone(), source_hash_prefix: self.source_hash_prefix.clone(),
+            doc_id_scope: self.doc_id_scope.clone(),
+            tags: self.tags.clone(),
+            parent_dir_prefix: self.parent_dir_prefix.clone(),
+            url_domain: self.url_domain.clone(),
+            audio_duration_min_seconds: self.audio_duration_min_seconds.clone(),
+            audio_duration_max_seconds: self.audio_duration_max_seconds.clone(),
+            image_camera_make: self.image_camera_make.clone(),
+            image_camera_model: self.image_camera_model.clone(),
+            prefer_translated_lang: self.prefer_translated_lang.clone(),
+            doc_status: self.doc_status.clone(),
+            mounted_volume_ids: self.mounted_volume_ids.clone(),
+
+        }
+    }
 }
 
 impl SearchFilters {
+    /// These predicates were not understood by the first server API.
+    pub fn needs_metadata_filter_version(&self) -> bool {
+        self.required_metadata_filter_version() > 0
+    }
+
+    /// Minimum negotiated predicate generation needed for this exact request.
+    pub fn required_metadata_filter_version(&self) -> u32 {
+        if !self.tags.is_empty() || self.parent_dir_prefix.is_some() || self.url_domain.is_some()
+            || self.audio_duration_min_seconds.is_some() || self.audio_duration_max_seconds.is_some()
+            || self.image_camera_make.is_some() || self.image_camera_model.is_some()
+            || self.prefer_translated_lang.is_some() || self.doc_status.is_some() || self.mounted_volume_ids.is_some() { 2 }
+        else if !self.ext.is_empty() || self.tag.is_some() || self.source_hash_prefix.is_some() || !self.doc_id_scope.is_empty() { 1 }
+        else { 0 }
+    }
+
+    /// Check filter values and bounded list sizes before building a query.
+    pub fn validate(&self) -> Result<(), String> {
+        for year in [self.year_min, self.year_max].into_iter().flatten() {
+            if !(1..=9999).contains(&year) { return Err("Publication years must be between 1 and 9999".into()); }
+        }
+        if matches!((self.year_min, self.year_max), (Some(min), Some(max)) if min > max) {
+            return Err("year_min exceeds year_max".into());
+        }
+        if self.ext.len() > 128 || self.ext.iter().any(|value| value.is_empty() || value.len() > 64) {
+            return Err("At most 128 nonempty extensions of 64 bytes each are supported".into());
+        }
+        if self.doc_id_scope.len() > 1000 || self.doc_id_scope.iter().any(|value| value.is_empty() || value.len() > 1024) {
+            return Err("Document scope accepts at most 1000 nonempty IDs of 1024 bytes each".into());
+        }
+        if let Some(prefix) = &self.source_hash_prefix {
+            if prefix.is_empty() || prefix.len() > 64 || !prefix.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err("Source fingerprint prefix must contain 1 to 64 hexadecimal characters".into());
+            }
+        }
+        if [self.owner_id.as_ref(), self.language.as_ref(), self.tag.as_ref()].into_iter()
+            .flatten().any(|value| value.len() > 1024) {
+            return Err("Metadata filter values must not exceed 1024 bytes".into());
+        }
+        if self.tags.len() > 32 || self.tags.iter().any(|tag| tag.is_empty() || tag.len() > 1024) {
+            return Err("Required tags accept at most 32 nonempty values of 1024 bytes each".into());
+        }
+        if [self.parent_dir_prefix.as_ref(), self.url_domain.as_ref(), self.image_camera_make.as_ref(),
+            self.image_camera_model.as_ref(), self.prefer_translated_lang.as_ref(), self.doc_status.as_ref()]
+            .into_iter().flatten().any(|value| value.is_empty() || value.len() > 16384) {
+            return Err("Metadata predicates require nonempty values of at most 16384 bytes".into());
+        }
+        if self.mounted_volume_ids.as_ref().is_some_and(|ids| ids.len() > 1024 || ids.iter().any(|id| id.is_empty() || id.len() > 1024)) {
+            return Err("Mounted source scope accepts at most 1024 nonempty IDs of 1024 bytes each".into());
+        }
+        if [self.audio_duration_min_seconds, self.audio_duration_max_seconds].into_iter().flatten().any(|v| !v.is_finite() || v < 0.0)
+            || matches!((self.audio_duration_min_seconds,self.audio_duration_max_seconds),(Some(min),Some(max)) if min > max) {
+            return Err("Audio duration bounds must be finite, nonnegative and ordered".into());
+        }
+        Ok(())
+    }
+
     /// Build a LanceDB SQL `WHERE` clause fragment from the active filters.
     /// Returns `None` if no filters are set.
     ///
@@ -311,6 +610,41 @@ impl SearchFilters {
         if let Some(y) = self.year_max {
             parts.push(format!("year <= {y}"));
         }
+        if !self.ext.is_empty() {
+            parts.push(format!("ext IN ({})", self.ext.iter().map(|value|
+                format!("'{}'", value.to_lowercase().replace('\'', "''"))).collect::<Vec<_>>().join(",")));
+        }
+        for tag in self.tags.iter().chain(self.tag.iter()).collect::<std::collections::BTreeSet<_>>() {
+            parts.push(format!("array_has(tags, '{}')", tag.replace('\'', "''")));
+        }
+        if let Some(prefix) = &self.source_hash_prefix {
+            parts.push(format!("source_hash LIKE '{}%'", prefix.to_ascii_lowercase().replace('\'', "''")));
+        }
+        if !self.doc_id_scope.is_empty() {
+            parts.push(format!("doc_id IN ({})", self.doc_id_scope.iter().map(|value|
+                format!("'{}'", value.replace('\'', "''"))).collect::<Vec<_>>().join(",")));
+        }
+        if let Some(value) = &self.parent_dir_prefix {
+            let windows=(value.as_bytes().first().is_some_and(u8::is_ascii_alphabetic) && value.as_bytes().get(1)==Some(&b':'))
+                || value.starts_with("\\\\") || value.starts_with("//");
+            let mut prefixes=std::collections::BTreeSet::from([value.clone()]);
+            if windows { prefixes.insert(value.replace('\\',"/")); prefixes.insert(value.replace('/',"\\")); }
+            parts.push(format!("({})",prefixes.into_iter().map(|value|format!("parent_dir LIKE '{}%' ESCAPE '\\'",sql_like_literal(&value))).collect::<Vec<_>>().join(" OR ")));
+        }
+        for (column,value) in [("url",&self.url_domain),("image_camera_make",&self.image_camera_make),("image_camera_model",&self.image_camera_model)] {
+            if let Some(value) = value { parts.push(format!("{column} LIKE '%{}%' ESCAPE '\\'",sql_like_literal(value))); }
+        }
+        if let Some(value) = &self.prefer_translated_lang {
+            parts.push(format!("text_translated_lang = '{}' AND text_translated IS NOT NULL",value.replace('\'',"''")));
+        }
+        if let Some(value) = &self.doc_status { parts.push(format!("doc_status = '{}'",value.replace('\'',"''"))); }
+        if let Some(value) = self.audio_duration_min_seconds { parts.push(format!("audio_duration_seconds >= {value}")); }
+        if let Some(value) = self.audio_duration_max_seconds { parts.push(format!("audio_duration_seconds <= {value}")); }
+        if let Some(values) = &self.mounted_volume_ids {
+            parts.push(if values.is_empty() { "volume_id IS NULL".into() } else {
+                format!("(volume_id IS NULL OR volume_id IN ({}))",values.iter().map(|value|format!("'{}'",value.replace('\'',"''"))).collect::<Vec<_>>().join(","))
+            });
+        }
         if parts.is_empty() {
             None
         } else {
@@ -324,7 +658,7 @@ impl SearchFilters {
 /// `src-tauri/src/index/schema.rs`) has additional optional fields
 /// (`metadata_json`, `catalog_source`, `volume_id`) that are tolerated as
 /// `None` when reading server responses.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SearchHit {
     /// Stable document identifier.
     pub doc_id: String,
@@ -363,6 +697,50 @@ pub struct SearchHit {
     /// Content fingerprint, separate from the stable source occurrence ID.
     #[serde(default)]
     pub source_hash: String,
+    /// Source parent directory or URI prefix.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_dir: Option<String>,
+    /// Mounted source volume identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume_id: Option<String>,
+    /// Original source URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Stored translated document text, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_translated: Option<String>,
+    /// Language of the stored translated text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_translated_lang: Option<String>,
+    /// Document review status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc_status: Option<String>,
+    /// Audio duration in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_duration_seconds: Option<f64>,
+    /// Camera manufacturer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_camera_make: Option<String>,
+    /// Camera model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_camera_model: Option<String>,
+    /// Exact stored tags.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Independently indexed container member provenance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_member: Option<ContainerMemberLocator>,
+    /// Captured root container bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_source: Option<ContainerSourceReceipt>,
+    /// Bounded extraction coverage and omissions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_coverage: Option<ContainerCoverage>,
+
+}
+
+fn sql_like_literal(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_").replace('\'', "''")
 }
 
 // ── Docs admin ──────────────────────────────────────────────────────────────
@@ -460,6 +838,7 @@ mod tests {
             owner_id: "u".into(),
             source_hash: "deadbeef".into(),
             tags: vec!["one".into(), "two".into()],
+            ..Default::default()
         };
         let json = serde_json::to_string(&c).unwrap();
         assert!(json.contains("\"tags\":[\"one\",\"two\"]"));
@@ -496,8 +875,10 @@ mod tests {
             owner_id: "u".into(),
             source_hash: format!("hash-{i}"),
             tags: Vec::new(),
+            ..Default::default()
         };
         let b = IngestBatch {
+            container_group_version: None,
             chunks: (0..3).map(chunk).collect(),
         };
         let json = serde_json::to_string(&b).unwrap();
@@ -528,6 +909,7 @@ mod tests {
             language: Some("en".into()),
             year_min: Some(2020),
             year_max: Some(2024),
+            ..Default::default()
         };
         let sql = f.to_lance_sql().unwrap();
         assert!(sql.contains("owner_id = 'u''1'"));
@@ -549,6 +931,28 @@ mod tests {
         assert!(!json.contains("owner_id"));
         assert!(!json.contains("embedding"));
         assert!(json.contains("\"mode\":\"hybrid\""));
+    }
+
+    #[test]
+    fn extended_filters_validate_and_quote_literal_values() {
+        let filters = SearchFilters {
+            ext: vec!["PDF".into()], tag: Some("owner's reviewed".into()),
+            source_hash_prefix: Some("ABCD".into()), doc_id_scope: vec!["doc'one".into()],
+            ..Default::default()
+        };
+        filters.validate().unwrap();
+        assert!(filters.needs_metadata_filter_version());
+        let sql = filters.to_lance_sql().unwrap();
+        assert!(sql.contains("ext IN ('pdf')"));
+        assert!(sql.contains("array_has(tags, 'owner''s reviewed')"));
+        assert!(sql.contains("source_hash LIKE 'abcd%'"));
+        assert!(sql.contains("doc_id IN ('doc''one')"));
+        for value in ["", "%", "a_b", "not-a-hash"] {
+            assert!(SearchFilters { source_hash_prefix: Some(value.into()), ..Default::default() }.validate().is_err());
+        }
+        let legacy: SearchRequest = serde_json::from_str(r#"{"query":"needle"}"#).unwrap();
+        assert!(!legacy.filters().needs_metadata_filter_version());
+        assert_eq!(legacy.metadata_filter_version, None);
     }
 
     #[test]

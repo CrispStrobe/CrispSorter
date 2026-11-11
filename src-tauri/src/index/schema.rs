@@ -363,6 +363,9 @@ pub struct SearchResult {
 /// Pre-filter parameters applied before ANN / BM25 scoring.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SearchFilters {
+    /// Explicit interpretation of the query; absent preserves advanced syntax.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query_intent: Option<String>,
     pub owner_id: Option<String>,
     pub language: Option<String>,
     pub year_min: Option<i32>,
@@ -473,6 +476,32 @@ pub struct SearchFilters {
 }
 
 impl SearchFilters {
+    pub fn query_plan(&self, query: &str) -> anyhow::Result<crisp_search_query::query_plan::QueryPlan> {
+        use crisp_search_query::query_plan::{prepare_query, QueryIntent};
+        prepare_query(query, QueryIntent::parse(self.query_intent.as_deref().unwrap_or("advanced"))?, self.fuzzy, self.synonyms)
+    }
+
+    /// Validate user-provided ranges before building storage predicates.
+    pub fn validate(&self) -> Result<(), String> {
+        crisp_search_query::query_plan::QueryIntent::parse(self.query_intent.as_deref().unwrap_or("advanced")).map_err(|e| e.to_string())?;
+        if self.tags.len() > 32 || self.tags.iter().any(|tag| tag.trim().is_empty() || tag.len() > 1024) {
+            return Err("Choose at most 32 nonempty required tags, each at most 1024 bytes.".into());
+        }
+        for year in [self.year_min, self.year_max].into_iter().flatten() {
+            if !(1..=9999).contains(&year) { return Err("Publication years must be between 1 and 9999.".into()); }
+        }
+        if matches!((self.year_min, self.year_max), (Some(min), Some(max)) if min > max) {
+            return Err("The minimum publication year must not exceed the maximum.".into());
+        }
+        for seconds in [self.audio_duration_min_seconds, self.audio_duration_max_seconds].into_iter().flatten() {
+            if !seconds.is_finite() || seconds < 0.0 { return Err("Audio duration must be a non-negative number of seconds.".into()); }
+        }
+        if matches!((self.audio_duration_min_seconds, self.audio_duration_max_seconds), (Some(min), Some(max)) if min > max) {
+            return Err("The minimum audio duration must not exceed the maximum.".into());
+        }
+        Ok(())
+    }
+
     /// Build a LanceDB SQL `WHERE` clause fragment from the active filters.
     /// Returns `None` if no filters are set (no WHERE clause needed).
     pub fn to_lance_sql(&self) -> Option<String> {
@@ -511,14 +540,14 @@ impl SearchFilters {
             // forgets the validation.  LIKE 'prefix%' uses LanceDB's
             // string-index when prefix is non-empty.
             parts.push(format!(
-                "source_hash LIKE '{}%'",
-                h.replace('\'', "''")
+                "source_hash LIKE '{}%' ESCAPE '\\'",
+                sql_like_literal(&h.to_ascii_lowercase())
             ));
         }
         if let Some(ref pdir) = self.parent_dir_prefix {
             parts.push(format!(
-                "parent_dir LIKE '{}%'",
-                pdir.replace('\'', "''")
+                "parent_dir LIKE '{}%' ESCAPE '\\'",
+                sql_like_literal(pdir)
             ));
         }
         if let Some(d_min) = self.audio_duration_min_seconds {
@@ -529,14 +558,14 @@ impl SearchFilters {
         }
         if let Some(ref make) = self.image_camera_make {
             parts.push(format!(
-                "image_camera_make LIKE '%{}%'",
-                make.replace('\'', "''")
+                "image_camera_make LIKE '%{}%' ESCAPE '\\'",
+                sql_like_literal(make)
             ));
         }
         if let Some(ref model) = self.image_camera_model {
             parts.push(format!(
-                "image_camera_model LIKE '%{}%'",
-                model.replace('\'', "''")
+                "image_camera_model LIKE '%{}%' ESCAPE '\\'",
+                sql_like_literal(model)
             ));
         }
         if let Some(ref dom) = self.url_domain {
@@ -544,11 +573,11 @@ impl SearchFilters {
             // url and won't match (intended — the filter narrows to
             // rows with provenance).
             parts.push(format!(
-                "url LIKE '%{}%'",
-                dom.replace('\'', "''")
+                "url LIKE '%{}%' ESCAPE '\\'",
+                sql_like_literal(dom)
             ));
         }
-        if let Some(ref t) = self.tag {
+        for t in self.tags.iter().chain(self.tag.iter()).collect::<std::collections::BTreeSet<_>>() {
             // Element-of match on the Lance List<Utf8> tags column
             // via DataFusion's `array_has`.  Pre-v107 rows have NULL
             // tags and don't match.
@@ -579,6 +608,13 @@ impl SearchFilters {
             None
         }
     }
+}
+
+/// User-entered filter text is literal. Only the surrounding wildcard added by
+/// the filter supplies prefix/substring semantics; '%' and '_' in a real path,
+/// camera name or URL must not broaden the selected source set.
+pub(crate) fn sql_like_literal(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_").replace('\'', "''")
 }
 
 // ── Document query API (PLAN P9 Übersicht scaling) ───────────────────────

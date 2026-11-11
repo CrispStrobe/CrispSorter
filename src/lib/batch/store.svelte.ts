@@ -14,7 +14,7 @@ import { llmClient } from '../llm/client';
 import { getWebLLMLoadedModel } from '../llm/webllm';
 import { getORTLoadedModel } from '../llm/ort';
 import type { BatchItem, Metadata } from '../types';
-import { extractText, AUDIO_EXTENSIONS } from '../extractors';
+import { extractText, usesNativePathExtraction, AUDIO_EXTENSIONS } from '../extractors';
 import { flog, logDebug } from '../log';
 import { applyFieldTemplate } from '../metadataFields';
 import { sortPlanMatches, type SortPlan } from './sortPlan';
@@ -672,7 +672,8 @@ export class BatchManager {
                         try {
                             const fileData = isProviderUri(item.originalPath)
                                 ? await readProviderFile(item.originalPath)
-                                : await readFile(item.originalPath);
+                                : usesNativePathExtraction(item.originalName)
+                                    ? new Uint8Array(0) : await readFile(item.originalPath);
                             if (this.stopRequested) {
                                 item.status = 'unfinished';
                                 item.statusDetail = 'interrupted';

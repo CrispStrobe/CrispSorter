@@ -56,11 +56,33 @@ export function localPathFromSearchUri(uri: string): string | null {
     if (uri.startsWith('crisp+local://')) {
         const rest = uri.slice('crisp+local://'.length);
         const slash = rest.indexOf('/');
-        return slash >= 0 ? decodeURIComponent(rest.slice(slash)).replace(/^\/+/, '/') : null;
+        if (slash < 0) return null;
+        try {
+            const path = decodeURIComponent(rest.slice(slash)).replace(/^\/+/, '/');
+            // Invalid provenance stays visible as a URI, but must not enable
+            // filesystem actions or prevent the other results from rendering.
+            return path.includes('\0') ? null : path;
+        } catch {
+            return null;
+        }
     }
     if (uri.startsWith('crisp+drive://') || uri.startsWith('crisp+cb-archive://')) return null;
     if (/^[a-z][a-z0-9+.-]*:\/\//i.test(uri)) return null;
-    return uri || null;
+    return uri && !uri.includes('\0') ? uri : null;
+}
+
+/** Parse registered-drive provenance without turning malformed metadata into UI errors. */
+export function drivePathFromSearchUri(uri: string): { driveId: string; remotePath: string } | null {
+    if (!uri.startsWith('crisp+drive://')) return null;
+    const rest = uri.slice('crisp+drive://'.length);
+    const slash = rest.indexOf('/');
+    if (slash <= 0 || rest.includes('\0')) return null;
+    try {
+        const remotePath = decodeURIComponent(rest.slice(slash));
+        return remotePath.includes('\0') ? null : { driveId: rest.slice(0, slash), remotePath };
+    } catch {
+        return null;
+    }
 }
 
 export function pathBaseName(path: string): string {

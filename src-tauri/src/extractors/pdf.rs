@@ -44,6 +44,7 @@ pub fn extract(path: &Path) -> Result<ExtractedDocument> {
         // dc:subject parse).  Empty Vec keeps the wire happy.
         tags: vec![],
         audio_pcm: None,
+        ..Default::default()
     })
 }
 

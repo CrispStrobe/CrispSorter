@@ -1,0 +1,25 @@
+[workspace]
+
+[package]
+name = "ocr-word-contract"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "ocr-word-contract"
+path = "main.rs"
+
+[features]
+default = ["sidecars"]
+sidecars = []
+desktop-mas = []
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "tiff", "webp"] }
+tempfile = "3"
+
+[profile.dev]
+debug = 0
