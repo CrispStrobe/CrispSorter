@@ -35,9 +35,10 @@ pub mod tauri_commands;
 pub mod webdav;
 mod mounted_read;
 
-use anyhow::{anyhow, Context, Result};
-use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use anyhow::{anyhow, Result};
+use std::path::PathBuf;
+#[cfg(test)]
+use std::path::Path;
 
 
 /// Split out from the `cfg!` above so the wording is assertable on every

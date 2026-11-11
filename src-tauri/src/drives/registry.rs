@@ -147,6 +147,7 @@ impl DriveRegistry {
         // temporary file is on the same filesystem, and persist replaces it
         // atomically on supported desktop platforms, including Windows.
         let parent = self.path.parent().context("drive registry parent")?;
+        std::fs::create_dir_all(parent).context("creating drive registry directory")?;
         let mut staged =
             tempfile::NamedTempFile::new_in(parent).context("staging drive registry")?;
         staged

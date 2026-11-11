@@ -129,6 +129,27 @@ fn contract(drive: &dyn CloudDrive) {
         .read_file(Path::new("contract/empty.bin"))
         .unwrap()
         .is_empty());
+    // Reader size failures must close write handles and permit later operations.
+    assert!(drive
+        .write_file_from_reader(Path::new("contract/short.bin"), &mut Cursor::new([1, 2]), 3)
+        .is_err());
+    assert!(drive
+        .write_file_from_reader(Path::new("contract/long.bin"), &mut Cursor::new([1, 2]), 1)
+        .is_err());
+    drive
+        .write_file(Path::new("contract/after-error.bin"), &[7])
+        .unwrap();
+    assert_eq!(
+        drive
+            .read_file(Path::new("contract/after-error.bin"))
+            .unwrap(),
+        [7]
+    );
+    for name in ["short.bin", "long.bin", "after-error.bin"] {
+        drive
+            .delete(Path::new(&format!("contract/{name}")))
+            .unwrap();
+    }
     for bad in ["/../escape", "../escape", "//host/share", "C:/escape"] {
         assert!(drive.stat(Path::new(bad)).is_err());
     }
