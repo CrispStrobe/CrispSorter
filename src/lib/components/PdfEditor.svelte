@@ -1,6 +1,9 @@
 <script lang="ts">
     let { initialPath = '' }: { initialPath?: string } = $props();
-    $effect(() => { const path = initialPath; if (path) openSession(path); });
+    // Only `initialPath` may trigger this. openSession reads `session` (via
+    // closeSession) before its first await; tracking that re-ran the effect
+    // whenever the session changed, closing and reopening it in a loop.
+    $effect(() => { const path = initialPath; if (path) untrack(() => openSession(path)); });
     // P32.1b — direct-manipulation PDF page editor.
     //
     // Talks to the `pdf_session_*` commands (P32.1a) rather than the
@@ -17,6 +20,7 @@
     import { invoke } from '@tauri-apps/api/core';
     import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
     import { readFile } from '@tauri-apps/plugin-fs';
+    import { untrack } from 'svelte';
     import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf';
     import { i18n } from '$lib/i18n.svelte';
     import {
@@ -123,6 +127,7 @@
     const sourceDocs = new Map<string, any>();
     let previewDoc: any = null;
     const thumbCache = new Map<string, string>();
+    let thumbRun = 0;
 
     const THUMB_WIDTH = 150;
     const STAGE_MAX_WIDTH = 560;
@@ -791,7 +796,11 @@
         if (needsPreview) preview = await refreshPreviewDoc();
 
         const next: Record<number, string> = {};
+        // Show each tile as soon as it renders: large documents (hundreds of
+        // pages) otherwise stay on spinners until the last page is done.
+        const epoch = ++thumbRun;
         for (let i = 0; i < origins.length; i++) {
+            if (epoch !== thumbRun || !session) return; // superseded by a newer refresh
             const o = origins[i];
             const fromSource = !!o.source && o.index !== null && !o.dirty;
             const key = fromSource
@@ -807,7 +816,7 @@
                     : preview
                         ? await renderThumb(preview, i + 1, 0)
                         : '';
-                if (url) { thumbCache.set(key, url); next[i] = url; }
+                if (url) { thumbCache.set(key, url); next[i] = url; thumbs[i] = url; }
             } catch {
                 // A page that fails to rasterise still gets a tile — the
                 // placeholder is better than dropping it from the grid.

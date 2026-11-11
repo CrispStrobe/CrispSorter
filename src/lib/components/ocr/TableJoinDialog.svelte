@@ -341,48 +341,48 @@
 </dialog>
 
 <style>
-  .table-join-dialog { box-sizing: border-box; width: min(1120px, calc(100vw - 28px)); max-width: calc(100vw - 28px); max-height: calc(100vh - 30px); overflow: auto; padding: 22px; border: 1px solid #587496; border-radius: 10px; background: #142438; color: #dae8f9; box-shadow: 0 18px 80px #0009; font: inherit; font-size: 13px; }
+  .table-join-dialog { box-sizing: border-box; width: min(1120px, calc(100vw - 28px)); max-width: calc(100vw - 28px); max-height: calc(100vh - 30px); overflow: auto; padding: 22px; border: 1px solid #71717a; border-radius: 10px; background: #27272a; color: #dbeafe; box-shadow: 0 18px 80px #0009; font: inherit; font-size: 13px; }
   .table-join-dialog::backdrop { background: #07101dd4; }
   h2 { margin: 0 0 9px; font-size: 20px; } h3 { margin: 0; font-size: 15px; line-height: 1.6; overflow-wrap: anywhere; } h4 { margin: 0; font-size: 13px; }
-  .help { margin: 9px 0 12px; color: #a8bfdc; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
-  .field-label { display: flex; flex-direction: column; gap: 6px; min-width: 0; margin: 12px 0; color: #c2d6ef; font-size: 12px; }
-  input:not([type="checkbox"]), select, textarea { box-sizing: border-box; width: 100%; min-width: 0; padding: 9px 10px; border: 1px solid #486484; border-radius: 5px; background: #0d1d30; color: #e0edfc; font: inherit; font-size: 13px; line-height: 1.6; }
+  .help { margin: 9px 0 12px; color: #93c5fd; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+  .field-label { display: flex; flex-direction: column; gap: 6px; min-width: 0; margin: 12px 0; color: #bfdbfe; font-size: 12px; }
+  input:not([type="checkbox"]), select, textarea { box-sizing: border-box; width: 100%; min-width: 0; padding: 9px 10px; border: 1px solid #52525b; border-radius: 5px; background: #172554; color: #dbeafe; font: inherit; font-size: 13px; line-height: 1.6; }
   textarea { resize: vertical; }
   .join-options[hidden] { display: none; }
   .add-table-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 12px; margin: 15px 0; }
   .add-table-row .field-label { margin: 0; }
-  .destination { color: #c0d7f2; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
-  .mapping-choice { display: flex; align-items: center; gap: 9px; margin: 14px 0 4px; color: #c6d9f1; font-size: 12px; }
+  .destination { color: #bfdbfe; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+  .mapping-choice { display: flex; align-items: center; gap: 9px; margin: 14px 0 4px; color: #bfdbfe; font-size: 12px; }
   .column-count, .header-count { max-width: 280px; }
   .join-inputs { list-style: none; padding: 0; margin: 18px 0 0; }
-  .join-input { margin: 14px 0; padding: 14px; border: 1px solid #425e7f; border-radius: 6px; background: #112137; }
+  .join-input { margin: 14px 0; padding: 14px; border: 1px solid #52525b; border-radius: 6px; background: #18181b; }
   .input-title { display: flex; justify-content: space-between; gap: 12px; align-items: start; }
-  .input-title > span { flex: none; padding-top: 4px; color: #a8c0df; font-size: 11px; }
+  .input-title > span { flex: none; padding-top: 4px; color: #93c5fd; font-size: 11px; }
   .input-badges { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 10px; }
-  .input-badges > span { padding: 3px 6px; border: 1px solid #47756e; border-radius: 4px; background: #193d37; color: #bce4d9; font-size: 10px; }
-  .input-badges > span.historical { border-color: #967747; background: #3d3222; color: #eed0a1; }
+  .input-badges > span { padding: 3px 6px; border: 1px solid #71717a; border-radius: 4px; background: #14532d; color: #86efac; font-size: 10px; }
+  .input-badges > span.historical { border-color: #71717a; background: #27272a; color: #fcd34d; }
   .input-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
-  details { margin: 12px 0; padding: 10px; border: 1px solid #405b7c; border-radius: 5px; }
-  summary { color: #bfd5ef; font-size: 12px; line-height: 1.7; cursor: pointer; overflow-wrap: anywhere; }
+  details { margin: 12px 0; padding: 10px; border: 1px solid #52525b; border-radius: 5px; }
+  summary { color: #bfdbfe; font-size: 12px; line-height: 1.7; cursor: pointer; overflow-wrap: anywhere; }
   .column-order { margin: 12px 0 0; }
   .column-map-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 12px; margin-top: 3px; }
   .column-map-grid .field-label { font-size: 11px; }
-  .column-hint { color: #9eb7d7; font-size: 10px; line-height: 1.6; overflow-wrap: anywhere; }
+  .column-hint { color: #93c5fd; font-size: 10px; line-height: 1.6; overflow-wrap: anywhere; }
   .join-preview > h3 { margin: 15px 0 7px; }
-  .omitted-headers { margin: 15px 0; padding: 13px; border: 1px solid #967347; border-radius: 5px; background: #382e22; }
-  .omitted-headers h4 { color: #f0d3a8; line-height: 1.6; }
-  .join-warnings { padding-left: 21px; color: #e7cea3; font-size: 12px; line-height: 1.7; }
+  .omitted-headers { margin: 15px 0; padding: 13px; border: 1px solid #71717a; border-radius: 5px; background: #27272a; }
+  .omitted-headers h4 { color: #fcd34d; line-height: 1.6; }
+  .join-warnings { padding-left: 21px; color: #fcd34d; font-size: 12px; line-height: 1.7; }
   .input-previews { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 14px; margin-top: 17px; }
   .input-previews > details { min-width: 0; }
-  .inclusion-note { margin: 16px 0 12px; padding: 10px; border-left: 3px solid #587da7; color: #bad0eb; background: #192d46; font-size: 12px; line-height: 1.7; }
-  .error, .warning { padding: 11px; border: 1px solid #9b7849; border-radius: 5px; background: #3b3022; color: #f0d4a9; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
-  .error { border-color: #a66b7d; background: #452737; color: #ffd4df; }
-  .local-notice { color: #bddbfb; font-size: 12px; line-height: 1.7; }
-  .dialog-actions { position: sticky; bottom: -22px; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 9px; margin: 18px -1px -1px; padding: 14px 0 2px; border-top: 1px solid #3d5878; background: #142438; }
-  button { padding: 9px 12px; border: 1px solid #5a7698; border-radius: 5px; background: #243f5e; color: #e0edfd; font: inherit; font-size: 12px; cursor: pointer; }
-  button.primary { border-color: #89b4ed; background: #326bb5; }
+  .inclusion-note { margin: 16px 0 12px; padding: 10px; border-left: 3px solid #71717a; color: #bfdbfe; background: #27272a; font-size: 12px; line-height: 1.7; }
+  .error, .warning { padding: 11px; border: 1px solid #71717a; border-radius: 5px; background: #27272a; color: #fcd34d; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+  .error { border-color: #71717a; background: #27272a; color: #fecaca; }
+  .local-notice { color: #bfdbfe; font-size: 12px; line-height: 1.7; }
+  .dialog-actions { position: sticky; bottom: -22px; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 9px; margin: 18px -1px -1px; padding: 14px 0 2px; border-top: 1px solid #52525b; background: #27272a; }
+  button { padding: 9px 12px; border: 1px solid #71717a; border-radius: 5px; background: #3f3f46; color: #dbeafe; font: inherit; font-size: 12px; cursor: pointer; }
+  button.primary { border-color: #93c5fd; background: #2563eb; }
   button:disabled, input:disabled, select:disabled { opacity: .5; cursor: default; }
-  button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible { outline: 2px solid #a6d2ff; outline-offset: 2px; }
+  button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible { outline: 2px solid #bfdbfe; outline-offset: 2px; }
   h3:focus { outline: none; }
   @media (max-width: 720px) { .table-join-dialog { padding: 16px; } .add-table-row { grid-template-columns: minmax(0, 1fr); } .column-map-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .input-previews { grid-template-columns: minmax(0, 1fr); } .dialog-actions { bottom: -16px; } .dialog-actions button { flex: 1 1 auto; } }
   @media (max-width: 430px) { .column-map-grid { grid-template-columns: minmax(0, 1fr); } .join-input { padding: 11px; } .input-title { flex-direction: column; gap: 2px; } }

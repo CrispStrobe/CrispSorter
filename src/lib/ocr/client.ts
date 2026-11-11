@@ -200,6 +200,18 @@ export function exportProgressLabel(progress: ExportProgress): string {
 }
 
 /** Explicit adapter makes the complete review workflow testable without model downloads. */
+/** Tesseract needs a concrete language: "automatic" follows the app's own
+ *  interface language (German → deu), so German text keeps its umlauts. */
+let defaultOcrLanguage = "eng";
+/** Set from the app's interface language by the OCR workspace. */
+export function setDefaultOcrLanguage(language: string): void { defaultOcrLanguage = language; }
+export function recognitionLanguage(engine?: string | null, language?: string | null): string | null {
+  const automatic = !language || language === "auto";
+  const tesseract = !engine || engine === "auto" || engine === "tesseract";
+  if (automatic && tesseract) return defaultOcrLanguage;
+  return language ?? null;
+}
+
 export interface PrepareOptions {
   /** The user agreed to download the models this preparation needs. */
   allowDownloads?: boolean;
@@ -458,7 +470,7 @@ export const workspaceClient: WorkspaceClient = {
       ...options,
       config: options.config ?? null,
       engine: options.engine ?? null,
-      language: options.language ?? null,
+      language: recognitionLanguage(options.engine, options.language),
       zone: options.zone ?? null,
       cpuPixelBudget: options.cpuPixelBudget ?? null,
     }),

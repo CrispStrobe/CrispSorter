@@ -16,6 +16,6 @@
   .bold { font-weight: 700; }
   .italic { font-style: italic; }
   .underline { text-decoration: underline; text-underline-offset: 2px; }
-  .note-link { padding: 0; border: 0; background: transparent; color: #82c0ff; font: inherit; text-decoration: underline dotted; text-underline-offset: 3px; cursor: pointer; }
-  .note-link:focus-visible { outline: 2px solid #a4d1ff; outline-offset: 2px; }
+  .note-link { padding: 0; border: 0; background: transparent; color: #93c5fd; font: inherit; text-decoration: underline dotted; text-underline-offset: 3px; cursor: pointer; }
+  .note-link:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
 </style>

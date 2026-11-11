@@ -126,40 +126,40 @@
 </section>
 
 <style>
-  .workbook-options { margin: 20px 0; padding: 15px 0; border-top: 1px solid #3c516f; border-bottom: 1px solid #3c516f; min-width: 0; }
+  .workbook-options { margin: 20px 0; padding: 15px 0; border-top: 1px solid #52525b; border-bottom: 1px solid #52525b; min-width: 0; }
   .workbook-heading, .selection-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
-  h3, h4 { margin: 0; color: #cbdcf1; font-size: 12px; overflow-wrap: anywhere; }
-  .workbook-heading > span { color: #a9c4e3; font-size: 11px; }
-  .workbook-help, .historical-reason, .workbook-limits, .page-label, .source-notes { color: #a6bdd8; font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
+  h3, h4 { margin: 0; color: #bfdbfe; font-size: 12px; overflow-wrap: anywhere; }
+  .workbook-heading > span { color: #93c5fd; font-size: 11px; }
+  .workbook-help, .historical-reason, .workbook-limits, .page-label, .source-notes { color: #93c5fd; font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
   .workbook-help { margin: 9px 0 12px; }
   .table-catalog { max-height: 340px; overflow: auto; padding-right: 3px; }
-  fieldset { margin: 12px 0; padding: 10px; border: 1px solid #3b5473; border-radius: 5px; min-width: 0; }
-  legend { padding: 0 5px; color: #bcd1eb; font-size: 11px; overflow-wrap: anywhere; max-width: 100%; }
-  .table-candidate + .table-candidate { padding-top: 12px; margin-top: 12px; border-top: 1px solid #344a64; }
-  .include-table { display: flex; align-items: flex-start; gap: 8px; color: #d0e1f5; font-size: 12px; }
+  fieldset { margin: 12px 0; padding: 10px; border: 1px solid #52525b; border-radius: 5px; min-width: 0; }
+  legend { padding: 0 5px; color: #d4d4d8; font-size: 11px; overflow-wrap: anywhere; max-width: 100%; }
+  .table-candidate + .table-candidate { padding-top: 12px; margin-top: 12px; border-top: 1px solid #3f3f46; }
+  .include-table { display: flex; align-items: flex-start; gap: 8px; color: #bfdbfe; font-size: 12px; }
   .include-table input { margin-top: 3px; flex-shrink: 0; }
   .include-table span { min-width: 0; overflow-wrap: anywhere; }
-  .include-table small { display: block; color: #a0b8d6; line-height: 1.7; margin-top: 3px; }
-  .source-state { display: inline-block; margin: 7px 0 0 23px; padding: 2px 5px; border: 1px solid #417565; border-radius: 3px; color: #b9e1d2; font-size: 10px; }
-  .source-state.historical { color: #e9c996; border-color: #896c40; }
-  .historical-reason { margin: 5px 0 0 23px; color: #e3c99d; }
+  .include-table small { display: block; color: #93c5fd; line-height: 1.7; margin-top: 3px; }
+  .source-state { display: inline-block; margin: 7px 0 0 23px; padding: 2px 5px; border: 1px solid #71717a; border-radius: 3px; color: #86efac; font-size: 10px; }
+  .source-state.historical { color: #fcd34d; border-color: #71717a; }
+  .historical-reason { margin: 5px 0 0 23px; color: #fcd34d; }
   .joined-hint { margin-bottom: 0; }
   .selection-heading { margin: 16px 0 10px; }
-  .sheet-card { padding: 12px; margin: 10px 0; border: 1px solid #3d5572; border-radius: 5px; background: #14273d; min-width: 0; }
+  .sheet-card { padding: 12px; margin: 10px 0; border: 1px solid #52525b; border-radius: 5px; background: #27272a; min-width: 0; }
   .page-label { margin: 4px 0 12px; }
-  .workbook-field { display: flex; flex-direction: column; gap: 6px; margin: 10px 0; font-size: 11px; color: #bbd0eb; }
-  input[type="text"] { box-sizing: border-box; width: 100%; min-width: 0; padding: 8px; border: 1px solid #455f80; border-radius: 4px; color: #d4e5f8; background: #0f2035; font: inherit; font-size: 12px; }
-  input[aria-invalid="true"] { border-color: #c67e91; }
+  .workbook-field { display: flex; flex-direction: column; gap: 6px; margin: 10px 0; font-size: 11px; color: #d4d4d8; }
+  input[type="text"] { box-sizing: border-box; width: 100%; min-width: 0; padding: 8px; border: 1px solid #52525b; border-radius: 4px; color: #dbeafe; background: #172554; font: inherit; font-size: 12px; }
+  input[aria-invalid="true"] { border-color: #f87171; }
   .sheet-actions { display: flex; gap: 7px; flex-wrap: wrap; }
-  button { border: 1px solid #4d698a; border-radius: 4px; background: #203b59; color: #c9def4; font-size: 11px; padding: 7px 9px; cursor: pointer; max-width: 100%; }
+  button { border: 1px solid #71717a; border-radius: 4px; background: #3f3f46; color: #bfdbfe; font-size: 11px; padding: 7px 9px; cursor: pointer; max-width: 100%; }
   button:disabled { opacity: .45; cursor: default; }
-  button:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px solid #85b8ff; outline-offset: 3px; }
+  button:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px solid #93c5fd; outline-offset: 3px; }
   .remove-sheet { margin-top: 11px; }
   .sheet-errors, ul.source-notes { margin: 12px 0 0; padding-left: 17px; font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
-  .sheet-errors { color: #ffd1db; } .source-notes { color: #e3c99d; }
+  .sheet-errors { color: #fecaca; } .source-notes { color: #fcd34d; }
   .table-preview { margin-top: 12px; font-size: 11px; }
   .table-preview summary { margin-bottom: 10px; }
   .workbook-limits { margin-top: 16px; }
-  summary { cursor: pointer; color: #bfd6f2; }
+  summary { cursor: pointer; color: #bfdbfe; }
   .workbook-limits p { margin: 9px 0; }
 </style>

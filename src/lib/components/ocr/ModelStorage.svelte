@@ -96,23 +96,23 @@
 
 <style>
   .model-storage { margin-top: 12px; min-width: 0; }
-  button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 40px; border: 1px solid var(--border-color, #344054); border-radius: 7px; padding: 7px 10px; color: inherit; background: transparent; font: inherit; cursor: pointer; }
+  button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 40px; border: 1px solid var(--border-color, #3f3f46); border-radius: 7px; padding: 7px 10px; color: inherit; background: transparent; font: inherit; cursor: pointer; }
   button:disabled { opacity: .5; cursor: default; }
-  button:focus-visible { outline: 2px solid var(--accent-color, #67b5ff); outline-offset: 2px; }
+  button:focus-visible { outline: 2px solid var(--accent-color, #60a5fa); outline-offset: 2px; }
   .storage-toggle, .clean-button { width: 100%; }
-  section { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border-color, #344054); }
+  section { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border-color, #3f3f46); }
   .storage-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
   h4, h3 { margin: 0; font-size: 14px; }
   h3 { font-size: 17px; }
   .icon-button { padding: 8px; min-width: 40px; border: 0; }
   .storage-summary, .storage-hint { font-size: 12px; line-height: 1.5; opacity: .8; }
-  .model-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border-color, #344054); }
+  .model-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border-color, #3f3f46); }
   .model-row > div { min-width: 0; overflow-wrap: anywhere; }
   .model-row strong, .model-row span { display: block; font-size: 12px; }
   .model-row span { opacity: .7; margin-top: 4px; }
   .remove-button { flex-shrink: 0; font-size: 12px; }
   .clean-button { margin-top: 12px; }
-  .storage-warning { font-size: 12px; line-height: 1.5; color: var(--warning-color, #e6b35a); overflow-wrap: anywhere; }
+  .storage-warning { font-size: 12px; line-height: 1.5; color: var(--warning-color, #eab308); overflow-wrap: anywhere; }
   .remove-dialog {
     position: fixed;
     inset: calc(12px + env(safe-area-inset-top, 0px))
@@ -128,9 +128,9 @@
     overflow: auto;
     overscroll-behavior: contain;
     box-sizing: border-box;
-    color: var(--text-primary, #e6edf7);
-    background: var(--bg-secondary, #162131);
-    border: 1px solid var(--border-color, #344054);
+    color: var(--text-primary, #e4e4e7);
+    background: var(--bg-secondary, #27272a);
+    border: 1px solid var(--border-color, #3f3f46);
     border-radius: 12px;
     padding: 20px;
   }
@@ -139,6 +139,6 @@
   .remove-dialog::backdrop { background: #0009; }
   .remove-dialog p { line-height: 1.6; font-size: 14px; overflow-wrap: anywhere; }
   .dialog-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; }
-  .confirm-remove { color: #ffb6b6; border-color: #d26161; }
+  .confirm-remove { color: #fca5a5; border-color: #ef4444; }
   @media (pointer: coarse) { button { min-height: 44px; } }
 </style>
