@@ -120,6 +120,40 @@ test('disables lexical interpretation in Semantic mode and restores its selectio
     await expect(interpretation).toHaveValue('natural');
 });
 
+test('makes the All sources guard actionable from Semantic while preserving selected-index semantic search', async ({ page }) => {
+    await openSearch(page);
+    const interpretation = page.getByRole('combobox', { name: 'Query interpretation', exact: true });
+    await interpretation.selectOption('natural');
+    await page.getByRole('button', { name: 'Semantic', exact: true }).click();
+    await expect(interpretation).toBeDisabled();
+    await expect(interpretation).toHaveValue('natural');
+    await page.getByRole('textbox', { name: 'Search indexed documents' }).fill('carbon dioxide');
+    const allSources = page.getByTitle('Search all backends (local + cloud-backup + CrispLens) with RRF merge', { exact: true });
+    const federationCalls = () => page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'sync_federated_search'));
+    await allSources.click();
+    await expect(page.locator('.fed-results .error')).toContainText('For All sources (Alle), first select Full text or Hybrid, then choose Advanced syntax. Use Search for semantic retrieval in the selected index.');
+    expect(await federationCalls()).toEqual([]);
+    await expect(allSources).toBeEnabled();
+    await expect(interpretation).toBeDisabled();
+
+    await expect(page.locator('.search-btn')).toBeEnabled();
+    await page.locator('.search-btn').click();
+    await expect.poll(() => lastSearch(page)).toMatchObject({
+        query: 'carbon dioxide', mode: 'vector', searchFilters: { query_intent: 'natural' },
+    });
+    await expect(page.locator('.result-card')).toHaveCount(1);
+    expect(await federationCalls()).toEqual([]);
+
+    await page.getByRole('button', { name: 'Full text', exact: true }).click();
+    await expect(interpretation).toBeEnabled();
+    await interpretation.selectOption('advanced');
+    await allSources.click();
+    await expect.poll(federationCalls).toHaveLength(1);
+    expect((await federationCalls())[0].args).toMatchObject({ q: 'carbon dioxide' });
+    await expect(page.locator('.fed-results .error')).toHaveCount(0);
+    await expect(allSources).toBeEnabled();
+});
+
 for (const mode of ['Full text', 'Hybrid']) {
     test('rejects unsupported natural Cloud and All sources requests in ' + mode + ' and recovers in Advanced syntax', async ({ page }) => {
         await openSearch(page);

@@ -504,9 +504,13 @@
         const request = ++fedRequest;
         if (queryIntent === 'natural') {
             fedLoading = false; fedSearched = true; fedResults = [];
-            fedErrors = { global: i18n.lang === 'de'
-                ? 'Natürliche Sprache wird über Suchen mit dem ausgewählten Index unterstützt. Für Alle bitte Erweiterte Syntax wählen.'
-                : 'Use Search with the selected index for Natural language. Choose Advanced syntax for All sources.' };
+            fedErrors = { global: mode === 'vector'
+                ? (i18n.lang === 'de'
+                    ? 'Für Alle zuerst Volltext oder Hybrid und anschließend Erweiterte Syntax wählen. Für eine semantische Suche im ausgewählten Index Suchen verwenden.'
+                    : 'For All sources (Alle), first select Full text or Hybrid, then choose Advanced syntax. Use Search for semantic retrieval in the selected index.')
+                : (i18n.lang === 'de'
+                    ? 'Natürliche Sprache wird über Suchen mit dem ausgewählten Index unterstützt. Für Alle bitte Erweiterte Syntax wählen.'
+                    : 'Use Search with the selected index for Natural language. Choose Advanced syntax for All sources.') };
             return;
         }
         // The current remote federation wire paths do not carry these

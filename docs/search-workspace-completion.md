@@ -205,6 +205,9 @@ reindex to reconstruct its postings from the stored or original content.
 
 ## Verification
 
+The [2026-11-11 continuation](search-workspace-continuation-20261111.md) records
+the subsequent implementation, exact checkpoint revisions and fresh results.
+
 The verification layers cover frontend state and types, production builds,
 actual native text/vector/journal databases, HTTP client/server semantics,
 native archive/MIME/HTML/text extraction, browser interactions with controlled
