@@ -109,7 +109,9 @@
       disabled={!canSelect || !flagged.length}
       title="Select the next uncertain, unscored, or edited word in this region"
     >Next word to check <ChevronRight size={12} /></button>
-  </div>
+    <label class="show-scores"><input type="checkbox" bind:checked={showScores} />Show scores</label>
+    <details class="word-info">
+      <summary aria-label="About word colours" title="About word colours">i</summary>
   <div class="color-legend" role="list" aria-label="Confidence color legend">
     <span class="legend-item high" role="listitem"><span class="swatch" aria-hidden="true"></span>High ≥{percent(threshold)}</span>
     {#if lowThreshold < threshold}<span class="legend-item medium" role="listitem"><span class="swatch" aria-hidden="true"></span>Review {percent(lowThreshold)}–&lt;{percent(threshold)}</span>{/if}
@@ -117,13 +119,6 @@
     <span class="legend-item unscored" role="listitem"><span class="swatch" aria-hidden="true"></span>Unscored</span>
     <span class="legend-item edited" role="listitem"><span class="swatch" aria-hidden="true"></span>Edited</span>
   </div>
-  <label class="show-scores"><input type="checkbox" bind:checked={showScores} />Show scores</label>
-  {#if edited}
-    <div class="evidence-source" aria-label="Word evidence source">
-      <button type="button" aria-pressed={source === "current"} onclick={() => (original = false)}>Current text</button>
-      <button type="button" aria-pressed={source === "original"} onclick={() => (original = true)}>{manual ? "Before later edits" : "Original OCR"}</button>
-    </div>
-  {/if}
   <p class="word-help">
     {#if manual}
       This passage was created manually. Its words have no recognition score.
@@ -148,6 +143,16 @@
       so word confidence is unavailable. Inspect the source before accepting the text.
     {/if}
   </p>
+    </details>
+  </div>
+
+  {#if edited}
+    <div class="evidence-source" aria-label="Word evidence source">
+      <button type="button" aria-pressed={source === "current"} onclick={() => (original = false)}>Current text</button>
+      <button type="button" aria-pressed={source === "original"} onclick={() => (original = true)}>{manual ? "Before later edits" : "Original OCR"}</button>
+    </div>
+  {/if}
+
   {#if words.length}
     <div class="word-list" dir="auto" aria-label="OCR words in reading order">{#each words as word, index (word.start)}<span class="word-separator">{evidenceText.slice(index === 0 ? 0 : words[index - 1].end, word.start)}</span>{#if source === "current"}<button
             type="button"
@@ -379,4 +384,12 @@
   .word:disabled {
     cursor: default;
   }
+  .word-heading { flex-wrap: wrap; }
+  .word-info { position: relative; }
+  .word-info summary { list-style: none; cursor: pointer; width: 16px; height: 16px; border-radius: 50%; border: 1px solid #52525b;
+    color: #a1a1aa; font: italic 600 10px/14px Georgia, serif; text-align: center; }
+  .word-info summary::-webkit-details-marker { display: none; }
+  .word-info[open] > :not(summary) { position: relative; }
+  .word-info[open] { flex-basis: 100%; }
+  .word-info[open] summary { margin-left: auto; }
 </style>

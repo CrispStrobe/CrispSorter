@@ -5,6 +5,7 @@
   import { message as nativeMessage } from "@tauri-apps/plugin-dialog";
   import {
     ScanText,
+    FileImage,
     Plus,
     FolderOpen,
     Save,
@@ -65,7 +66,7 @@
   import { beginBatch, updateBatchPhase, updateBatchPage, batchPageIsCurrent, resumeBatch, type BatchOptions } from "$lib/ocr/batch";
   import WordReview from "./ocr/WordReview.svelte";
   import PageTextEditor from "./ocr/PageTextEditor.svelte";
-  import ConfidenceText from "./ocr/ConfidenceText.svelte";
+  import DocumentText from "./ocr/DocumentText.svelte";
   import StructurePanel from "./ocr/StructurePanel.svelte";
   import PreviousStructure from "./ocr/PreviousStructure.svelte";
   import PageTextDraftDialog from "./ocr/PageTextDraftDialog.svelte";
@@ -236,7 +237,20 @@
   let overlays = $state(true);
   let showOriginal = $state(false);
   let onlyIssues = $state(false);
-  let textView = $state<"regions" | "confidence" | "text" | "structure">("regions");
+  type TextView = "document" | "regions" | "text" | "structure";
+  const TEXT_VIEW_KEY = "crispsorter.ocr.reviewView";
+  /** The page text as one document is the default; the last choice is kept. */
+  let textView = $state<TextView>((() => {
+    try {
+      const saved = globalThis.localStorage?.getItem(TEXT_VIEW_KEY);
+      if (saved === "document" || saved === "regions" || saved === "text" || saved === "structure") return saved;
+    } catch { /* storage unavailable */ }
+    return "document";
+  })());
+  $effect(() => {
+    const view = textView;
+    try { globalThis.localStorage?.setItem(TEXT_VIEW_KEY, view); } catch { /* storage unavailable */ }
+  });
   let searchOpen = $state(false);
   let query = $state(""),
     replacement = $state(""),
@@ -495,9 +509,21 @@
         activePage?.provenance.preparationWarnings,
       ]
         .flatMap((value) => (Array.isArray(value) ? value : []))
-        .filter((value): value is string => typeof value === "string"),
+        .filter((value): value is string => typeof value === "string")
+        .filter((value) => !ENGINE_NOTE.test(value)),
     ),
   ]);
+  /** "Automatic recognition used Tesseract (deu). …" is information, not a problem. */
+  const ENGINE_NOTE = /^Automatic recognition used ([^.]+)\./;
+  const recognitionEngine = $derived.by(() => {
+    const notes = [activePage?.provenance.warnings].flatMap((value) => (Array.isArray(value) ? value : []));
+    for (const note of notes) {
+      const match = typeof note === "string" ? ENGINE_NOTE.exec(note) : null;
+      if (match) return match[1];
+    }
+    const engine = (activePage?.provenance as Record<string, unknown> | undefined)?.engine;
+    return typeof engine === "string" && engine && engine !== "auto" ? engine.replaceAll("_", " ") : null;
+  });
   const matches = $derived(
     findMatches(project, query, { caseSensitive: matchCase }),
   );
@@ -2477,7 +2503,7 @@
         />{:else if visibleSaveStatus.state === "pending"}<Clock3
           size={13}
         />{:else}<ShieldCheck size={13} />{/if}
-      <span id={"ocr-save-status-" + project.id}
+      <span id={"ocr-save-status-" + project.id} class:visually-hidden={visibleSaveStatus.state === "saved"}
         >{visibleSaveStatus.state === "saved"
           ? "All changes saved"
           : visibleSaveStatus.state === "pending"
@@ -2491,17 +2517,17 @@
     </div>
     <div class="header-actions">
       <button
-        class="icon-button"
+        class="icon-button shortcuts-button"
         onclick={() => (helpOpen = true)}
         title="Keyboard shortcuts"
         aria-label="Keyboard shortcuts"><Keyboard size={17} /></button
-      ><button class="button subtle" onclick={openRecent} disabled={locked}
-        ><FolderOpen size={15} /> Projects <ChevronDown size={12} /></button
-      ><button class="button subtle" onclick={newProject} disabled={locked}
-        ><Plus size={15} /> New</button
-      ><button class="button subtle" onclick={flush} disabled={booting} aria-label="Save" title="Save project"
+      ><button class="icon-button" onclick={openRecent} disabled={locked} aria-label="Projects" title="Saved projects"
+        ><FolderOpen size={16} /></button
+      ><button class="icon-button" onclick={newProject} disabled={locked} aria-label="New" title="New project"
+        ><Plus size={16} /></button
+      ><button class="icon-button" onclick={flush} disabled={booting} aria-label="Save" title="Save project"
         aria-describedby={"ocr-save-status-" + project.id}
-        ><Save size={15} /><span class="optional-label">Save</span></button
+        ><Save size={16} /></button
       >
     </div>
   </header>
@@ -2512,7 +2538,7 @@
       onclick={() => importFiles()}
       disabled={locked}><Plus size={16} /> Add documents</button
     >
-    {#if capabilities.camera_import && client.importImage}<button class="button" onclick={() => cameraInput?.click()} disabled={locked}><Camera size={16} /> Capture photo</button>{/if}
+    {#if capabilities.camera_import && client.importImage}<button class="icon-button" onclick={() => cameraInput?.click()} disabled={locked} aria-label="Capture photo" title="Capture photo"><Camera size={16} /></button>{/if}
     {#if capabilities.mobile_model_store && client.installMobileModels}<button class="button" onclick={openMobileModels} disabled={locked}><Download size={16} /> OCR models</button>{/if}
     <div class="command-separator"></div>
     <button
@@ -2538,10 +2564,9 @@
       class="button subtle"
       onclick={() => openInspector(inspector === "recognition" ? "review" : "recognition")}
       class:active={inspector === "recognition"}
-      title="Recognition settings"
-      ><SlidersHorizontal size={15} /><span class="optional-label"
-        >{profile.name}</span
-      ></button
+      title={`Recognition settings · ${profile.name}`}
+      aria-label="Recognition settings"
+      ><SlidersHorizontal size={15} /></button
     >
     <div class="toolbar-spacer"></div>
     <div class="undo-group">
@@ -2611,59 +2636,6 @@
         open and retry.</span
       >
     </div>{/if}
-  {#if queueActive || ((queueState.phase === "completed" || queueState.phase === "cancelled") && queueBarDismissedFor !== queueState)}
-    <div class="queue-bar" aria-live="polite">
-      {#if !queueActive}<button class="queue-bar-dismiss" aria-label="Dismiss batch summary" onclick={() => (queueBarDismissedFor = queueState)}>×</button>{/if}
-      <div class="queue-label">
-        {#if queueActive}<LoaderCircle
-            size={15}
-            class={queueState.phase !== "paused" ? "spin" : ""}
-          />{:else}<CircleCheck size={15} />{/if}<strong
-          >{queueState.phase === "paused"
-            ? "Queue paused"
-            : queueState.phase === "pausing"
-              ? "Pausing after this page"
-              : queueState.phase === "cancelling"
-                ? "Stopping after this page"
-                : queueState.phase === "cancelled"
-                  ? "Queue stopped"
-                  : queueState.phase === "completed"
-                    ? "Batch complete"
-                    : "Recognizing documents"}</strong
-        ><span
-          >{queueState.completed + queueState.failed} / {queueState.total} pages{queueState.failed
-            ? ` · ${queueState.failed} failed`
-            : ""}</span
-        >
-      </div>
-      <progress
-        max={queueState.total || 1}
-        value={queueState.completed + queueState.failed}
-        aria-label="Recognition progress"
-      ></progress>
-      {#if queueActive}<div class="queue-actions">
-          {#if queueState.phase === "paused"}<button
-              class="button small"
-              onclick={resumeQueue}
-              disabled={!!busy || queuePromise !== null}><Play size={13} /> Resume</button
-            >{:else}<button
-              class="button small"
-              onclick={() => queue.pause()}
-              disabled={queueState.phase !== "running"}
-              ><Pause size={13} /> Pause</button
-            >{/if}<button
-            class="button small"
-            onclick={stopQueue}
-            disabled={queueState.phase === "cancelling" || (queueState.phase === "paused" && queuePromise !== null)}
-            ><Square size={12} /> Stop</button
-          >
-        </div>{:else if queueState.failed}<button
-          class="button small"
-          onclick={() => recognize("failed")}
-          disabled={locked}><RefreshCw size={13} /> Retry failed</button
-        >{/if}
-    </div>
-  {/if}
 
   {#if !queueActive && project.batch && (savedBatchPending || savedBatchFailed)}
     <div class="batch-recovery" role="region" aria-label="Saved recognition batch">
@@ -2955,13 +2927,7 @@
               aria-label="Show page list"><PanelLeftOpen size={16} /></button
             >{/if}
           <div class="tool-group">
-            <button
-              class="icon-button"
-              class:active={drawMode === "select"}
-              onclick={() => (drawMode = "select")}
-              title="Select and edit regions"
-              aria-label="Select regions"><MousePointer2 size={16} /></button
-            ><select
+            <select
               bind:value={drawMode}
               disabled={locked || showOriginal}
               aria-label="Region drawing tool"
@@ -2977,12 +2943,13 @@
           </div>
           <div class="tool-group">
             <button
-              class="button small subtle"
+              class="icon-button"
               class:active={drawMode === "recognize"}
               onclick={drawRecognitionArea}
               disabled={locked || !activePage || !recognitionAvailable}
-              title="Draw an area to recognize again, then compare before replacing text"
-              ><ScanLine size={15} /> Re-OCR area</button
+              title="Re-OCR area: draw an area to recognize again, then compare before replacing text"
+              aria-label="Re-OCR area"
+              ><ScanLine size={16} /></button
             >
           </div>
           <div class="tool-group">
@@ -3024,13 +2991,15 @@
             title="Toggle region overlays"
             aria-label="Toggle region overlays"><Layers size={16} /></button
           ><button
-            class="button small subtle"
+            class="icon-button"
             class:active={showOriginal}
             onclick={() => { showOriginal = !showOriginal; perspective = false; }}
-            title="Compare with the preserved original image">Original</button
+            aria-label="Original"
+            title="Compare with the preserved original image"><FileImage size={16} /></button
           >
           {#if activePage && capabilities.photo_tools}
-          <div class="photo-tool-toggle"><button class="button small" class:active={photoOpen} bind:this={photoToolsButton} onclick={showPhotoTools} disabled={locked}><Camera size={14} /> Prepare photo</button><span>{perspective ? "Set the four paper corners" : "Perspective · Tilt · Lighting"}</span></div>
+          <button class="icon-button" class:active={photoOpen} bind:this={photoToolsButton} onclick={showPhotoTools} disabled={locked} aria-label="Prepare photo"
+            title={perspective ? "Prepare photo: set the four paper corners" : "Prepare photo: perspective, tilt, lighting"}><Camera size={16} /></button>
           {/if}
         </div>
         {#if activePage && capabilities.photo_tools}
@@ -3174,30 +3143,59 @@
           >
         </div>
         {#if inspector === "review"}
-          <div class="review-heading">
-            <div>
-              <h2>Text review</h2>
-              <span
-                >{activePage?.regions.length ?? 0} regions · {pageIssues.length}
-                need attention</span
+          <div class="review-bar">
+            <div class="review-view-tabs" role="group" aria-label="Text view">
+              <button
+                class:active={textView === "document"}
+                onclick={() => { currentMatch = null; wordInspection = null; textView = "document"; }}
+                title="The page text as one document, words coloured by confidence">Document</button
+              ><button
+                class:active={textView === "regions"}
+                onclick={() => (textView = "regions")}
+                title="Region by region, with word scores">Regions</button
+              ><button
+                class:active={textView === "text"}
+                onclick={() => { currentMatch = null; textView = "text"; }}
+                title="Passage tools: split, merge, repair and re-recognize passages">Passages</button
+              ><button
+                class:active={textView === "structure"}
+                onclick={() => { currentMatch = null; wordInspection = null; editGroup = null; textView = "structure"; }}
+                title="Headings, lists, columns and tables">Structure</button
               >
             </div>
+            <div class="toolbar-spacer"></div>
+            {#if recognitionWarnings.length}
+              <details class="recognition-notes">
+                <summary title="Recognition notes" aria-label={`${recognitionWarnings.length} recognition notes`}
+                  ><AlertTriangle size={14} />{recognitionWarnings.length}</summary
+                >
+                <ul>
+                  {#each recognitionWarnings as warning}<li>{warning}</li>{/each}
+                </ul>
+              </details>
+            {/if}
             <button
-              class="button small subtle"
+              class="icon-button"
+              onclick={reviewNext}
+              disabled={!reviewIssues.length}
+              aria-label="Next issue"
+              title={`Next issue (${pageIssues.length} on this page, ${reviewIssues.length} in the project)`}
+              ><ChevronRight size={16} /></button
+            ><button
+              class="icon-button"
               onclick={openPageTextDraft}
               disabled={locked || !activePage || activePage.excluded || !activePage.regions.some((item) => !item.excluded && ["text", "title", "header", "footer"].includes(item.kind)) || (!!project.pageTextDraft && project.pageTextDraft.page.id !== activePage.id)}
-              title={project.pageTextDraft && project.pageTextDraft.page.id !== activePage?.id ? "Resume or discard the existing draft before starting another page" : "Edit across the page's passages in a saved draft, then review before applying"}
-              ><FileText size={14} /> Edit page text</button
-            >
-            <button
+              aria-label="Edit page text"
+              title={project.pageTextDraft && project.pageTextDraft.page.id !== activePage?.id ? "Resume or discard the existing draft before starting another page" : "Edit page text: change across passages in a saved draft, then review before applying"}
+              ><FileText size={16} /></button
+            ><button
               class="icon-button"
               class:active={proofreadingOpen}
               onclick={toggleProofreading}
               aria-label="Vocabulary and rules"
               title="Vocabulary and correction rules"
               ><BookOpen size={16} /></button
-            >
-            <button
+            ><button
               class="icon-button"
               class:active={searchOpen}
               onclick={() => (searchOpen = !searchOpen)}
@@ -3282,54 +3280,10 @@
                 <span class="muted">· Literal text, included pages</span></label
               >
             </div>{/if}
-          <div class="review-options">
-            <label class="check-label" title="Filters the Regions view; Text editor and Structure follow the page's reading order"
-              ><input type="checkbox" bind:checked={onlyIssues} disabled={textView !== "regions"} /> Needs attention</label
-            >
-            <div class="toolbar-spacer"></div>
-            <button
-              class="text-button"
-              onclick={reviewNext}
-              disabled={!reviewIssues.length}
-              >Next issue <ChevronRight size={13} /></button
-            >
-          </div>
-          <div class="review-view-tabs">
-            <button
-              class:active={textView === "confidence"}
-              onclick={() => { currentMatch = null; wordInspection = null; textView = "confidence"; }}
-              title="The page as text, words coloured by recognition confidence">Confidence</button
-            ><button
-              class:active={textView === "regions"}
-              onclick={() => (textView = "regions")}>Regions</button
-            ><button
-              class:active={textView === "text"}
-              onclick={() => {
-                currentMatch = null;
-                textView = "text";
-              }}>Text editor</button
-            ><button
-              class:active={textView === "structure"}
-              onclick={() => {
-                currentMatch = null;
-                wordInspection = null;
-                editGroup = null;
-                textView = "structure";
-              }}>Structure</button
-            ><span>{activePage?.width} × {activePage?.height} px</span>
-          </div>
-          {#if recognitionWarnings.length}
-            <details class="recognition-notes">
-              <summary
-                ><AlertTriangle size={13} />
-                {recognitionWarnings.length} recognition notes</summary
-              >
-              <ul>
-                {#each recognitionWarnings as warning}<li>{warning}</li>{/each}
-              </ul>
-            </details>
-          {/if}
-          {#if region && !showOriginal}<div class="source-loupe">
+          {#if textView === "regions"}<label class="check-label needs-attention"
+              ><input type="checkbox" bind:checked={onlyIssues} /> Needs attention</label
+            >{/if}
+          {#if region && !showOriginal && textView !== "document"}<div class="source-loupe">
               <div class="loupe-label">
                 <ScanText size={12} /> SOURCE DETAIL
                 <span title={wordSource?.text}
@@ -3386,14 +3340,16 @@
                   ><ScanLine size={15} /> Recognize page</button
                 >
               </div>
-            {:else if textView === "confidence"}
-              <ConfidenceText
+            {:else if textView === "document"}
+              <DocumentText
                 page={activePage}
                 threshold={project.confidenceThreshold}
-                {selectedRegionId}
+                selectedId={selectedRegionId}
                 disabled={locked}
-                onselect={(id) => { selectedRegionId = id; }}
-                onchange={(id, text) => safe(() => change(updateRegion(project, activePage!.id, id, { text })))}
+                engine={recognitionEngine}
+                onselect={(id) => { currentMatch = null; wordInspection = null; selectedRegionId = id; }}
+                onedit={editText}
+                onblur={() => (editGroup = null)}
               />
             {:else if textView === "structure"}
               <StructurePanel
@@ -4292,6 +4248,58 @@
         title={exportPhase === "destination" ? "Use the system save dialog to finish or cancel" : exportPhase === "committing" ? "The export is finishing" : "Stop the export before it is saved"}
       >{exportStopping ? "Stopping…" : "Cancel export"}</button>{/if}
     <div class="toolbar-spacer"></div>
+  {#if queueActive || ((queueState.phase === "completed" || queueState.phase === "cancelled") && queueBarDismissedFor !== queueState)}
+      <div class="queue-bar">
+        <div class="queue-label">
+          {#if queueActive}<LoaderCircle
+              size={15}
+              class={queueState.phase !== "paused" ? "spin" : ""}
+            />{:else}<CircleCheck size={15} />{/if}<strong
+            >{queueState.phase === "paused"
+              ? "Queue paused"
+              : queueState.phase === "pausing"
+                ? "Pausing after this page"
+                : queueState.phase === "cancelling"
+                  ? "Stopping after this page"
+                  : queueState.phase === "cancelled"
+                    ? "Queue stopped"
+                    : queueState.phase === "completed"
+                      ? "Batch complete"
+                      : "Recognizing documents"}</strong
+          ><span
+            >{queueState.completed + queueState.failed} / {queueState.total} pages{queueState.failed
+              ? ` · ${queueState.failed} failed`
+              : ""}</span
+          >
+        </div>
+        <progress
+          max={queueState.total || 1}
+          value={queueState.completed + queueState.failed}
+          aria-label="Recognition progress"
+        ></progress>
+        {#if queueActive}<div class="queue-actions">
+            {#if queueState.phase === "paused"}<button
+                class="button small"
+                onclick={resumeQueue}
+                disabled={!!busy || queuePromise !== null}><Play size={13} /> Resume</button
+              >{:else}<button
+                class="button small"
+                onclick={() => queue.pause()}
+                disabled={queueState.phase !== "running"}
+                ><Pause size={13} /> Pause</button
+              >{/if}<button
+              class="button small"
+              onclick={stopQueue}
+              disabled={queueState.phase === "cancelling" || (queueState.phase === "paused" && queuePromise !== null)}
+              ><Square size={12} /> Stop</button
+            >
+          </div>{:else if queueState.failed}<button
+            class="button small"
+            onclick={() => recognize("failed")}
+            disabled={locked}><RefreshCw size={13} /> Retry failed</button
+          >{/if}
+      </div>
+    {/if}
     {#if project.pages.length && !importController && !exportController}<span
         >{metrics.recognized}/{metrics.included} recognized</span
       ><span class="status-divider"></span><span class="approved-stat"
@@ -6366,7 +6374,7 @@
       font-size: 10px;
       padding: 5px 7px;
     }
-    .header-actions > .icon-button {
+    .header-actions > .shortcuts-button {
       display: none;
     }
     .command-bar {
@@ -6598,7 +6606,7 @@
     .ocr-workspace .button, .ocr-workspace .icon-button, .ocr-workspace .text-button { min-height: 44px; }
     .ocr-workspace .icon-button { min-width: 44px; padding: 8px; }
     .command-bar .undo-group .icon-button { min-width: 44px; }
-    .workspace-header .header-actions .button { min-height: 44px; }
+    .workspace-header .header-actions .button, .workspace-header .header-actions .icon-button { min-height: 44px; min-width: 44px; }
     .command-bar { column-gap: 5px; row-gap: 4px; padding: 5px 8px; }
     .command-bar .button { font-size: 10px; }
     .command-bar .undo-group { margin-left: auto; }
@@ -6666,4 +6674,25 @@
   @media (max-width: 780px) {
     .workspace-top { display: contents; }
   }
+  /* Compact review bar: view switch, notes and tools in one row. */
+  .review-bar { display: flex; align-items: center; gap: 4px; padding: 6px 12px; border-bottom: 1px solid var(--line); flex: none; }
+  .review-bar .review-view-tabs { border: 0; padding: 0; margin: 0; }
+  .review-bar { flex-wrap: wrap; row-gap: 2px; }
+  .review-bar .review-view-tabs { gap: 0; }
+  .review-bar .review-view-tabs button { padding: 4px 6px; }
+  .review-bar .icon-button { width: 28px; height: 28px; }
+  .review-bar .recognition-notes { position: relative; margin: 0; border: 0; background: none; padding: 0; }
+  .review-bar .recognition-notes summary { display: flex; align-items: center; gap: 3px; color: #fbbf24; font-size: 11px; cursor: pointer; list-style: none; padding: 4px 6px; }
+  .review-bar .recognition-notes summary::-webkit-details-marker { display: none; }
+  .review-bar .recognition-notes ul { position: absolute; right: 0; top: 100%; z-index: 20; width: 280px; margin: 4px 0 0; padding: 8px 10px 8px 24px;
+    background: #27272a; border: 1px solid #3f3f46; border-radius: 6px; font-size: 11px; color: #e4e4e7; box-shadow: 0 6px 20px #0008; }
+  .needs-attention { padding: 6px 14px 0; }
+  .workspace-status .queue-bar { display: flex; align-items: center; gap: 8px; padding: 0; margin: 0; border: 0; background: none; min-height: 0; }
+  .workspace-status .queue-bar progress { width: 110px; height: 4px; }
+  .workspace-status .queue-label { display: flex; align-items: center; gap: 5px; }
+  .workspace-status .queue-actions { display: flex; gap: 4px; }
+  .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+  .image-toolbar { flex-wrap: nowrap; overflow-x: auto; }
+  .image-toolbar .icon-button { flex: none; }
+  .image-toolbar select { max-width: 150px; }
 </style>

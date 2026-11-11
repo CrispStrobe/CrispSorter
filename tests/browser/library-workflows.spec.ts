@@ -208,8 +208,18 @@ test('OCR scopes page processing and preserves reviewed corrections through fail
         config: { layout: true, min_confidence: 0.85 },
     });
     await workspace.getByRole('tab', { name: 'Review', exact: true }).click();
-    await expect(workspace.locator('.review-heading')).toContainText('1 need attention');
+    await expect(workspace.getByRole('button', { name: 'Next issue', exact: true })).toHaveAttribute('title', /1 on this page/);
+    // The page text opens as one document; clicking a paragraph edits it in place.
+    const pageText = workspace.getByRole('region', { name: 'Page text', exact: true });
+    await pageText.getByRole('button', { name: /^Edit passage 1:/ }).click();
+    const passage = pageText.getByRole('textbox', { name: 'Text of passage 1', exact: true });
+    await expect(passage).toBeFocused();
+    await passage.fill('A document draft.');
+    await passage.press('Escape');
+    await expect(pageText.getByRole('button', { name: /^Edit passage 1: A document draft\.$/ })).toBeVisible();
+    await workspace.getByRole('button', { name: 'Regions', exact: true }).click();
     const text = workspace.getByRole('textbox', { name: 'Text for region 1', exact: true });
+    await expect(text).toHaveValue('A document draft.');
     await text.fill('My proofread warranty text.');
     await workspace.getByRole('button', { name: 'Approve page', exact: true }).click();
     await expect(workspace.getByRole('button', { name: 'Page approved', exact: true })).toBeVisible();

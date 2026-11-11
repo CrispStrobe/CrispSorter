@@ -49,11 +49,11 @@
 
 <section bind:this={editorRoot} class="page-text-editor" aria-label="Page text editor">
   <p class="editor-help">
-    Edit complete sentences and paragraphs, paste replacement text, or add line
-    breaks. Each passage stays linked to its source region, in export reading
-    order. Changes save automatically and can be undone.
+    <span class="editor-info" tabindex="0" role="note" aria-label="About passage editing"
+      title={"Edit complete sentences and paragraphs, paste replacement text, or add line breaks. Each passage stays linked to its source region, in export reading order. Changes save automatically and can be undone."
+        + (page.structure ? " Inserted and replaced text uses plain formatting. Unchanged text retains its formatting where its range is certain. Use Structure to review styles, headings, lists, columns, and links." : "")}
+      >i</span>
   </p>
-  {#if page.structure}<p class="editor-help">Inserted and replaced text uses plain formatting. Unchanged text retains its formatting where its range is certain. Use Structure to review styles, headings, lists, columns, and links.</p>{/if}
   {#each passages as { region, number } (region.id)}
     <article
       class="passage"
@@ -189,4 +189,7 @@
     outline: 2px solid #bfdbfe;
     outline-offset: 2px;
   }
+  .editor-help { display: flex; justify-content: flex-end; margin: 0; }
+  .editor-info { width: 16px; height: 16px; border-radius: 50%; border: 1px solid #52525b; color: #a1a1aa; cursor: help;
+    font: italic 600 10px/14px Georgia, serif; text-align: center; }
 </style>
