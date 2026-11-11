@@ -128,7 +128,7 @@ mod tests {
         let prepared = PreparedMemberCache::prepare(&root,&locator,file,"txt",&hash,15).unwrap();
         assert!(fs::read_dir(&root).unwrap().all(|entry| !entry.unwrap().file_name().to_string_lossy().starts_with(PUBLISHED_PREFIX)));
         let path = prepared.publish().unwrap();
-        assert_eq!(path.parent(),Some(root.as_path())); assert_ne!(path.file_name().unwrap(),"receipt.txt");
+        assert_eq!(path.parent(),Some(root.canonicalize().unwrap().as_path())); assert_ne!(path.file_name().unwrap(),"receipt.txt");
         assert_eq!(fs::read(&path).unwrap(),b"verified source"); assert!(fs::metadata(&path).unwrap().permissions().readonly());
         let (_,mut corrupt,_) = source(b"verified source"); corrupt.as_file_mut().seek(SeekFrom::Start(0)).unwrap(); corrupt.write_all(b"corrupted bytes").unwrap();
         assert!(PreparedMemberCache::prepare(&root,&locator,corrupt,"txt",&hash,15).is_err());

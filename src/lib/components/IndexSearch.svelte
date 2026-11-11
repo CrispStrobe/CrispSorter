@@ -3615,7 +3615,7 @@
 
     .result-meta { flex: 1 1 160px; min-width: 0; }
     .result-title { display: block; font-size: 0.9rem; font-weight: 600; color: #e4e4e7; overflow-wrap: anywhere;
-        max-width:100%;padding:0;background:none;border:0;text-align:left;font-family:inherit;cursor:pointer;border-radius:3px; }
+        width:100%;max-width:100%;padding:0;background:none;border:0;text-align:left;font-family:inherit;cursor:pointer;border-radius:3px; }
     .result-title:focus-visible { outline:2px solid #93c5fd;outline-offset:3px; }
     .result-title:hover { color:#93c5fd; }
     .result-byline { display: block; font-size: 0.78rem; color: #a1a1aa; margin-top: 2px; overflow-wrap: anywhere; }

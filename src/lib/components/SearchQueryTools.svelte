@@ -42,7 +42,7 @@
                 <label>{de ? 'Eines dieser Wörter' : 'Any of these words'}<input bind:value={any} /></label>
                 <label>{de ? 'Genaue Wortfolge' : 'Exact phrase'}<input bind:value={phrase} /></label>
                 <label>{de ? 'Ohne diese Wörter' : 'Without these words'}<input bind:value={excluded} /></label>
-                <label>{de ? 'Textfeld' : 'Text field'}<select bind:value={field}>
+                <label>{de ? 'Textfeld' : 'Text field'}<select bind:value={field} aria-label={de ? 'Textfeld' : 'Text field'}>
                     <option value="">{de ? 'Alle Textfelder' : 'All text fields'}</option>
                     <option value="title">{de ? 'Titel' : 'Title'}</option><option value="body">{de ? 'Dokumenttext' : 'Body'}</option>
                     <option value="headings">{de ? 'Überschriften' : 'Headings'}</option><option value="translated">{de ? 'Übersetzter Text' : 'Translated body'}</option>

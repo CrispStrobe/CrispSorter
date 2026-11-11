@@ -106,6 +106,10 @@ async function providerFixture(page: Page) {
 }
 
 async function chooseProvider(page: Page, name: 'Groq' | 'OpenAI') {
+    const providers = page.locator('.settings-container .provider-details');
+    if (!(await providers.evaluate(element => (element as HTMLDetailsElement).open))) {
+        await providers.locator('summary').click();
+    }
     await page.locator('.settings-container .provider-list').getByRole('button', { name, exact: true }).click();
     await expect(page.locator('.settings-container').getByRole('heading', { name, exact: true })).toBeVisible();
 }

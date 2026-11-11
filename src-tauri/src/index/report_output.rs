@@ -138,9 +138,12 @@ mod tests {
     fn reports_cannot_replace_sources_or_index_storage_and_complete_reports_replace_atomically() {
         let directory = tempfile::tempdir().unwrap(); let path = directory.path().join("source file.txt");
         fs::write(&path, b"source").unwrap();
-        for source in [path.to_string_lossy().into_owned(), format!("file://{}", path.display()).replace(' ', "%20"),
-            format!("crisp+local://host{}", path.display())] {
-            assert!(write_captured_report(&path, "report", &[], &[source]).is_err());
+        let uri_path = path.to_string_lossy().replace('\\', "/");
+        let uri_path = if uri_path.starts_with('/') { uri_path } else { format!("/{uri_path}") };
+        for source in [path.to_string_lossy().into_owned(), format!("file://{uri_path}").replace(' ', "%20"),
+            format!("crisp+local://host{uri_path}").replace(' ', "%20")] {
+            assert!(write_captured_report(&path, "report", &[], std::slice::from_ref(&source)).is_err(), "{source}");
+            assert_eq!(fs::read(&path).unwrap(), b"source", "{source}");
         }
         assert!(write_captured_report(&path, "report", &[directory.path().to_owned()], &[]).is_err());
         let report = directory.path().join("report.json");

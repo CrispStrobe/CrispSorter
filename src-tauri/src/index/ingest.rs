@@ -1635,22 +1635,26 @@ mod tests {
 
     #[tokio::test]
     async fn container_move_updates_all_locators_then_refresh_preserves_resolved_root_and_member_ids() {
-        let (_dir,fts,local,pipeline)=test_indexes().await;
+        let (dir,fts,local,pipeline)=test_indexes().await;
+        let old_path=dir.path().join("records").join("group.zip").to_string_lossy().into_owned();
+        let moved_dir=dir.path().join("moved");
+        let new_path=moved_dir.join("group.zip").to_string_lossy().into_owned();
         let mut raw=container_raw("owner",&[("keep.txt","movablemember",0)]);
+        raw.location_uri=old_path.clone();
         let root=pipeline.ingest_document(raw.clone()).await.unwrap().doc_ids.remove(0);
         let member=fts.search("movablemember",&Default::default(),10).unwrap()[0].doc_id.clone();
         let before=local.table_ref().version().await.unwrap();
-        local.update_location_by_local_path_with_volume("/records/group.zip","/moved/group.zip",Some("new-volume")).await.unwrap();
+        local.update_location_by_local_path_with_volume(&old_path,&new_path,Some("new-volume")).await.unwrap();
         assert_eq!(local.table_ref().version().await.unwrap(),before+1);
         {
             let _guard=local.read_guard(&fts).await.unwrap();
             let locator=local.container_member_locator("owner",&member).await.unwrap().unwrap();
-            assert_eq!(locator.root_location_uri,"/moved/group.zip");assert_eq!(locator.root_doc_id,root);
+            assert_eq!(locator.root_location_uri,new_path);assert_eq!(locator.root_doc_id,root);
         }
-        raw.location_uri="/moved/group.zip".into();raw.parent_dir=Some("/moved".into());raw.volume_id=Some("new-volume".into());
+        raw.location_uri=new_path.clone();raw.parent_dir=Some(moved_dir.to_string_lossy().into_owned());raw.volume_id=Some("new-volume".into());
         assert_eq!(pipeline.ingest_document(raw).await.unwrap().doc_ids,vec![root.clone()]);
         assert_eq!(fts.search("movablemember",&Default::default(),10).unwrap()[0].doc_id,member);
-        local.delete_occurrence_with_fts(&root,"owner","/moved/group.zip",&fts).await.unwrap();
+        local.delete_occurrence_with_fts(&root,"owner",&new_path,&fts).await.unwrap();
         assert_eq!(local.table_ref().count_rows(None).await.unwrap(),0);
     }
 
