@@ -27,10 +27,17 @@ test('SMB drive form saves and reloads mounted and Rust choices through IPC', as
     await page.locator('.tab-bar').getByRole('button', {name: /^Sources/}).click();
     await page.getByRole('button', {name: 'Cloud-Ordner', exact: true}).click();
     const dialog = page.locator('.drive-dialog');
-    await dialog.getByLabel('Typ', {exact: true}).selectOption('smb');
+    // Selects sit inside their labels. Match their accessible names rather
+    // than getByLabel's descendant text, which also contains every option.
+    const driveType = dialog.getByRole('combobox', {name: 'Typ', exact: true});
+    const transport = dialog.getByRole('combobox', {name: 'SMB-Transport', exact: true});
+    const encryption = dialog.getByLabel('SMB-Verschlüsselung erforderlich (Rust)', {exact: true});
+    await expect(driveType).toBeEnabled();
+    await driveType.selectOption('smb');
     await dialog.getByLabel('Label', {exact: true}).fill('NAS');
     await dialog.getByLabel('SMB URL', {exact: true}).fill('smb://nas/books');
-    await expect(dialog.getByLabel('SMB-Transport', {exact: true})).toHaveValue('mounted');
+    await expect(transport).toHaveValue('mounted');
+    await expect(encryption).toBeDisabled();
     await dialog.getByRole('button', {name: 'Anlegen', exact: true}).click();
     await expect(dialog).toContainText('Choose the existing SMB mount folder.');
     expect(await page.evaluate(() => (window as any).__smbWrites.length)).toBe(0);
@@ -39,8 +46,8 @@ test('SMB drive form saves and reloads mounted and Rust choices through IPC', as
     await expect.poll(() => page.evaluate(() => (window as any).__smbWrites.length)).toBe(1);
     await page.getByRole('button', {name: 'Cloud-Ordner', exact: true}).click();
     await dialog.getByTitle('Bearbeiten', {exact: true}).click();
-    await dialog.getByLabel('SMB-Transport', {exact: true}).selectOption('rust');
-    await expect(dialog.getByLabel('SMB-Verschlüsselung erforderlich (Rust)', {exact: true})).toBeEnabled();
+    await transport.selectOption('rust');
+    await expect(encryption).toBeEnabled();
     await dialog.getByRole('button', {name: 'Speichern', exact: true}).click();
     await expect.poll(() => page.evaluate(() => (window as any).__smbWrites.length)).toBe(2);
     const writes = await page.evaluate(() => (window as any).__smbWrites);
@@ -48,6 +55,6 @@ test('SMB drive form saves and reloads mounted and Rust choices through IPC', as
     expect(writes[1]).toMatchObject({id: 'nas', username: null, password: null, smb: {backend: 'rust', mount_path: '/Volumes/Books', require_encryption: true}});
     await page.getByRole('button', {name: 'Cloud-Ordner', exact: true}).click();
     await dialog.getByTitle('Bearbeiten', {exact: true}).click();
-    await expect(dialog.getByLabel('SMB-Transport', {exact: true})).toHaveValue('rust');
+    await expect(transport).toHaveValue('rust');
     await expect(dialog.getByLabel('SMB-Mount-Ordner', {exact: true})).toHaveValue('/Volumes/Books');
 });
