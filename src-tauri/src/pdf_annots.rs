@@ -53,6 +53,16 @@ pub struct PdfAnnotation {
     pub author: Option<String>,
     /// `/QuadPoints` for text markup, in groups of 8. Empty for others.
     pub quads: Vec<f64>,
+    /// Freehand strokes for `ink`: each inner list is `x0 y0 x1 y1 …` in
+    /// points. Empty for every other kind.
+    #[serde(default)]
+    pub ink: Vec<Vec<f64>>,
+    /// Border / stroke width in points (rectangle, ink). `None` = 1.5.
+    #[serde(default)]
+    pub stroke_width: Option<f64>,
+    /// Font size for `freetext`. `None` = 11.
+    #[serde(default)]
+    pub font_size: Option<f64>,
 }
 
 impl PdfAnnotation {
@@ -71,6 +81,9 @@ impl PdfAnnotation {
             // QuadPoints order is x1 y1 x2 y2 x3 y3 x4 y4 =
             // upper-left, upper-right, lower-left, lower-right.
             quads: vec![x, y + h, x + w, y + h, x, y, x + w, y],
+            ink: Vec::new(),
+            stroke_width: None,
+            font_size: None,
         }
     }
 }
@@ -289,7 +302,25 @@ fn read_one(doc: &Document, dict: &lopdf::Dictionary, page: usize) -> Option<Pdf
         color,
         author: dict_text(doc, dict, b"T"),
         quads,
+        ink: read_ink_list(doc, dict),
+        stroke_width: None,
+        font_size: None,
     })
+}
+
+/// `/InkList` → list of strokes (flat `x y` pairs). Empty when absent.
+fn read_ink_list(doc: &Document, dict: &lopdf::Dictionary) -> Vec<Vec<f64>> {
+    dict.get(b"InkList")
+        .ok()
+        .and_then(|o| as_array(doc, o))
+        .map(|strokes| {
+            strokes
+                .iter()
+                .filter_map(|s| as_array(doc, s))
+                .map(|pts| pts.iter().map(|o| obj_f64(doc, o)).collect())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 pub fn read_annotations_from_path(path: &Path) -> Result<Vec<PdfAnnotation>, String> {
@@ -352,16 +383,265 @@ fn build_annot_dict(a: &PdfAnnotation) -> lopdf::Dictionary {
 
     if a.ann_type == "freetext" {
         // FreeText renders nothing without a default-appearance string.
+        let size = a.font_size.unwrap_or(11.0);
         d.set(
             "DA",
             Object::String(
-                format!("{r:.3} {g:.3} {b:.3} rg /Helv 11 Tf").into_bytes(),
+                format!("{r:.3} {g:.3} {b:.3} rg /Helv {size:.1} Tf").into_bytes(),
                 lopdf::StringFormat::Literal,
             ),
         );
     }
 
+    if a.ann_type == "rectangle" || a.ann_type == "ink" {
+        d.set(
+            "BS",
+            Object::Dictionary(lopdf::Dictionary::from_iter(vec![
+                ("Type", Object::Name(b"Border".to_vec())),
+                ("W", Object::Real(stroke_width(a) as f32)),
+                ("S", Object::Name(b"S".to_vec())),
+            ])),
+        );
+    }
+
+    if a.ann_type == "ink" {
+        d.set(
+            "InkList",
+            Object::Array(
+                a.ink
+                    .iter()
+                    .map(|stroke| {
+                        Object::Array(stroke.iter().map(|v| Object::Real(*v as f32)).collect())
+                    })
+                    .collect(),
+            ),
+        );
+    }
+
     d
+}
+
+fn stroke_width(a: &PdfAnnotation) -> f64 {
+    a.stroke_width.filter(|w| w.is_finite() && *w > 0.0).unwrap_or(1.5)
+}
+
+/// Encode text for a base-14 font with /WinAnsiEncoding. Characters it
+/// cannot express become `?` rather than corrupting the string.
+fn win_ansi_bytes(s: &str) -> Vec<u8> {
+    s.chars()
+        .map(|c| {
+            let u = c as u32;
+            if (0x20..0x7f).contains(&u) || (0xa0..=0xff).contains(&u) {
+                u as u8
+            } else {
+                b'?'
+            }
+        })
+        .collect()
+}
+
+/// Escape bytes for a PDF literal string inside a content stream.
+fn pdf_literal(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() + 2);
+    out.push('(');
+    for &b in bytes {
+        match b {
+            b'(' | b')' | b'\\' => {
+                out.push('\\');
+                out.push(b as char);
+            }
+            0x20..=0x7e => out.push(b as char),
+            _ => out.push_str(&format!("\\{b:03o}")),
+        }
+    }
+    out.push(')');
+    out
+}
+
+/// Greedy word wrap using an average Helvetica glyph width — good enough
+/// to keep a free-text note inside its box without a full metrics pass.
+fn wrap_lines(text: &str, size: f64, width: f64) -> Vec<String> {
+    let max_chars = ((width / (size * 0.5)).floor() as usize).max(1);
+    let mut lines = Vec::new();
+    for para in text.split('\n') {
+        let mut line = String::new();
+        for word in para.split_whitespace() {
+            let candidate = if line.is_empty() { word.to_string() } else { format!("{line} {word}") };
+            if candidate.chars().count() > max_chars && !line.is_empty() {
+                lines.push(std::mem::take(&mut line));
+                line = word.to_string();
+            } else {
+                line = candidate;
+            }
+        }
+        lines.push(line);
+    }
+    lines
+}
+
+/// Build a `/N` appearance stream for the kinds the editor draws.
+///
+/// The form's `/BBox` equals the annotation's `/Rect` and its matrix is
+/// the identity, so the content can be written in page coordinates.
+pub(crate) fn appearance_stream(a: &PdfAnnotation) -> Option<lopdf::Stream> {
+    let [r, g, b] = hex_to_rgb(&a.color);
+    let (x, y, w, h) = (a.x, a.y, a.w.max(0.0), a.h.max(0.0));
+    let mut resources = lopdf::Dictionary::new();
+    let content = match a.ann_type.as_str() {
+        "highlight" => {
+            resources.set(
+                "ExtGState",
+                Object::Dictionary(lopdf::Dictionary::from_iter(vec![(
+                    "GH",
+                    Object::Dictionary(lopdf::Dictionary::from_iter(vec![
+                        ("Type", Object::Name(b"ExtGState".to_vec())),
+                        ("BM", Object::Name(b"Multiply".to_vec())),
+                        ("ca", Object::Real(0.45)),
+                        ("CA", Object::Real(0.45)),
+                    ])),
+                )])),
+            );
+            format!("/GH gs {r:.3} {g:.3} {b:.3} rg {x:.2} {y:.2} {w:.2} {h:.2} re f")
+        }
+        "rectangle" => {
+            let lw = stroke_width(a);
+            let half = lw / 2.0;
+            format!(
+                "{r:.3} {g:.3} {b:.3} RG {lw:.2} w {:.2} {:.2} {:.2} {:.2} re S",
+                x + half,
+                y + half,
+                (w - lw).max(0.0),
+                (h - lw).max(0.0)
+            )
+        }
+        "ink" => {
+            let lw = stroke_width(a);
+            let mut c = format!("{r:.3} {g:.3} {b:.3} RG {lw:.2} w 1 J 1 j");
+            for stroke in &a.ink {
+                let pts: Vec<(f64, f64)> = stroke.chunks_exact(2).map(|p| (p[0], p[1])).collect();
+                let Some(first) = pts.first() else { continue };
+                c.push_str(&format!(" {:.2} {:.2} m", first.0, first.1));
+                if pts.len() == 1 {
+                    // A dot: a zero-length segment with round caps.
+                    c.push_str(&format!(" {:.2} {:.2} l", first.0 + 0.01, first.1));
+                }
+                for p in pts.iter().skip(1) {
+                    c.push_str(&format!(" {:.2} {:.2} l", p.0, p.1));
+                }
+                c.push_str(" S");
+            }
+            c
+        }
+        "freetext" => {
+            let size = a.font_size.unwrap_or(11.0).clamp(4.0, 144.0);
+            resources.set(
+                "Font",
+                Object::Dictionary(lopdf::Dictionary::from_iter(vec![(
+                    "Helv",
+                    Object::Dictionary(lopdf::Dictionary::from_iter(vec![
+                        ("Type", Object::Name(b"Font".to_vec())),
+                        ("Subtype", Object::Name(b"Type1".to_vec())),
+                        ("BaseFont", Object::Name(b"Helvetica".to_vec())),
+                        ("Encoding", Object::Name(b"WinAnsiEncoding".to_vec())),
+                    ])),
+                )])),
+            );
+            let leading = size * 1.2;
+            let mut c = format!(
+                "q {x:.2} {y:.2} {w:.2} {h:.2} re W n BT /Helv {size:.2} Tf {r:.3} {g:.3} {b:.3} rg {leading:.2} TL {:.2} {:.2} Td",
+                x + 2.0,
+                y + h - size
+            );
+            for (i, line) in wrap_lines(&a.text, size, (w - 4.0).max(size)).iter().enumerate() {
+                if i > 0 {
+                    c.push_str(" T*");
+                }
+                c.push_str(&format!(" {} Tj", pdf_literal(&win_ansi_bytes(line))));
+            }
+            c.push_str(" ET Q");
+            c
+        }
+        "note" => {
+            // A small folded-note glyph, so the note is visible where
+            // a viewer does not draw its own icon.
+            let s = w.min(h).max(1.0);
+            format!(
+                "{r:.3} {g:.3} {b:.3} rg 0.25 0.25 0.25 RG 0.8 w {x:.2} {y:.2} {s:.2} {s:.2} re B \
+                 {:.2} {:.2} m {:.2} {:.2} l {:.2} {:.2} m {:.2} {:.2} l {:.2} {:.2} m {:.2} {:.2} l S",
+                x + s * 0.2, y + s * 0.7, x + s * 0.8, y + s * 0.7,
+                x + s * 0.2, y + s * 0.5, x + s * 0.8, y + s * 0.5,
+                x + s * 0.2, y + s * 0.3, x + s * 0.6, y + s * 0.3,
+            )
+        }
+        _ => return None,
+    };
+    let dict = lopdf::Dictionary::from_iter(vec![
+        ("Type", Object::Name(b"XObject".to_vec())),
+        ("Subtype", Object::Name(b"Form".to_vec())),
+        (
+            "BBox",
+            Object::Array(vec![
+                Object::Real(x as f32),
+                Object::Real(y as f32),
+                Object::Real((x + w) as f32),
+                Object::Real((y + h) as f32),
+            ]),
+        ),
+        ("Resources", Object::Dictionary(resources)),
+    ]);
+    Some(lopdf::Stream::new(dict, content.into_bytes()))
+}
+
+/// Remove the topmost markup annotation on `page` whose rectangle contains
+/// the point (`x`, `y`, in points). Links, form widgets and popups are
+/// structure rather than markup and are never erased. Errors when nothing
+/// is hit, so the caller can tell the user instead of recording a no-op.
+pub fn erase_annotation_at(doc: &mut Document, page: usize, x: f64, y: f64) -> Result<(), String> {
+    let page_ids: Vec<ObjectId> = doc.page_iter().collect();
+    let page_id = *page_ids
+        .get(page)
+        .ok_or_else(|| format!("page {page} out of range (0..{})", page_ids.len()))?;
+    let list: Vec<Object> = match doc.get_object(page_id) {
+        Ok(Object::Dictionary(d)) => d.get(b"Annots").ok().and_then(|a| as_array(doc, a)).unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    const TOLERANCE: f64 = 3.0;
+    let mut hit: Option<usize> = None;
+    for (i, entry) in list.iter().enumerate().rev() {
+        let dict = match entry {
+            Object::Dictionary(d) => d.clone(),
+            Object::Reference(r) => match doc.get_object(*r) {
+                Ok(Object::Dictionary(d)) => d.clone(),
+                _ => continue,
+            },
+            _ => continue,
+        };
+        let subtype = match dict.get(b"Subtype") {
+            Ok(Object::Name(n)) => String::from_utf8_lossy(n).into_owned(),
+            _ => continue,
+        };
+        if matches!(subtype.as_str(), "Link" | "Widget" | "Popup") {
+            continue;
+        }
+        let Some(rect) = dict.get(b"Rect").ok().and_then(|r| as_array(doc, r)) else { continue };
+        if rect.len() != 4 {
+            continue;
+        }
+        let v: Vec<f64> = rect.iter().map(|o| obj_f64(doc, o)).collect();
+        let (x0, x1) = (v[0].min(v[2]) - TOLERANCE, v[0].max(v[2]) + TOLERANCE);
+        let (y0, y1) = (v[1].min(v[3]) - TOLERANCE, v[1].max(v[3]) + TOLERANCE);
+        if x >= x0 && x <= x1 && y >= y0 && y <= y1 {
+            hit = Some(i);
+            break;
+        }
+    }
+    let i = hit.ok_or_else(|| "no annotation at that point".to_string())?;
+    let mut list = list;
+    list.remove(i);
+    if let Ok(Object::Dictionary(ref mut p)) = doc.get_object_mut(page_id) {
+        p.set("Annots", Object::Array(list));
+    }
+    Ok(())
 }
 
 /// Append annotations to a document's pages.
@@ -380,7 +660,18 @@ pub fn write_annotations_doc(doc: &mut Document, annots: &[PdfAnnotation]) -> Re
         if a.page >= n {
             return Err(format!("annotation page {} out of range (0..{n})", a.page));
         }
-        let id = doc.add_object(Object::Dictionary(build_annot_dict(a)));
+        let mut dict = build_annot_dict(a);
+        // Viewers are supposed to synthesise appearances, but pdf.js (our
+        // own preview) and several others draw nothing for an annotation
+        // without /AP, so the markup the user just drew would vanish.
+        if let Some(ap) = appearance_stream(a) {
+            let ap_id = doc.add_object(Object::Stream(ap));
+            dict.set(
+                "AP",
+                Object::Dictionary(lopdf::Dictionary::from_iter(vec![("N", Object::Reference(ap_id))])),
+            );
+        }
+        let id = doc.add_object(Object::Dictionary(dict));
         per_page.entry(a.page).or_default().push(id);
     }
 
@@ -548,6 +839,9 @@ pub fn export_from_store(
             author: None,
             // Regenerated from the rectangle by `build_annot_dict`.
             quads: Vec::new(),
+            ink: Vec::new(),
+            stroke_width: None,
+            font_size: None,
         })
         .collect();
     write_annotations(path, &annots, out_path)

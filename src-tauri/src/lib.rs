@@ -41,6 +41,7 @@ pub mod ocr_xlsx;
 pub mod pdf_annots;
 pub mod pdf_base14;
 pub mod pdf_compress;
+pub mod pdf_export;
 pub mod pdf_forms;
 pub mod pdf_ops;
 pub mod pdf_redact;
@@ -3809,6 +3810,8 @@ pub fn run() {
             pdf_compress::tauri_commands::pdf_compress,
             pdf_text_region::tauri_commands::pdf_draw_text_regions,
             pdf_text_region::tauri_commands::pdf_measure_text_region,
+            pdf_export::tauri_commands::pdf_export_text,
+            pdf_export::tauri_commands::pdf_export_docx,
             // P32.2 — print + native share, desktop now / iOS-ready seam.
             platform_share::tauri_commands::platform_capabilities,
             // P36.5 — what this build compiled in. The frontend gates every
@@ -4257,6 +4260,8 @@ pub fn run() {
             pdf_compress::tauri_commands::pdf_compress,
             pdf_text_region::tauri_commands::pdf_draw_text_regions,
             pdf_text_region::tauri_commands::pdf_measure_text_region,
+            pdf_export::tauri_commands::pdf_export_text,
+            pdf_export::tauri_commands::pdf_export_docx,
             // P32.2 — print + native share, desktop now / iOS-ready seam.
             platform_share::tauri_commands::platform_capabilities,
             // P36.5 — what this build compiled in. The frontend gates every
