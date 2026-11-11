@@ -33,7 +33,7 @@
     import LogPanel from '$lib/components/LogPanel.svelte';
     import Translate from '$lib/components/Translate.svelte';
     import OcrWorkbench from '$lib/components/OcrWorkbench.svelte';
-    import PdfWorkspace from '$lib/components/PdfWorkspace.svelte';
+    import PdfEditor from '$lib/components/PdfEditor.svelte';
     import TransferDrawer from '$lib/components/TransferDrawer.svelte';
     import DriveBrowser from '$lib/components/DriveBrowser.svelte';
     import { subscribeBrowserContext } from '$lib/drives/browserContext';
@@ -835,7 +835,7 @@
             {:else if activeTab === 'translate'}
                 <Translate initialPath={$documentToolRequest?.tool === 'translate' ? uriToPath($documentToolRequest.locationUri) || '' : ''} />
             {:else if activeTab === 'pdf'}
-                <PdfWorkspace initialPath={$documentToolRequest?.tool === 'pdf' ? uriToPath($documentToolRequest.locationUri) || '' : ''} />
+                <PdfEditor initialPath={$documentToolRequest?.tool === 'pdf' ? uriToPath($documentToolRequest.locationUri) || '' : ''} />
             <!-- PLAN P36.16 — the AIToolkit panels only exist in builds that
                  asked for them. The nav already hides these tabs, so this
                  second check is for the state the nav cannot reach: an

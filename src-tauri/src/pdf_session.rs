@@ -24,6 +24,7 @@
 use crate::pdf_ops::{
     self, MetadataEdit, PageNumberConfig, PdfInfo, TextBoxConfig, WatermarkConfig,
 };
+use crate::pdf_annots::{self, PdfAnnotation};
 use lopdf::Document;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -52,6 +53,11 @@ pub enum EditOp {
     Watermark { config: WatermarkConfig, pages: Option<Vec<usize>> },
     TextBox { config: TextBoxConfig },
     Metadata { edits: MetadataEdit },
+    /// Draw markup annotations (highlight, ink, rectangle, note, free
+    /// text) into the document as real /Annot objects.
+    Annotate { annotations: Vec<PdfAnnotation> },
+    /// Remove the topmost markup annotation under a point on a page.
+    EraseAnnotation { page: usize, x: f64, y: f64 },
 }
 
 impl EditOp {
@@ -70,6 +76,8 @@ impl EditOp {
             EditOp::Watermark { .. } => "watermark",
             EditOp::TextBox { .. } => "text_box",
             EditOp::Metadata { .. } => "metadata",
+            EditOp::Annotate { .. } => "annotate",
+            EditOp::EraseAnnotation { .. } => "erase_annotation",
         }
     }
 
@@ -92,6 +100,11 @@ impl EditOp {
             }
             EditOp::TextBox { config } => pdf_ops::add_text_box_doc(doc, config),
             EditOp::Metadata { edits } => pdf_ops::edit_metadata_doc(doc, edits),
+            EditOp::Annotate { annotations } => {
+                if annotations.is_empty() { return Err("no annotations to add".into()); }
+                pdf_annots::write_annotations_doc(doc, annotations).map(|_| ())
+            }
+            EditOp::EraseAnnotation { page, x, y } => pdf_annots::erase_annotation_at(doc, *page, *x, *y),
         }
     }
 
@@ -179,6 +192,16 @@ impl EditOp {
                 origins[config.page].dirty = true;
             }
             EditOp::Metadata { .. } => {}
+            EditOp::Annotate { annotations } => {
+                for a in annotations {
+                    if a.page >= n { return Err(format!("page {} out of range", a.page)); }
+                    origins[a.page].dirty = true;
+                }
+            }
+            EditOp::EraseAnnotation { page, .. } => {
+                if *page >= n { return Err(format!("page {page} out of range")); }
+                origins[*page].dirty = true;
+            }
         }
         Ok(())
     }
@@ -407,6 +430,29 @@ impl PdfEditSession {
 #[derive(Default)]
 pub struct PdfSessions(pub Mutex<HashMap<String, PdfEditSession>>);
 
+/// One-line description of an op for the app log: the kind plus the
+/// parameters that matter when diagnosing a failure.
+pub fn describe_op(op: &EditOp) -> String {
+    match op {
+        EditOp::Reorder { order } => format!("reorder {order:?}"),
+        EditOp::RemovePages { pages } => format!("remove pages {pages:?}"),
+        EditOp::KeepPages { pages } => format!("keep pages {pages:?}"),
+        EditOp::Rotate { pages, degrees } => format!("rotate pages {pages:?} by {degrees}"),
+        EditOp::Crop { pages, x, y, w, h } => format!("crop pages {pages:?} to x={x:.1} y={y:.1} w={w:.1} h={h:.1}"),
+        EditOp::InsertBlank { position, .. } => format!("insert blank page at {position}"),
+        EditOp::InsertFrom { path, pages, position } => format!("insert {} page(s) from {path} at {position}", if pages.is_empty() { "all".to_string() } else { pages.len().to_string() }),
+        EditOp::PageNumbers { .. } => "add page numbers".into(),
+        EditOp::Watermark { pages, .. } => format!("watermark {}", pages.as_ref().map(|p| format!("pages {p:?}")).unwrap_or_else(|| "all pages".into())),
+        EditOp::TextBox { config } => format!("text box on page {}", config.page),
+        EditOp::Metadata { .. } => "edit metadata".into(),
+        EditOp::Annotate { annotations } => format!(
+            "annotate {}",
+            annotations.iter().map(|a| format!("{} on page {}", a.ann_type, a.page)).collect::<Vec<_>>().join(", ")
+        ),
+        EditOp::EraseAnnotation { page, x, y } => format!("erase annotation on page {page} at ({x:.1}, {y:.1})"),
+    }
+}
+
 pub mod tauri_commands {
     use super::*;
     use tauri::State;
@@ -426,9 +472,11 @@ pub mod tauri_commands {
         sessions: State<'_, PdfSessions>,
         path: String,
     ) -> Result<SessionState, String> {
-        let mut session = PdfEditSession::open(Path::new(&path))?;
+        let opened = PdfEditSession::open(Path::new(&path));
+        let mut session = pdf_ops::logged("session_open", &path, opened)?;
         let id = uuid::Uuid::new_v4().to_string();
         let state = session.state(&id)?;
+        crate::app_log!("info", "[pdf] session {id} opened: {} page(s)", state.info.page_count);
         sessions
             .0
             .lock()
@@ -443,10 +491,12 @@ pub mod tauri_commands {
         id: String,
         op: EditOp,
     ) -> Result<SessionState, String> {
-        with_session(&sessions, &id, |s| {
+        let detail = format!("session {id}: {}", describe_op(&op));
+        let result = with_session(&sessions, &id, |s| {
             s.apply(op)?;
             s.state(&id)
-        })
+        });
+        pdf_ops::logged("edit", &detail, result)
     }
 
     #[tauri::command]
@@ -454,10 +504,11 @@ pub mod tauri_commands {
         sessions: State<'_, PdfSessions>,
         id: String,
     ) -> Result<SessionState, String> {
-        with_session(&sessions, &id, |s| {
+        let result = with_session(&sessions, &id, |s| {
             s.undo()?;
             s.state(&id)
-        })
+        });
+        pdf_ops::logged("undo", &format!("session {id}"), result)
     }
 
     #[tauri::command]
@@ -465,10 +516,11 @@ pub mod tauri_commands {
         sessions: State<'_, PdfSessions>,
         id: String,
     ) -> Result<SessionState, String> {
-        with_session(&sessions, &id, |s| {
+        let result = with_session(&sessions, &id, |s| {
             s.redo()?;
             s.state(&id)
-        })
+        });
+        pdf_ops::logged("redo", &format!("session {id}"), result)
     }
 
     #[tauri::command]
@@ -485,10 +537,15 @@ pub mod tauri_commands {
         id: String,
         out_path: Option<String>,
     ) -> Result<String, String> {
-        with_session(&sessions, &id, |s| {
+        let result = with_session(&sessions, &id, |s| {
             let p = s.save(out_path.as_deref().map(Path::new))?;
             Ok(p.to_string_lossy().to_string())
-        })
+        });
+        let detail = match &result {
+            Ok(p) => format!("session {id} -> {p}"),
+            Err(_) => format!("session {id} -> {}", out_path.as_deref().unwrap_or("(source file)")),
+        };
+        pdf_ops::logged("save", &detail, result)
     }
 
     /// Serialise the edited document to a temp file and return its path.
@@ -499,7 +556,7 @@ pub mod tauri_commands {
         id: String,
         filename: Option<String>,
     ) -> Result<String, String> {
-        with_session(&sessions, &id, |s| {
+        let result = with_session(&sessions, &id, |s| {
             let stem = filename.unwrap_or_else(|| {
                 s.source
                     .file_name()
@@ -512,7 +569,12 @@ pub mod tauri_commands {
             // saved (or unsaved) and the close guard would be wrong.
             let out = s.temp_copy(&stem)?;
             Ok(out.to_string_lossy().to_string())
-        })
+        });
+        // Called for every preview refresh, so only failures are logged.
+        if let Err(e) = &result {
+            crate::app_log!("error", "[pdf] export temp copy failed - session {id}: {e}");
+        }
+        result
     }
 
     #[tauri::command]
@@ -714,5 +776,80 @@ mod tests {
         assert!(!s.modified());
         s.undo().unwrap();
         assert!(s.modified(), "undoing past the save point is a modification");
+    }
+
+    fn annot_count(s: &mut PdfEditSession, page: usize) -> usize {
+        let (doc, _) = s.materialise().unwrap();
+        crate::pdf_annots::read_annotations(doc).iter().filter(|a| a.page == page).count()
+    }
+
+    fn sample(kind: &str, page: usize) -> PdfAnnotation {
+        let mut a = PdfAnnotation::highlight(page, 100.0, 100.0, 80.0, 40.0, "note", "#ff0000");
+        a.ann_type = kind.to_string();
+        if kind == "ink" {
+            a.ink = vec![vec![100.0, 100.0, 140.0, 120.0, 180.0, 140.0]];
+        }
+        a
+    }
+
+    #[test]
+    fn counter_clockwise_rotation_is_accepted_and_normalised() {
+        let mut s = session_with(2);
+        s.apply(EditOp::Rotate { pages: vec![0], degrees: -90 }).unwrap();
+        let (doc, origins) = s.materialise().unwrap();
+        assert_eq!(pdf_ops::pdf_info_from_doc(doc).pages[0].rotation, 270);
+        assert_eq!(origins[0].rotation, 270);
+    }
+
+    #[test]
+    fn annotate_writes_undoable_annotations_and_marks_page_dirty() {
+        let mut s = session_with(2);
+        let kinds = ["highlight", "ink", "rectangle", "note", "freetext"];
+        s.apply(EditOp::Annotate { annotations: kinds.iter().map(|k| sample(k, 1)).collect() }).unwrap();
+        assert_eq!(annot_count(&mut s, 1), 5);
+        assert_eq!(annot_count(&mut s, 0), 0);
+        {
+            let (doc, origins) = s.materialise().unwrap();
+            assert!(origins[1].dirty && !origins[0].dirty);
+            let annots = crate::pdf_annots::read_annotations(doc);
+            let ink = annots.iter().find(|a| a.ann_type == "ink").unwrap();
+            assert_eq!(ink.ink.len(), 1, "InkList round-trips");
+        }
+        s.undo().unwrap();
+        assert_eq!(annot_count(&mut s, 1), 0);
+    }
+
+    #[test]
+    fn erase_removes_the_topmost_hit_and_rejects_a_miss() {
+        let mut s = session_with(1);
+        s.apply(EditOp::Annotate { annotations: vec![sample("rectangle", 0), sample("highlight", 0)] }).unwrap();
+        assert!(s.apply(EditOp::EraseAnnotation { page: 0, x: 500.0, y: 500.0 }).is_err());
+        s.apply(EditOp::EraseAnnotation { page: 0, x: 120.0, y: 120.0 }).unwrap();
+        let (doc, _) = s.materialise().unwrap();
+        let left = crate::pdf_annots::read_annotations(doc);
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].ann_type, "rectangle", "the later (topmost) annotation goes first");
+        s.undo().unwrap();
+        assert_eq!(annot_count(&mut s, 0), 2);
+    }
+
+    #[test]
+    fn annotations_carry_appearance_streams_and_survive_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = session_with(1);
+        s.apply(EditOp::Annotate { annotations: vec![sample("freetext", 0), sample("ink", 0)] }).unwrap();
+        let out = dir.path().join("annotated.pdf");
+        s.save(Some(&out)).unwrap();
+        let doc = Document::load(&out).unwrap();
+        let page = doc.page_iter().next().unwrap();
+        let annots = match doc.get_object(page).unwrap() {
+            lopdf::Object::Dictionary(d) => d.get(b"Annots").unwrap().as_array().unwrap().clone(),
+            _ => panic!(),
+        };
+        assert_eq!(annots.len(), 2);
+        for a in annots {
+            let d = doc.get_object(a.as_reference().unwrap()).unwrap().as_dict().unwrap();
+            assert!(d.get(b"AP").is_ok(), "every drawn annotation has an appearance");
+        }
     }
 }
