@@ -78,6 +78,12 @@ impl PreparedMemberCache {
             }
             return Err(error.error).context("Publish the verified member copy");
         }
+        // Windows does not keep the read-only attribute set on the staged
+        // handle across the rename; apply it to the published file itself.
+        #[cfg(windows)] {
+            let mut permissions = fs::metadata(&self.destination)?.permissions();
+            if !permissions.readonly() { permissions.set_readonly(true); fs::set_permissions(&self.destination, permissions)?; }
+        }
         Ok(self.destination)
     }
 }
