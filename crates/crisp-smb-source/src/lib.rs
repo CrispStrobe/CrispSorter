@@ -108,3 +108,8 @@ impl SmbSource {
         self.session.close().await;
     }
 }
+
+mod blocking;
+pub use blocking::BlockingSession;
+mod settings;
+pub use settings::{Backend, Settings, relative_path};

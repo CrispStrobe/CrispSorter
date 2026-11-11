@@ -35,6 +35,8 @@
 //!     [--out json|text]
 //! ```
 
+mod smb_options;
+
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -668,6 +670,8 @@ enum IntendedPurposeCmd {
 
 #[derive(Subcommand, Debug)]
 enum DrivesCmd {
+    /// Add or change SMB settings (same registry and secret store as the GUI).
+    Smb(smb_options::SmbOptions),
     /// List registered drives: id, kind, label, and whether this build reaches
     /// the provider natively or through the Python CLI.
     List {
@@ -13233,9 +13237,14 @@ fn cmd_drives(
     use crate::drives::{DriveRegistry, DriveType};
 
     let data_dir = resolve_data_dir(data_dir)?;
-    let registry = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    let mut registry = DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
 
     match cmd {
+        DrivesCmd::Smb(options) => {
+            let config = options.apply(&mut registry, &mut std::io::stdin().lock())?;
+            println!("{}", serde_json::to_string_pretty(&config).map_err(|_| "Cannot serialize SMB settings")?);
+            Ok(())
+        }
         DrivesCmd::List { json } => {
             let json = json || matches!(out, OutFormat::Json);
             // Report which transport this build actually uses, not which the
@@ -13261,7 +13270,8 @@ fn cmd_drives(
                             "label": d.label,
                             "kind": d.kind,
                             "path": d.path,
-                            "transport": transport_of(&d.kind),
+                            "transport": if d.kind == DriveType::Smb { d.smb.clone().unwrap_or_default().backend.name() } else { transport_of(&d.kind) },
+                            "smb": d.smb,
                         })
                     })
                     .collect();
@@ -13281,7 +13291,7 @@ fn cmd_drives(
                         "{:<38}  {:<12}  {:<10}  {}",
                         d.id,
                         d.kind.label(),
-                        transport_of(&d.kind),
+                        if d.kind == DriveType::Smb { d.smb.clone().unwrap_or_default().backend.name() } else { transport_of(&d.kind) },
                         d.label
                     );
                 }

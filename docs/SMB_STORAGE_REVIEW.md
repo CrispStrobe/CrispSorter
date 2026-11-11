@@ -44,3 +44,9 @@ suite, but the full Tauri suite was not run in this environment. No live mounted
 NAS throughput measurement or OS security-policy qualification was performed.
 Full streaming capability remains false because the upload fallback still
 buffers; the read improvement does not claim both directions are bounded.
+
+## Follow-up implementation
+
+Explicit mounted/Rust settings are now shared by the app GUI and CLI. See
+[SMB paths and tests](SMB_RUST_ROLLOUT.md) for current behavior and rollout gates.
+The inventory above describes the pre-integration baseline.

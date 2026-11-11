@@ -7,7 +7,7 @@ import sys
 import tempfile
 
 cloud = Path(sys.argv[1]).resolve()
-expected = 'ffeae11d53054190cf6f3a6fbcec2eb44b32dfb2'
+expected = '4b44dc4d44ef05a18d2da2579d2e3b866b245643'
 actual = subprocess.check_output(['git', '-C', str(cloud), 'rev-parse', 'HEAD'], text=True).strip()
 if actual != expected:
     raise SystemExit('Use the pinned CrispCloud commit: ' + expected)
