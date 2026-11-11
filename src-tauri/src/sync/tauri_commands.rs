@@ -1034,7 +1034,11 @@ mod unsafe_upload_replay_tests {
             ));
             assert!(result.unwrap_err().to_string().contains("automatic replay is disabled"));
             assert!(!directory.path().join("offline_transfers").exists());
-            assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+            // Only the registry (and its lock file) remain: no staged payload.
+            let entries: Vec<String> = std::fs::read_dir(directory.path()).unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .filter(|name| name != "drives.lock").collect();
+            assert_eq!(entries, ["drives.json"]);
             assert_eq!(events.iter().filter(|event| event.phase == "failed"
                 && event.code.as_deref() == Some("write_replay_disabled")).count(), 1);
             assert!(!serde_json::to_string(&events).unwrap().contains("private-"));
