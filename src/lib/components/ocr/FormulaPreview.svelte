@@ -37,10 +37,10 @@
 </section>
 
 <style>
-  .formula-preview { margin: 14px 0; padding: 12px; border: 1px solid #415b7b; border-radius: 6px; background: #111e30; }
-  h4 { margin: 0 0 10px; color: #c9def8; font-size: 12px; }
-  .math-preview { max-height: 320px; overflow: auto; padding: 7px 3px; color: #e5eefb; font-size: 15px; }
+  .formula-preview { margin: 14px 0; padding: 12px; border: 1px solid #52525b; border-radius: 6px; background: #18181b; }
+  h4 { margin: 0 0 10px; color: #bfdbfe; font-size: 12px; }
+  .math-preview { max-height: 320px; overflow: auto; padding: 7px 3px; color: #dbeafe; font-size: 15px; }
   .math-preview :global(.katex-display) { margin: .5em 0; }
-  .preview-help, .preview-error, .empty-preview { margin: 8px 0 0; color: #9eb8d6; font-size: 11px; line-height: 1.65; overflow-wrap: anywhere; }
-  .preview-error { color: #f4c6a5; }
+  .preview-help, .preview-error, .empty-preview { margin: 8px 0 0; color: #93c5fd; font-size: 11px; line-height: 1.65; overflow-wrap: anywhere; }
+  .preview-error { color: #fcd34d; }
 </style>

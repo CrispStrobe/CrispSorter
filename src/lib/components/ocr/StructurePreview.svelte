@@ -94,17 +94,17 @@
 </section>
 
 <style>
-  .structure-preview { margin-top: 16px; padding: 12px; border: 1px solid #405a77; border-radius: 6px; background: #0d1b2c; }
-  h3 { margin: 0; color: #d9e8fa; font-size: 14px; }
-  .help, .section-label, .figure-description { color: #a9bfd9; font-size: 11px; line-height: 1.6; }
+  .structure-preview { margin-top: 16px; padding: 12px; border: 1px solid #52525b; border-radius: 6px; background: #18181b; }
+  h3 { margin: 0; color: #dbeafe; font-size: 14px; }
+  .help, .section-label, .figure-description { color: #93c5fd; font-size: 11px; line-height: 1.6; }
   .help { margin: 8px 0 12px; }
-  .logical-section + .logical-section { margin-top: 20px; padding-top: 12px; border-top: 1px dashed #52708f; }
+  .logical-section + .logical-section { margin-top: 20px; padding-top: 12px; border-top: 1px dashed #71717a; }
   .section-label { margin-bottom: 7px; }
   .columns { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; }
   .columns.two-columns { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .reading-column { min-width: 0; }
-  .preview-block { margin-bottom: 14px; min-width: 0; color: #dce8f8; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
-  .block-label, .anchor-link { display: block; border: 0; padding: 2px 0; background: transparent; color: #8cb6e6; font: inherit; font-size: 10px; cursor: pointer; text-align: start; }
+  .preview-block { margin-bottom: 14px; min-width: 0; color: #dbeafe; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+  .block-label, .anchor-link { display: block; border: 0; padding: 2px 0; background: transparent; color: #93c5fd; font: inherit; font-size: 10px; cursor: pointer; text-align: start; }
   .block-label { margin-bottom: 3px; }
   .anchor-link { margin-top: 3px; }
   .document-heading { margin: 0; font-size: 1.2em; line-height: 1.5; }
@@ -113,15 +113,15 @@
   .list-item { display: flex; align-items: baseline; gap: 7px; }
   .list-marker { flex: none; }
   .caption { font-style: italic; }
-  .running, .footnote { font-size: .9em; color: #aebfd6; }
+  .running, .footnote { font-size: .9em; color: #d4d4d8; }
   .specialized { margin: 0; font: inherit; white-space: pre-wrap; }
   figure svg { display: block; max-width: 100%; width: 100%; max-height: 180px; background: #fff; border-radius: 3px; }
   .figure-description { margin-top: 4px; }
-  .page-break { border-top: 1px dashed #88afd8; margin-top: 14px; padding-top: 7px; }
-  .break-label { font-size: 10px; color: #b8cce4; text-align: start; }
-  .pagination { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: #afc5df; font-size: 10px; }
-  .pagination button { padding: 6px; border: 1px solid #4c6788; border-radius: 4px; background: #233c59; color: #d8e8fa; font: inherit; cursor: pointer; }
+  .page-break { border-top: 1px dashed #60a5fa; margin-top: 14px; padding-top: 7px; }
+  .break-label { font-size: 10px; color: #d4d4d8; text-align: start; }
+  .pagination { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: #93c5fd; font-size: 10px; }
+  .pagination button { padding: 6px; border: 1px solid #71717a; border-radius: 4px; background: #3f3f46; color: #dbeafe; font: inherit; cursor: pointer; }
   button:disabled { opacity: .5; cursor: default; }
-  button:focus-visible { outline: 2px solid #a6d0ff; outline-offset: 2px; }
+  button:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
   @media (max-width: 480px) { .columns.two-columns { gap: 10px; } }
 </style>

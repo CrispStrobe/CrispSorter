@@ -71,16 +71,16 @@
 </div>
 
 <style>
-  .table-shape { margin: 6px 0 10px; color: #b6cce7; font-size: 11px; }
-  .table-scroll { max-height: 520px; overflow: auto; border: 1px solid #415775; border-radius: 5px; }
+  .table-shape { margin: 6px 0 10px; color: #d4d4d8; font-size: 11px; }
+  .table-scroll { max-height: 520px; overflow: auto; border: 1px solid #52525b; border-radius: 5px; }
   table { width: 100%; border-collapse: collapse; }
-  td, th { min-width: 105px; border: 1px solid #3b506b; padding: 0; vertical-align: top; background: #122238; }
-  textarea { display: block; box-sizing: border-box; width: 100%; min-width: 105px; min-height: 42px; max-height: 240px; border: 0; border-radius: 0; padding: 10px 8px; background: transparent; color: #dfebfc; font: inherit; font-size: 12px; line-height: 1.6; resize: vertical; }
-  .header-cell { background: #223a56; }
-  .selected-cell { box-shadow: inset 0 0 0 2px #81b4ed; }
+  td, th { min-width: 105px; border: 1px solid #52525b; padding: 0; vertical-align: top; background: #27272a; }
+  textarea { display: block; box-sizing: border-box; width: 100%; min-width: 105px; min-height: 42px; max-height: 240px; border: 0; border-radius: 0; padding: 10px 8px; background: transparent; color: #dbeafe; font: inherit; font-size: 12px; line-height: 1.6; resize: vertical; }
+  .header-cell { background: #3f3f46; }
+  .selected-cell { box-shadow: inset 0 0 0 2px #60a5fa; }
   .header-cell textarea { font-weight: 600; }
-  .unrecognized-cell { color: #8595aa; text-align: center; padding: 10px; }
-  .table-help { margin: 10px 0 0; color: #9eb5d0; font-size: 11px; line-height: 1.65; }
-  textarea:focus-visible { outline: 2px solid #a6d2ff; outline-offset: -2px; }
+  .unrecognized-cell { color: #a1a1aa; text-align: center; padding: 10px; }
+  .table-help { margin: 10px 0 0; color: #a1a1aa; font-size: 11px; line-height: 1.65; }
+  textarea:focus-visible { outline: 2px solid #bfdbfe; outline-offset: -2px; }
   textarea:disabled { opacity: .55; }
 </style>

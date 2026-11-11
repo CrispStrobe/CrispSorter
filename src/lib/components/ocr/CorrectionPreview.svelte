@@ -54,22 +54,22 @@
 </div>
 
 <style>
-  .correction-preview { min-width: 0; color: #c1d2e5; font-size: 12px; }
-  .preview-summary { display: flex; flex-wrap: wrap; gap: 7px 16px; padding: 10px 0; color: #adc3dd; }
+  .correction-preview { min-width: 0; color: #d4d4d8; font-size: 12px; }
+  .preview-summary { display: flex; flex-wrap: wrap; gap: 7px 16px; padding: 10px 0; color: #93c5fd; }
   .select-all { display: flex; align-items: center; gap: 7px; padding: 8px 0; }
-  .match-list { max-height: min(48vh, 440px); overflow-y: auto; border: 1px solid #35495f; border-radius: 5px; }
-  .match { display: flex; align-items: flex-start; gap: 9px; padding: 11px; border-bottom: 1px solid #2d4055; background: #111e2c; }
+  .match-list { max-height: min(48vh, 440px); overflow-y: auto; border: 1px solid #3f3f46; border-radius: 5px; }
+  .match { display: flex; align-items: flex-start; gap: 9px; padding: 11px; border-bottom: 1px solid #3f3f46; background: #18181b; }
   .match:last-child { border-bottom: 0; }
   .match input { flex: none; margin-top: 3px; }
   .match-content { display: flex; flex-direction: column; gap: 6px; min-width: 0; overflow-wrap: anywhere; }
-  .page-name { color: #b8d7f6; font-size: 11px; }
-  .context { color: #a7bbd1; line-height: 1.5; white-space: pre-wrap; }
-  .replacement { color: #e3edf9; line-height: 1.6; white-space: pre-wrap; }
-  del { color: #ffc5cb; background: #542634; }
-  ins { color: #b6efd3; background: #153b2c; text-decoration: none; }
-  .preview-note { color: #a7bbd1; line-height: 1.6; }
+  .page-name { color: #bfdbfe; font-size: 11px; }
+  .context { color: #a1a1aa; line-height: 1.5; white-space: pre-wrap; }
+  .replacement { color: #dbeafe; line-height: 1.6; white-space: pre-wrap; }
+  del { color: #fecaca; background: #27272a; }
+  ins { color: #bbf7d0; background: #052e16; text-decoration: none; }
+  .preview-note { color: #a1a1aa; line-height: 1.6; }
   .pagination { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding-top: 8px; font-size: 11px; }
-  button { padding: 5px 7px; border: 1px solid #415771; border-radius: 4px; background: #1a2c40; color: #d2e5fa; font: inherit; cursor: pointer; }
+  button { padding: 5px 7px; border: 1px solid #52525b; border-radius: 4px; background: #27272a; color: #dbeafe; font: inherit; cursor: pointer; }
   button:disabled { opacity: .55; cursor: default; }
-  button:focus-visible, input:focus-visible { outline: 2px solid #81b8f8; outline-offset: 2px; }
+  button:focus-visible, input:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
 </style>

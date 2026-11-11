@@ -51,16 +51,16 @@
 
 <style>
   .table-grid-preview { min-width: 0; }
-  h4 { margin: 0 0 6px; color: #cfdef4; font-size: 13px; }
-  p { margin: 0 0 9px; color: #9eb7d3; font-size: 11px; line-height: 1.6; }
-  .grid-scroll { max-width: 100%; max-height: 330px; overflow: auto; border: 1px solid #425b79; border-radius: 5px; }
+  h4 { margin: 0 0 6px; color: #bfdbfe; font-size: 13px; }
+  p { margin: 0 0 9px; color: #a1a1aa; font-size: 11px; line-height: 1.6; }
+  .grid-scroll { max-width: 100%; max-height: 330px; overflow: auto; border: 1px solid #52525b; border-radius: 5px; }
   table { border-collapse: collapse; min-width: 100%; text-align: start; }
-  td, th { min-width: 80px; max-width: 240px; padding: 8px; vertical-align: top; border: 1px solid #3e5470; background: #122238; color: #dce9fb; }
-  .header-cell { background: #263e5a; font-weight: 600; }
+  td, th { min-width: 80px; max-width: 240px; padding: 8px; vertical-align: top; border: 1px solid #52525b; background: #27272a; color: #dbeafe; }
+  .header-cell { background: #3f3f46; font-weight: 600; }
   pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 12px; line-height: 1.7; }
-  small { display: block; margin-top: 7px; color: #a2bada; font-size: 9px; font-weight: normal; }
-  .empty-cell, .gap-cell, .empty-table { color: #92a7c0; font-size: 11px; font-style: italic; }
+  small { display: block; margin-top: 7px; color: #93c5fd; font-size: 9px; font-weight: normal; }
+  .empty-cell, .gap-cell, .empty-table { color: #a1a1aa; font-size: 11px; font-style: italic; }
   .gap-cell { text-align: center; }
-  .empty-table { padding: 14px; border: 1px dashed #4c6380; border-radius: 5px; }
-  .grid-scroll:focus-visible { outline: 2px solid #a5d1ff; outline-offset: 2px; }
+  .empty-table { padding: 14px; border: 1px dashed #52525b; border-radius: 5px; }
+  .grid-scroll:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
 </style>
