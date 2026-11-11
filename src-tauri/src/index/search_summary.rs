@@ -100,10 +100,7 @@ async fn scan_documents(
 ) -> Result<(Accumulator, String)> {
     ensure!(!query.trim().is_empty() && query.len() <= 8192,
         "Enter a search query of at most 8192 bytes");
-    let mut effective_query = if filters.synonyms {
-        crate::index::synonyms::synonym_expand_query(&query)
-    } else { query.clone() };
-    if filters.fuzzy { effective_query = crate::index::fts_query::fuzzify_query(&effective_query); }
+    let effective_query = filters.query_plan(&query)?.lexical_query;
     let prepare_query = effective_query.clone();
     let prepare_filters = filters.clone();
     let prepare_fts = fts.clone();

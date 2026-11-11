@@ -6,7 +6,7 @@ use crisp_index_protocol::{IngestBatch, IngestChunk, SearchCapabilities, StoredP
 use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 
 fn capabilities() -> SearchCapabilities {
-    SearchCapabilities { api_version: 1, metadata_filter_version: 1, stored_passage_version: STORED_PASSAGE_VERSION,
+    SearchCapabilities { query_explanation_version: 1, query_plan_version: 1, api_version: 1, metadata_filter_version: 1, stored_passage_version: STORED_PASSAGE_VERSION,
         query_language_version: 1, fts_schema_version: 2, fts_ready: true, strict_hybrid_constraints: true,
         searchable_fields: vec!["body".into()], chunk_boundary_policy: "verified byte offsets".into(), ..Default::default() }
 }

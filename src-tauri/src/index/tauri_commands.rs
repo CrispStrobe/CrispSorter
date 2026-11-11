@@ -72,7 +72,6 @@ pub async fn index_search(
     if query.trim().is_empty() || query.len() > 8192 {
         return Err("Enter a search query of at most 8192 bytes".into());
     }
-    if mode != "vector" { super::fts_query::has_explicit_syntax(&query).map_err(|e| e.to_string())?; }
     // PLAN P7.4.4 — flag the foreground search so the bg_ingest worker
     // pauses while we run. RAII drops at function return.
     let _fg = crate::bg_ingest::ForegroundGuard::new(state.foreground_active.clone());
@@ -89,9 +88,11 @@ pub async fn index_search(
     if let Some(value) = doc_id_scope { filters.doc_id_scope = value; }
     filters.tag = tag.or(filters.tag);
     validate_search_filters(&filters)?;
+    if mode != "vector" { filters.query_plan(&query).map_err(|e| e.to_string())?; }
     let limit = limit.clamp(1, 500);
     let catalog_eligible = filters.to_lance_sql().is_none()
-        && mode != "vector" && !super::fts_query::has_explicit_syntax(&query).map_err(|e| e.to_string())?;
+        && mode != "vector" && filters.query_intent.as_deref().unwrap_or("advanced") == "advanced"
+        && !super::fts_query::has_explicit_syntax(&query).map_err(|e| e.to_string())?;
     let mounted_ids: Option<std::collections::HashSet<String>> = if remote_backend || include_unmounted.unwrap_or(false) { None } else {
         Some(tokio::task::spawn_blocking(crate::volume::list_mounted_volumes).await
             .map_err(|e| format!("list_mounted_volumes join: {e}"))?.into_iter().map(|volume| volume.id).collect())
@@ -164,7 +165,7 @@ pub async fn index_search(
                         config.remote_url.clone().ok_or("remote_url must be set for Remote backend")?,
                         config.remote_api_key.clone().unwrap_or_default(), &proxy,
                     ).map_err(|e| e.to_string())?;
-                    remote.query_language_version(&query, true).await.map_err(|e| e.to_string())?;
+                    remote.query_language_version(&filters.query_plan(&query).map_err(|e| e.to_string())?.lexical_query, true).await.map_err(|e| e.to_string())?;
                     let embedding = embed_query(Some(embedder), &query).await?;
                     backend
                         .search_hybrid(&query, &embedding, &filters, limit)

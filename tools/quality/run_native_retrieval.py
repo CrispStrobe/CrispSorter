@@ -82,7 +82,8 @@ def main() -> None:
     if completed.returncode:
         raise RuntimeError(f"Native measurement failed; its partial results and log remain in {output}")
     result = json.loads((output / "result.json").read_text())
-    if not result.get("completed") or len(result.get("modes", [])) != 4:
+    expected_modes = ["lexical_strict", "lexical_any_term", "dense", "hybrid", "natural_lexical", "natural_hybrid"]
+    if not result.get("completed") or [mode.get("mode") for mode in result.get("modes", [])] != expected_modes:
         raise ValueError("Native runner did not complete every planned comparison")
     result["execution"] = execution
     (output / "result.json").write_text(json.dumps(result, indent=2, allow_nan=False) + "\n", encoding="utf-8")

@@ -7,7 +7,7 @@ use crate::desktop::{IndexBackend, remote_client::{RemoteClient, complete_search
 
 const GENERATION: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 fn capabilities() -> SearchCapabilities {
-    SearchCapabilities { api_version:1, metadata_filter_version:1, metadata_filter_max_version:METADATA_FILTER_VERSION, stored_passage_version:STORED_PASSAGE_VERSION,
+    SearchCapabilities { query_explanation_version: 1, query_plan_version: 1, api_version:1, metadata_filter_version:1, metadata_filter_max_version:METADATA_FILTER_VERSION, stored_passage_version:STORED_PASSAGE_VERSION,
         container_members_version:CONTAINER_MEMBERS_VERSION,
         query_language_version:QUERY_LANGUAGE_VERSION, fts_schema_version:2, active_fts_schema_version:FTS_SCHEMA_VERSION, fts_ready:true,
         strict_hybrid_constraints:true, searchable_fields:vec!["body".into(),"translated".into()], chunk_boundary_policy:"verified offsets".into(),
@@ -126,7 +126,11 @@ async fn expanded_hybrid_preserves_semantic_input_and_requires_its_receipt() {
             .route("/v1/search",post(move |Json(request):Json<SearchRequest>|async move {
                 assert!(request.query.as_ref().unwrap().contains("commence~1"));
                 assert_eq!(request.embedding_query.as_deref(),Some("begin"));assert_eq!(request.embedding_query_version,Some(1));
+                let plan=request.query_plan.as_ref().expect("expanded hybrid carries its original query intent");
+                assert_eq!(plan.version,QUERY_PLAN_VERSION);assert_eq!(plan.intent,"advanced");assert_eq!(plan.original_query,"begin");
+                assert!(plan.fuzzy && plan.synonyms);
                 let mut header=HeaderMap::new();header.insert(QUERY_VERSION_HEADER,"1".parse().unwrap());
+                header.insert(QUERY_PLAN_VERSION_HEADER,"1".parse().unwrap());
                 if receipt {header.insert(EMBEDDING_QUERY_VERSION_HEADER,"1".parse().unwrap());}
                 (header,Json(Vec::<SearchHit>::new()))
             }));

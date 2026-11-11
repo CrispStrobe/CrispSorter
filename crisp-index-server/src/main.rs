@@ -155,6 +155,7 @@ async fn main() -> Result<()> {
         .route("/search/complete/destination", post(routes::complete::destination))
         .route("/search/complete/{request_id}", delete(routes::complete::cancel))
         .route("/passages/read", post(routes::passages::read_passage))
+        .route("/passages/explain", post(routes::explanations::explain))
         .route("/docs/{doc_id}", delete(routes::docs::delete_doc))
         .route(
             "/docs/location/by-uri",

@@ -45,6 +45,8 @@ mod complete_contract;
 mod container_contract;
 #[cfg(test)]
 mod passage_contract;
+#[cfg(test)]
+mod explanation_contract;
 #[path = "../../crisp-index-server/src/queue.rs"]
 mod queue;
 #[path = "../../crisp-index-server/src/routes/mod.rs"]

@@ -1,5 +1,6 @@
 /** A complete, versioned local search; older saved queries restore clean defaults. */
 export type SearchMode = 'hybrid' | 'text' | 'vector';
+export type QueryIntent = 'advanced' | 'natural';
 
 export interface SearchViewPreferences {
     sort: 'relevance' | 'title' | 'filename' | 'year-desc' | 'year-asc' | 'location';
@@ -30,7 +31,8 @@ export interface SearchFilters {
 }
 
 export interface SearchRecipe {
-    version: 3;
+    version: 4;
+    queryIntent: QueryIntent;
     query: string;
     mode: SearchMode;
     limit: number;
@@ -91,7 +93,8 @@ export function normalizeSearchRecipe(value: unknown, maximumLimit: 200 | 500 = 
     for (const key of ['yearMin', 'yearMax', 'audioMin', 'audioMax'] as const) filters[key] = number(input[key]);
     for (const key of ['colbert', 'omni', 'fuzzy', 'synonyms', 'includeUnmounted'] as const) filters[key] = input[key] === true;
     return {
-        version: 3,
+        version: 4,
+        queryIntent: raw.queryIntent === 'natural' ? 'natural' : 'advanced',
         query: text(raw.query),
         mode: raw.mode === 'text' || raw.mode === 'vector' ? raw.mode : 'hybrid',
         limit: Math.min([10, 20, 50, 100, 200, 500].includes(Number(raw.limit)) ? Number(raw.limit) : 20, maximumLimit),
@@ -155,6 +158,7 @@ export function localSearchArguments(recipe: SearchRecipe, candidateLimit = reci
         docIdScope: recipe.docIdScope.length ? recipe.docIdScope : null,
         tag: f.tag || null,
         searchFilters: {
+            query_intent: recipe.queryIntent,
             owner_id: recipe.ownerId, language: f.language || null, year_min: f.yearMin, year_max: f.yearMax,
             tags: [], ext: f.ext ? f.ext.split(',') : [], parent_dir_prefix: f.folderPrefix || null,
             url_domain: f.urlDomain || null,

@@ -46,6 +46,11 @@ def evaluate_report(case: dict, report: dict, k: int) -> dict:
     recipe = report.get("recipe", {})
     require(isinstance(recipe, dict), "The search recipe must be an object")
     require(recipe.get("mode") in ("text", "hybrid", "vector"), "The search recipe needs a supported retrieval mode")
+    intent = recipe.get("queryIntent", "advanced")
+    require(intent in ("advanced", "natural"), "The search recipe needs a supported query intent")
+    if "queryIntent" in case:
+        require(case["queryIntent"] in ("advanced", "natural"), "Expected query intent must be advanced or natural")
+        require(intent == case["queryIntent"], f"Query intent differs for {case['id']}")
     require(recipe.get("limit") == requested and not isinstance(recipe.get("limit"), bool), "Recipe and coverage result limits differ")
     if "filters" in case:
         require(recipe.get("filters") == case["filters"], f"Search filters differ for {case['id']}")

@@ -12,7 +12,7 @@ use std::sync::{
 };
 
 fn capabilities() -> SearchCapabilities {
-    SearchCapabilities {
+    SearchCapabilities { query_explanation_version: 1, query_plan_version: 1,
         api_version: 1,
         metadata_filter_version: 1, metadata_filter_max_version: crisp_index_protocol::METADATA_FILTER_VERSION,
         stored_passage_version: crisp_index_protocol::STORED_PASSAGE_VERSION,
@@ -33,6 +33,57 @@ async fn serve(router: Router) -> (String, tokio::task::JoinHandle<()>) {
         axum::serve(socket, router).await.unwrap();
     });
     (format!("http://{address}"), task)
+}
+
+#[tokio::test]
+async fn natural_query_planning_requires_a_capability_and_exact_response_receipt() {
+    for (advertised, receipt) in [(0, false), (1, false), (1, true)] {
+        let calls = Arc::new(AtomicUsize::new(0)); let seen = calls.clone();
+        let router = Router::new()
+            .route("/v1/capabilities", get(move || async move {
+                let mut caps = capabilities(); caps.query_plan_version = advertised; Json(caps)
+            }))
+            .route("/v1/search", post(move |Json(request):Json<crisp_index_protocol::SearchRequest>| {
+                let seen = seen.clone(); async move {
+                    seen.fetch_add(1,Ordering::SeqCst);
+                    let plan = request.query_plan.unwrap();
+                    assert_eq!(plan.intent,"natural"); assert_eq!(plan.original_query,"alpha: AND beta?");
+                    assert_eq!(request.query.as_deref(),Some("alpha OR \"and\" OR beta"));
+                    let mut headers = axum::http::HeaderMap::new();
+                    headers.insert(crisp_index_protocol::QUERY_VERSION_HEADER,"1".parse().unwrap());
+                    if receipt { headers.insert(crisp_index_protocol::QUERY_PLAN_VERSION_HEADER,"1".parse().unwrap()); }
+                    (headers,Json(Vec::<crisp_index_protocol::SearchHit>::new()))
+                }
+            }));
+        let (url,server) = serve(router).await;
+        let client = RemoteClient::new(url,"");
+        let filters = SearchFilters {query_intent:Some("natural".into()),..Default::default()};
+        let result = client.search_text("alpha: AND beta?",&filters,20).await;
+        if advertised == 0 { assert!(result.unwrap_err().to_string().contains("query planning")); assert_eq!(calls.load(Ordering::SeqCst),0); }
+        else if !receipt { assert!(result.unwrap_err().to_string().contains("query intent")); }
+        else { assert!(result.unwrap().is_empty()); }
+        server.abort();
+    }
+}
+
+#[tokio::test]
+async fn natural_hybrid_keeps_the_original_model_query_when_requesting_server_embedding() {
+    let router = Router::new().route("/v1/capabilities",get(||async {Json(capabilities())}))
+        .route("/v1/search",post(|Json(request):Json<crisp_index_protocol::SearchRequest>|async move {
+            assert_eq!(request.embedding_query.as_deref(),Some("alpha: AND beta?"));
+            assert_eq!(request.embedding_query_version,Some(1));
+            assert!(request.embedding.is_none());
+            assert_eq!(request.query.as_deref(),Some("alpha OR \"and\" OR beta"));
+            let headers = [(crisp_index_protocol::QUERY_VERSION_HEADER,"1"),
+                (crisp_index_protocol::QUERY_PLAN_VERSION_HEADER,"1"),
+                (crisp_index_protocol::EMBEDDING_QUERY_VERSION_HEADER,"1")];
+            (headers,Json(Vec::<crisp_index_protocol::SearchHit>::new()))
+        }));
+    let (url,server) = serve(router).await;
+    let client = RemoteClient::new(url,"");
+    let filters=SearchFilters {query_intent:Some("natural".into()),..Default::default()};
+    assert!(client.search_hybrid_server("alpha: AND beta?",&filters,20).await.unwrap().is_empty());
+    server.abort();
 }
 
 #[tokio::test]

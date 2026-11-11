@@ -773,6 +773,7 @@ name = "crisp-search-query"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "levenshtein_automata",
  "tantivy 0.22.1",
 ]
 

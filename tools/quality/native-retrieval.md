@@ -42,13 +42,21 @@ an earlier result directory.
 
 ## What the result means
 
-The four comparisons are shipped strict lexical search, a separately labelled
-literal-any-term lexical policy, dense retrieval, and shipped hybrid retrieval.
-The any-term comparison does not change the meaning of the application's strict
-Boolean query mode. All comparisons use 100 returned documents and the same
-owner scope, judgments, and complete corpus. Explicit language operators in the
-original queries retain their normal parser semantics in shipped modes; any
-error is retained in the output and receives zero quality credit.
+The six comparisons retain the original four rows: strict lexical search, a
+separately labelled literal-any-term lexical policy, dense retrieval, and hybrid
+retrieval with advanced query intent. Two additional rows measure the production
+natural-language query plan in lexical and hybrid retrieval. Natural intent
+treats prose words and punctuation as literal input, uses the original query
+embedding, and keeps generated lexical terms from becoming mandatory Boolean
+constraints on hybrid results. These runs disable fuzzy and synonym expansion.
+
+The any-term diagnostic and natural-language rows do not change the meaning of
+advanced Boolean syntax. All six comparisons use 100 returned documents and the
+same owner scope, frozen judgments, and complete corpus. Explicit language
+operators in the original queries retain their normal parser semantics in the
+strict lexical and advanced hybrid rows; any error is retained in the output
+and receives zero quality credit. No query, judgment, rank weight, or threshold
+is adjusted after observing the results.
 
 `result.json` contains nDCG@10 with graded gains, reciprocal rank@10,
 recall@100, average precision@100, failed/zero-result counts, and native search

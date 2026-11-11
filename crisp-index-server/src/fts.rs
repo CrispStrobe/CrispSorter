@@ -582,6 +582,8 @@ impl FtsStore {
             metadata_filter_version: 1,
             metadata_filter_max_version: crisp_index_protocol::METADATA_FILTER_VERSION,
             stored_passage_version: crisp_index_protocol::STORED_PASSAGE_VERSION,
+            query_explanation_version: crisp_index_protocol::QUERY_EXPLANATION_VERSION,
+            query_plan_version: 1,
             complete_search_version: crisp_index_protocol::COMPLETE_SEARCH_VERSION,
             metadata_schema_version: crisp_index_protocol::METADATA_SCHEMA_VERSION,
             embedding_query_version: 1,
@@ -601,6 +603,21 @@ impl FtsStore {
 
     pub fn prepare(&self, text: &str, filters: &SearchFilters) -> Result<PreparedSearch> {
         self.prepare_optional(Some(text), filters)
+    }
+
+    /// Clause truth from one exact current document; ranges use only the selected passage.
+    pub fn explain_passage(&self, query: &str, owner_id: &str, doc_id: &str, text: &str,
+        edges: crisp_search_query::explanation::PassageEdges)
+        -> Result<crisp_search_query::explanation::QueryEvidence> {
+        let generation = self.generation()?;
+        generation.reader.reload()?;
+        let searcher = generation.reader.searcher();
+        let identity = TermQuery::new(Term::from_field_text(generation.fields.key,
+            &DocumentKey { owner_id: owner_id.into(), doc_id: doc_id.into() }.encoded()), IndexRecordOption::Basic);
+        let addresses = searcher.search(&identity, &TopDocs::with_limit(2))?;
+        ensure!(addresses.len() == 1,
+            "This document has missing or ambiguous full-text postings; refresh its index before explaining it");
+        crisp_search_query::explanation::explain(query, &searcher, &generation.fields.search, addresses[0].1, text, edges)
     }
 
     pub fn prepare_filters(&self, filters: &SearchFilters) -> Result<PreparedSearch> {

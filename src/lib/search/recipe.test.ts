@@ -101,11 +101,21 @@ describe('search filter contract', () => {
         expect(localSearchArguments(recipe)).toEqual({
             query: 'warranty', mode: 'text', limit: 50, ownerId: null, includeUnmounted: true,
             fuzzy: true, synonyms: true, docIdScope: ['a'], tag: 'invoice',
-            searchFilters: { owner_id: null, language: 'de', year_min: 2000, year_max: 2025,
+            searchFilters: { query_intent: 'advanced', owner_id: null, language: 'de', year_min: 2000, year_max: 2025,
                 tags: [], ext: ['pdf'], parent_dir_prefix: '/papers', url_domain: 'example.org',
                 audio_duration_min_seconds: 0, audio_duration_max_seconds: 30,
                 image_camera_make: 'Canon', image_camera_model: 'R5', colbert_rerank: true, omni_search: true },
         });
+    });
+
+    it('preserves intent through bookmarks, requests, and stale-result identity', () => {
+        const old = normalizeSearchRecipe({ version: 3, query: 'alpha AND beta' });
+        expect(old.queryIntent).toBe('advanced');
+        const natural = normalizeSearchRecipe({ ...old, queryIntent: 'natural' });
+        expect(restoreSavedSearches([{ ...natural, name: 'Question' }])[0].queryIntent).toBe('natural');
+        expect(localSearchArguments(natural).searchFilters.query_intent).toBe('natural');
+        expect(searchRequestKey(natural)).not.toBe(searchRequestKey(old));
+        expect(normalizeSearchRecipe({ ...natural, queryIntent: 'unknown' }).queryIntent).toBe('advanced');
     });
 
     it('counts zero duration as an active filter and ignores blank fields', () => {

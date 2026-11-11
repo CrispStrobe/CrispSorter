@@ -3,6 +3,7 @@
 //! Run with the preparation/runner scripts in tools/quality.
 use anyhow::{bail, ensure, Context, Result};
 use crisp_index_protocol::{IngestBatch, IngestChunk, SearchFilters, SearchHit};
+use crisp_search_query::query_plan::{prepare_query, QueryIntent};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -18,8 +19,9 @@ struct Document { id: String, title: String, text: String }
 struct Query { id: String, text: String, relevance: BTreeMap<String, i32> }
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum Mode { LexicalStrict, LexicalAnyTerm, Dense, Hybrid }
-const MODES: [Mode; 4] = [Mode::LexicalStrict, Mode::LexicalAnyTerm, Mode::Dense, Mode::Hybrid];
+enum Mode { LexicalStrict, LexicalAnyTerm, Dense, Hybrid, NaturalLexical, NaturalHybrid }
+const MODES: [Mode; 6] = [Mode::LexicalStrict, Mode::LexicalAnyTerm, Mode::Dense, Mode::Hybrid,
+    Mode::NaturalLexical, Mode::NaturalHybrid];
 
 fn file_hash(bytes: &[u8]) -> String { format!("{:x}", Sha256::digest(bytes)) }
 fn checked_file(input: &Path, manifest: &Value, name: &str) -> Result<Vec<u8>> {
@@ -50,6 +52,14 @@ async fn search(index: &crate::index::SearchIndex, mode: Mode, query: &Query, em
         Mode::LexicalAnyTerm => index.search_text(&any_term_query(&query.text)?, filters, LIMIT).await,
         Mode::Dense => index.search_vector(embedding, filters, LIMIT).await,
         Mode::Hybrid => index.search_hybrid(&query.text, embedding, filters, LIMIT).await,
+        Mode::NaturalLexical => {
+            let plan = prepare_query(&query.text, QueryIntent::Natural, false, false)?;
+            index.search_text(&plan.lexical_query, filters, LIMIT).await
+        }
+        Mode::NaturalHybrid => {
+            let plan = prepare_query(&query.text, QueryIntent::Natural, false, false)?;
+            index.search_hybrid_with_plan(&plan, embedding, filters, LIMIT).await
+        }
     }
 }
 #[derive(Default, Clone, Copy, Serialize)]
@@ -129,7 +139,8 @@ async fn native_judged_retrieval_benchmark() -> Result<()> {
         "revision":revision, "preparation":manifest, "documents":documents.len(), "queries":queries.len(),
         "cutoff":LIMIT, "modes":[], "scope":"Production server index, CPU model inference prepared separately. Native retrieval latency excludes embedding, HTTP, and UI. Public-corpus judgments are not a user-corpus or full-desktop qualification.",
         "policy":"All test queries count in every mean; failed and zero-result queries score zero. One warm run per mode/query after ten unmeasured warmup queries. No test-judgment tuning or query removal.",
-        "lexical_any_term":"Explicit comparison using normalized literal OR terms; separate from the shipped strict lexical query mode."});
+        "lexical_any_term":"Explicit comparison using normalized literal OR terms; separate from the shipped strict lexical query mode.",
+        "natural_language":"Production Natural query intent with fuzzy and synonym expansion disabled. Original query text supplies the frozen embedding; generated lexical terms do not become mandatory constraints on hybrid retrieval."});
     write_json(&output.join("result.json"), &result)?;
     let directory = tempfile::tempdir()?;
     let vector = Arc::new(crate::index::VectorStore::open_or_create(directory.path(), DIMS).await?);

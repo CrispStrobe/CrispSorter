@@ -1,5 +1,6 @@
 pub mod embedder;
 pub mod evidence;
+pub mod explanation;
 pub mod fields;
 pub mod experimental;
 pub mod fts_index;

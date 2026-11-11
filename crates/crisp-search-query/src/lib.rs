@@ -6,6 +6,10 @@
 //! the left operand before the right, with at most N intervening indexed words.
 //! Proximity operands support words, exact phrases, and OR alternatives. An
 //! unsupported shape is an error; it is never silently changed into an AND.
+pub mod explanation;
+pub mod query_plan;
+pub mod synonyms;
+
 use anyhow::{anyhow, bail, Result};
 use std::collections::BTreeSet;
 use tantivy::{

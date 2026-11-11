@@ -496,14 +496,8 @@ impl SearchEngine {
         // When reranking is on, pull a wider candidate window so the cross
         // encoder has enough material to re-sort to `limit`.
         let inner_limit = self.fetch_limit(limit, filters.colbert_rerank);
-        let mut effective_query = if filters.synonyms {
-            super::synonyms::synonym_expand_query(query)
-        } else {
-            query.to_owned()
-        };
-        if filters.fuzzy {
-            effective_query = super::fts_query::fuzzify_query(&effective_query);
-        }
+        let plan = filters.query_plan(query)?;
+        let effective_query = &plan.lexical_query;
         let hits = self
             .filtered_fts_hits(&effective_query, filters, inner_limit)
             .await?;
@@ -516,7 +510,7 @@ impl SearchEngine {
 
         // Only positive literal body terms are useful passage seeds. Boolean
         // operators, exclusions and metadata fields must not win the preview.
-        let terms = super::fts_query::literal_body_terms(query)?;
+        let terms = super::fts_query::literal_body_terms(&plan.lexical_query)?;
         let term_refs: Vec<&str> = terms.iter().map(|s| s.as_str()).collect();
 
         let mut results = self
@@ -577,15 +571,9 @@ impl SearchEngine {
         }
         // Explicit lexical constraints must remain true after fusion. A dense
         // match is not permission to ignore NOT, a field, or a proximity bound.
-        let constrained = super::fts_query::has_explicit_syntax(query_text)?;
-        let mut q_owned = if filters.synonyms {
-            super::synonyms::synonym_expand_query(query_text)
-        } else {
-            query_text.to_owned()
-        };
-        if filters.fuzzy {
-            q_owned = super::fts_query::fuzzify_query(&q_owned);
-        }
+        let plan = filters.query_plan(query_text)?;
+        let constrained = plan.requires_lexical_match;
+        let q_owned = &plan.lexical_query;
         {
             // Repair before trusting a cached answer. Preflight also binds
             // actual fields and bounds dictionary expansion before model work.
@@ -730,7 +718,7 @@ impl SearchEngine {
 
         let mut fts_hydrated: HashMap<String, SearchResult> = HashMap::new();
         if !fts_only_ids.is_empty() {
-            let terms = super::fts_query::literal_body_terms(query_text)?;
+            let terms = super::fts_query::literal_body_terms(&plan.lexical_query)?;
             let term_refs: Vec<&str> = terms.iter().map(|s| s.as_str()).collect();
             let fts_score_sub: HashMap<String, f32> = fts_only_ids
                 .iter()

@@ -363,6 +363,9 @@ pub struct SearchResult {
 /// Pre-filter parameters applied before ANN / BM25 scoring.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SearchFilters {
+    /// Explicit interpretation of the query; absent preserves advanced syntax.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query_intent: Option<String>,
     pub owner_id: Option<String>,
     pub language: Option<String>,
     pub year_min: Option<i32>,
@@ -473,8 +476,14 @@ pub struct SearchFilters {
 }
 
 impl SearchFilters {
+    pub fn query_plan(&self, query: &str) -> anyhow::Result<crisp_search_query::query_plan::QueryPlan> {
+        use crisp_search_query::query_plan::{prepare_query, QueryIntent};
+        prepare_query(query, QueryIntent::parse(self.query_intent.as_deref().unwrap_or("advanced"))?, self.fuzzy, self.synonyms)
+    }
+
     /// Validate user-provided ranges before building storage predicates.
     pub fn validate(&self) -> Result<(), String> {
+        crisp_search_query::query_plan::QueryIntent::parse(self.query_intent.as_deref().unwrap_or("advanced")).map_err(|e| e.to_string())?;
         if self.tags.len() > 32 || self.tags.iter().any(|tag| tag.trim().is_empty() || tag.len() > 1024) {
             return Err("Choose at most 32 nonempty required tags, each at most 1024 bytes.".into());
         }

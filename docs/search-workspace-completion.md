@@ -15,10 +15,12 @@ keeping source and binary dependency pins aligned. Main subsequently integrated
 pull requests 39 and 40; its merge commit
 `657b86041cafc826869d536d1ebe4bdfbcb2b2e1` is also an ancestor of this branch.
 
-The review covered all 70 preexisting remote branches. The separate sandbox
+The initial review covered all 70 preexisting remote branches. The continuation
+on 2026-11-11 inspected all 71 current remote heads and integrated main commit
+`537764811dc415a544ecd4be513a9599370a31c5`, including the completed OCR controls
+from pull request 41. Pull request 42 now targets `main`. The separate sandbox
 distribution experiment remains separate. Development checkpoints are committed
-to the remote feature branch; pull request 42 is stacked on `fix/secret-store-ux`
-so its new changes can be reviewed separately from earlier integration work.
+to the remote feature branch.
 
 ## Capability decisions
 
@@ -32,32 +34,38 @@ so its new changes can be reviewed separately from earlier integration work.
 | Initial passage selection | Use parsed positive body terms and the index analyzer. Operators, excluded words, unrelated fields, and substring fragments do not receive invented literal scores. |
 | Structured constraints | Local multi-tag constraints use AND semantics. Wildcard characters in folder, camera, and URL substring filter values are literal. Hash prefixes are case-normalized. |
 | Remote filtering | Negotiate extension, multi-tag AND, hash-prefix, document-scope, folder, URL, audio duration, camera, translated-language, review-status, and recorded-volume constraints alongside owner, language, and year. Preserve ingest metadata, apply constraints before limits, and require the response receipt. |
-| Saved workspace | Version 3 recipes retain filters, scope, sort, compact layout, preferred preview, report format, displayed tags, and tag-cloud visibility. Legacy recipes receive safe defaults. Request identity excludes view-only changes. |
+| Query interpretation | Explicit Advanced syntax preserves the exact language; Natural language treats punctuation and operator words as ordinary text, retrieves any indexed words, and keeps the original model input. Generated expansion does not become a mandatory Hybrid condition. Local and compatible selected remote indexes use the same planner. |
+| Saved workspace | Version 4 recipes retain query interpretation, filters, scope, sort, compact layout, preferred preview, report format, displayed tags, and tag-cloud visibility. Legacy recipes retain Advanced syntax. Request identity includes retrieval interpretation and excludes view-only changes. |
 | Complete local counts and facets | Scan all matching stored rows under a consistent index lease, deduplicate owner/document identities, and count matching extensions, languages, years, and tags. Report omitted facet values explicitly. Cancel work cooperatively and invalidate stale summaries. |
 | Complete local reports | Stream all lexical matches as CSV or JSON in a selected global metadata order, with query, filters, generation, source provenance, and total count. Atomic publication preserves an earlier report on pre-publication failure or cancellation and protects indexed sources and index storage. |
 | Complete remote counts and reports | Use authenticated, disk-backed lexical sessions tied to exact query, owner/filters, connection, and index generation. Return complete facets and globally ordered pages; verify every page, total, and identity before atomic CSV/JSON publication. |
 | Keyboard investigation | Ctrl/Cmd+Shift+F focuses search; Arrow Down enters results; arrows/Home/End traverse titles; Enter opens; Alt+Up/Down traverses previewed documents; Escape closes and restores the current document's focus. |
 | Stored evidence | Navigate actual previous/next stored chunks even when only one passage was returned. Display actual offsets, stored fingerprint, and a notice if the index changed since the search. |
 | Remote evidence | An authenticated, versioned endpoint returns the exact requested owner/document passage, actual sparse navigation, and current stored provenance. Clients verify response identity, the capability receipt, and the bounded response. Legacy servers fail visibly. |
+| Query evidence | Evaluate the complete Boolean, field, phrase, wildcard, fuzzy, and proximity expression against the actual document postings. Highlight bounded positive witnesses in the selected stored passage with exact UTF-8 offsets. Semantic retrieval has no invented word-level attribution. |
 | In-passage find | Case-sensitive and whole-word options preserve source offsets. Counts distinguish exactly 1,000 occurrences from capped results. Passage navigation retains find options and keyboard focus. |
 | Result actions | Copy paths and citations with the executed query and provenance. Refine to displayed documents, remove individual display-filter chips, and recover from an empty filtered display. |
 | Provider requests and saves | Bind credentials, endpoint, model, and response to immutable request inputs. Serialize secret migration before settings writes; preserve drafts made while saving and refuse plaintext fallback after a partial vault write. |
-| Archive ingestion | Native bounded ZIP extraction uses the existing format/OCR dispatch. Nested members retain path provenance and explicit coverage notes. Desktop Add/Inbox avoids loading compressed archives into the webview. |
-| Mail and presentation intake | Foreground EML, MBOX, and PPTX use bounded native snapshots and real parsers. Presentation text, email body coverage, and binary attachment omissions are explicit. Image-only presentations do not become false text successes. |
+| Archive ingestion | Bounded ZIP, TAR, GZIP, TGZ and 7z extraction uses the native format/OCR dispatcher. The parent and each supported member are indexed independently; nested members retain complete provenance, stable identities and verified reopening. Desktop Add/Inbox avoids loading compressed archives into the webview. |
+| Mail and presentation intake | Foreground EML, MBOX and PPTX use bounded snapshots and real parsers. MIME binary attachments pass through the native leaf dispatcher as independent documents; mailbox messages have distinct identities. Unsupported formats and unrecognized presentation media retain explicit omission coverage. |
 | Portable index correctness | Export every text chunk to the portable index's full-text companion from the exported snapshot. Verify overlapping bytes and separate unknown source boundaries. |
 | Retrieval evaluation | Require complete returned-window reports, consistent counts/limits, the exact executed query, relevance order, and optional document scope. Incomplete report fragments cannot qualify as complete evaluation runs. |
 
 ## Inspection workflow
 
-1. Choose Full text, Semantic, or Hybrid. Explicit lexical conditions remain
-   binding in modes that advertise those conditions.
+1. Choose Full text, Semantic or Hybrid, then choose Advanced syntax or Natural
+   language for a lexical mode. User-authored advanced constraints remain binding
+   in Hybrid. Natural language preserves semantic-only candidates and all
+   structured metadata restrictions.
 2. Build a phrase or proximity condition. Zero intervening words means adjacent
    indexed positions; ordered proximity requires the left operand first. Press
    Search to execute the completed request.
 3. Sort or compact the returned window, select documents, or narrow the display
    with tag chips. Display filtering and counts describe that returned window.
 4. Open Indexed text and navigate stored passages. The independent find controls
-   locate literal text occurrences. An absent stored fingerprint is shown as
+   locate literal text occurrences. Query evidence separately shows actual
+   document-level clause truth and positive source witnesses; see
+   [query evidence](query-evidence.md) for its exact scope. An absent stored fingerprint is shown as
    unavailable, rather than borrowed from an older search result. Original-file preview remains separate:
    the original may have changed since it was indexed.
 5. Save the query and its view preferences, or export displayed/selected results
@@ -127,29 +135,41 @@ windows; complete reports apply to lexical matching.
 
 ## Extraction coverage and source identity
 
-A ZIP is one indexed source with labeled member sections. Member names remain
-provenance and are never extraction destinations. Nested archives share entry,
-recursion, compressed-input, expanded-byte, and extracted-text budgets. ZIP-based
-document packages pass an expansion preflight before their parser runs.
+The shared native dispatcher supports ZIP, TAR, GZIP, TGZ, 7z, EML and MBOX.
+A container parent, its nested containers, each message and each supported
+attachment or archive member are independent indexed documents. The parent
+retains its own body or coverage summary; descendant text is never substituted
+into it. A group refresh publishes the complete replacement atomically, removes
+obsolete descendants and preserves the previous group on failure.
 
-Supported members use the existing native format/OCR dispatch. Unsupported,
-encrypted, link, unsafe-path, and no-text members carry coverage notes: their
-names do not imply their contents were extracted. No searchable member is an
-error. Corrupt supported content or an exhausted budget fails the refresh so the
-existing transaction can retain the last good indexed document. See the
-[extraction contracts](../tests/extraction-contract/README.md) for limits and tests.
+Member identity uses the root owner and root occurrence plus each step's
+container kind, validated logical name and same-name occurrence ordinal.
+Reordering unrelated entries or changing member bytes preserves that identity.
+Receipts separately record physical positions, byte counts and exact decoded
+SHA-256 values. Opening a member snapshots the complete root, verifies its
+fingerprint and re-decodes every recorded step before publishing a verified
+copy to the bounded managed cache. A changed source requires refresh.
 
-Direct EML, MBOX, and PPTX intake uses the same native source identity checks.
-Inputs are copied into bounded private snapshots before parsing: 64 MiB for EML,
-256 MiB for MBOX, and 128 MiB for PPTX, with a 16 MiB extracted-text budget.
-Presentation packages also receive ZIP expansion and XML work limits. Mail
-extraction preserves body and message boundaries; binary attachments remain
-explicitly outside its coverage. Presentation extraction records text-only
-coverage rather than implying that slide images were recognized.
+Member names are provenance, never extraction destinations. Nested containers,
+MIME attachment decoding and document packages share count, depth, expanded-byte
+and text limits. Default limits are 128 MiB archive input, 256 MiB mailbox input,
+32 MiB per decoded member, 128 MiB total expanded bytes, 16 MiB extracted text,
+2,048 inspected entries and four entry-chain steps. EML retains its additional
+64 MiB ceiling. ZIP/7z metadata and 7z dictionaries have separate preallocation
+limits. These component budgets do not bound total process memory.
 
-Foreground index writes retain source-fingerprint checks before/after extraction
-and at the native commit boundary. Cancellation discards a late native result;
-it does not forcibly interrupt a parser mid-operation.
+Supported binary MIME attachments use the normal native format/OCR dispatcher.
+Transfer encoding, character sets, multipart alternatives, HTML bodies and
+nested messages retain explicit boundaries and source receipts. Unsupported,
+encrypted, linked, unsafe-name and textless entries have visible coverage;
+coverage-only parents remain inspectable. Corrupt supported content or an
+exhausted budget fails the expansion rather than silently losing members.
+
+Presentation text, notes and comments are supported. Images, charts and embedded
+presentation media retain explicit omissions. Foreground cancellation discards
+a stale native result and does not forcibly interrupt a running synchronous
+parser. See the [extraction contracts](../tests/extraction-contract/README.md)
+for the exact supported decoder profile, budgets and verification boundaries.
 
 ## Text reconstruction and archive search
 
@@ -242,17 +262,25 @@ packaging, and platform rendering remain outside these standalone packages.
 
 ## Boundaries that remain explicit
 
-This implementation does not claim universal search or format parity. These
-capabilities need further implementation or qualification before being promised:
+The supported extraction families, source receipts and lexical explanation
+semantics are implemented. These remaining boundaries still constrain claims:
 
-- Binary email-attachment extraction and additional archive/mail-container
-  families. ZIP, EML, and MBOX support does not imply support for other types.
-- Per-member source identities and direct opening of archive members. ZIP keeps
-  one container identity with labeled member provenance.
-- Explanation spans for fuzzy, semantic, or full Boolean/proximity matches.
-  Highlights identify literal occurrences rather than certifying an expression.
-- Relevance, OCR accuracy, and latency measurements on the actual corpus,
-  models, hardware, and formats. Synthetic correctness tests cannot establish
-  state-of-the-art quality.
+- Formats and codecs outside the documented native decoder profile, encrypted
+  archive content and omitted presentation media retain explicit coverage limits.
+- Source spans explain the selected stored passage and current index. They do
+  not reconstruct missing cross-passage bytes, a past ranking score or the
+  unchanged state of the current original file. Semantic word attribution is
+  deliberately absent because passage similarity does not establish it.
+- Natural language and advanced expanded Hybrid plans require the negotiated
+  query-plan capability on a selected remote index. The separate Cloud and All
+  sources workflows do not transport Natural language intent and reject that
+  selection visibly. Semantic mode does not apply lexical query interpretation.
+- Public-corpus measurements qualify the recorded components, model, data and
+  hardware. They do not qualify a private corpus, desktop OCR/model integration,
+  every language or format, or production latency on the user's hardware.
+- Local browser execution is restricted in this environment. Hosted browser
+  and full application checks must be assessed at the actual feature head.
 
-These boundaries must not become completion or quality claims without evidence.
+See the committed [measurement receipts](../tests/quality/measurements/README.md)
+for observed results. These boundaries must not become broader quality claims
+without evidence.

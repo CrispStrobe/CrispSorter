@@ -250,11 +250,15 @@ impl RemoteClient {
         let filters = request.filters();
         filters.validate().map_err(|error| anyhow!(error))?;
         let required = filters.required_metadata_filter_version();
-        if required > 0 || request.embedding_query.is_some() {
+        if required > 0 || request.embedding_query.is_some() || request.query_plan.is_some() {
             let capabilities = self.search_capabilities().await
                 .map_err(|error| anyhow!("Cannot verify remote metadata filters; upgrade the server or clear these filters: {error}"))?;
             validate_metadata_capabilities(&capabilities, &filters)?;
             if required > 0 { request.metadata_filter_version = Some(required); }
+            if request.query_plan.is_some() {
+                ensure!(capabilities.query_plan_version == crisp_index_protocol::QUERY_PLAN_VERSION,
+                    "This server does not support the selected query planning. Upgrade it, or choose Advanced syntax with fuzzy and synonym expansion off.");
+            }
             if request.embedding_query.is_some() {
                 ensure!(capabilities.embedding_query_version == 1,
                     "This server cannot preserve the original semantic query while expanding lexical terms. Upgrade the server or turn off fuzzy and synonym expansion for Hybrid search.");
@@ -291,6 +295,9 @@ impl RemoteClient {
         }
         if request.embedding_query.is_some() {
             confirm_version(&response, "x-crisp-embedding-query-version", 1, "original semantic query")?;
+        }
+        if request.query_plan.is_some() {
+            confirm_version(&response, crisp_index_protocol::QUERY_PLAN_VERSION_HEADER, crisp_index_protocol::QUERY_PLAN_VERSION, "query intent")?;
         }
         Ok(response)
     }
@@ -414,6 +421,35 @@ impl RemoteClient {
         ensure!(capabilities.api_version == 1 && capabilities.fts_ready && capabilities.container_members_version == CONTAINER_MEMBERS_VERSION,
             "The remote index is not ready or does not support versioned container members. Finish its rebuild or upgrade the server.");
         Ok(())
+    }
+
+    /// Fetch actual document-clause truth with a separate capability and exact
+    /// request receipts. Legacy servers retain ordinary passage inspection.
+    pub async fn explain_passage(&self, request: &crisp_index_protocol::QueryExplanationRequest)
+        -> Result<crisp_index_protocol::QueryExplanation> {
+        use crisp_index_protocol::{QueryExplanation,QUERY_EXPLANATION_VERSION,
+            QUERY_EXPLANATION_VERSION_HEADER,MAX_QUERY_EXPLANATION_RESPONSE_BYTES};
+        request.validate().map_err(|error|anyhow!(error))?;
+        let response=self.client.get(self.url("/v1/capabilities")).bearer_auth(&self.api_key).send().await?;
+        if response.status()==reqwest::StatusCode::NOT_FOUND {
+            return Err(anyhow!("This server does not advertise query explanations. Upgrade the server to inspect lexical proof."));
+        }
+        let capabilities:SearchCapabilities=bounded_response_json(response,64*1024).await?;
+        ensure!(capabilities.supports_strict_search(false)
+            && capabilities.stored_passage_version==STORED_PASSAGE_VERSION
+            && capabilities.query_explanation_version==QUERY_EXPLANATION_VERSION,
+            "The remote index is not ready or does not support versioned query explanations. Finish its rebuild or upgrade the server.");
+        let response=self.client.post(self.url("/v1/passages/explain"))
+            .bearer_auth(&self.api_key).json(request).send().await?;
+        if response.status().is_success() {
+            let version=response.headers().get(QUERY_EXPLANATION_VERSION_HEADER)
+                .and_then(|value|value.to_str().ok()).and_then(|value|value.parse::<u32>().ok());
+            ensure!(version==Some(QUERY_EXPLANATION_VERSION),
+                "The server did not confirm the negotiated query explanation version; its evidence was not accepted");
+        }
+        let result:QueryExplanation=bounded_response_json(response,MAX_QUERY_EXPLANATION_RESPONSE_BYTES).await?;
+        result.validate_for(request).map_err(|error|anyhow!(error))?;
+        Ok(result)
     }
 
     /// Owner-scoped persisted metadata, never a locator supplied by the webview.
@@ -679,10 +715,22 @@ fn build_search_request(
     filters: &SearchFilters, limit: usize,
 ) -> Result<SearchRequest> {
     let wire = wire_filters(filters)?;
-    let effective = query.map(|query| if mode == "vector" { query.to_owned() } else { expanded_query(query, filters) });
+    let effective = query.map(|query| if mode == "vector" { Ok(query.to_owned()) } else { expanded_query(query, filters) }).transpose()?;
+    // Generated fuzzy/OR syntax is not a user-authored mandatory constraint.
+    // Declare the original intent for natural language and expanded hybrid
+    // searches so the server derives the same policy as the local engine.
+    let needs_plan = mode != "vector" && (filters.query_intent.as_deref() == Some("natural")
+        || (mode == "hybrid" && effective.as_deref() != query));
+    let query_plan = if needs_plan {
+        Some(crisp_index_protocol::SearchQueryPlan { version: crisp_index_protocol::QUERY_PLAN_VERSION,
+            intent: filters.query_intent.as_deref().unwrap_or("advanced").into(),
+            original_query: query.ok_or_else(|| anyhow!("A query is required"))?.to_owned(),
+            fuzzy: filters.fuzzy, synonyms: filters.synonyms })
+    } else { None };
     let embedding_query = if mode == "hybrid" && embedding.is_none()
         && effective.as_deref() != query { query.map(str::to_owned) } else { None };
     Ok(SearchRequest {
+        query_plan,
         query: effective, embedding: embedding.map(|value| value.to_vec()), mode: Some(mode.into()), limit: Some(limit),
         query_language_version: None, metadata_filter_version: None, embedding_query, embedding_query_version: None,
         owner_id: wire.owner_id, language: wire.language, year_min: wire.year_min, year_max: wire.year_max,
@@ -698,15 +746,14 @@ fn build_search_request(
 pub fn complete_search_scope(query: &str, filters: &SearchFilters) -> Result<CompleteSearchScope> {
     ensure!(!query.trim().is_empty() && query.len() <= 8192, "Enter a search query of at most 8192 bytes");
     let scope = CompleteSearchScope { version: COMPLETE_SEARCH_VERSION,
-        query: expanded_query(query, filters), filters: wire_filters(filters)? };
+        query: expanded_query(query, filters)?, filters: wire_filters(filters)? };
     scope.validate().map_err(|error| anyhow!(error))?;
     super::fts_query::has_explicit_syntax(&scope.query)?;
     Ok(scope)
 }
 
-fn expanded_query(query: &str, filters: &SearchFilters) -> String {
-    let query = if filters.synonyms { super::synonyms::synonym_expand_query(query) } else { query.to_owned() };
-    if filters.fuzzy { super::fts_query::fuzzify_query(&query) } else { query }
+fn expanded_query(query: &str, filters: &SearchFilters) -> Result<String> {
+    Ok(filters.query_plan(query)?.lexical_query)
 }
 
 pub fn wire_filters(filters: &SearchFilters) -> Result<crisp_index_protocol::SearchFilters> {

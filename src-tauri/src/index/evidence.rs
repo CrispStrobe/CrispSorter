@@ -4,7 +4,7 @@ use serde::Serialize;
 use crate::AppState;
 use super::{local_index::Passage, SearchFilters, SearchResult};
 #[path = "passage.rs"]
-mod passage;
+pub(crate) mod passage;
 pub use passage::InspectedPassage;
 
 #[derive(Debug, Clone, Serialize)]

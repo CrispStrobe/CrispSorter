@@ -45,6 +45,8 @@ use serde::{Deserialize, Serialize};
 
 pub mod complete;
 pub use complete::*;
+pub mod explanation;
+pub use explanation::*;
 pub mod member;
 pub use member::*;
 pub mod container;
@@ -253,6 +255,10 @@ pub const QUERY_LANGUAGE_VERSION: u32 = 1;
 pub const QUERY_VERSION_HEADER: &str = "x-crisp-query-version";
 /// Receipt for separate original-query semantic embedding.
 pub const EMBEDDING_QUERY_VERSION_HEADER: &str = "x-crisp-embedding-query-version";
+/// Receipt for explicit natural-language query planning.
+pub const QUERY_PLAN_VERSION_HEADER: &str = "x-crisp-query-plan-version";
+/// Current query plan semantics.
+pub const QUERY_PLAN_VERSION: u32 = 1;
 
 /// Metadata filter semantics: extension, exact tag, hash prefix and document scope.
 pub const METADATA_FILTER_VERSION: u32 = 2;
@@ -265,6 +271,9 @@ pub const FTS_SCHEMA_VERSION: u32 = 3;
 /// Negotiated search support returned by `GET /v1/capabilities`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SearchCapabilities {
+    /// Explicit natural-language planning; zero preserves legacy advanced syntax.
+    #[serde(default)]
+    pub query_plan_version: u32,
     /// HTTP API generation.
     pub api_version: u32,
     /// Missing on legacy servers, which must not receive extended filters.
@@ -273,6 +282,9 @@ pub struct SearchCapabilities {
     /// Missing on legacy servers, which cannot serve verified stored passages.
     #[serde(default)]
     pub stored_passage_version: u32,
+    /// Actual document-clause truth and bounded source-passage byte spans.
+    #[serde(default)]
+    pub query_explanation_version: u32,
     /// Exact Boolean, field, phrase, fuzzy, wildcard, and proximity grammar.
     pub query_language_version: u32,
     /// Baseline compatible lexical schema (2 remains supported for older clients).
@@ -321,6 +333,25 @@ impl SearchCapabilities {
     }
 }
 
+/// A reproducible intent declaration. The server recomputes its lexical query
+/// and constraint policy; clients cannot supply an unchecked policy override.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SearchQueryPlan {
+    /// Negotiated semantics, currently 1.
+    pub version: u32,
+    /// `natural` or `advanced`; absence of the whole plan is legacy advanced.
+    pub intent: String,
+    /// Unmodified text supplied to the embedding model.
+    pub original_query: String,
+    /// Apply bounded fuzzy word expansion.
+    #[serde(default)]
+    pub fuzzy: bool,
+    /// Apply the shared offline synonym dictionary.
+    #[serde(default)]
+    pub synonyms: bool,
+}
+
 // ── Search ──────────────────────────────────────────────────────────────────
 
 /// Hybrid-search request body for `POST /v1/search`. The server picks the
@@ -331,6 +362,9 @@ impl SearchCapabilities {
 /// - `hybrid` — RRF (k=60) merge of both; requires both. Default.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SearchRequest {
+    /// Original intent and expansions, verified against the lexical request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query_plan: Option<SearchQueryPlan>,
     /// Plain-text BM25 query. Required for `text` and `hybrid` modes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query: Option<String>,

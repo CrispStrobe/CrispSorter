@@ -166,6 +166,23 @@ impl FtsIndex {
         }
     }
 
+    /// Explain one exact current document against actual postings. The caller
+    /// keeps the paired text/vector read lease while reading its source passage.
+    pub fn explain_passage(&self, query: &str, owner_id: &str, doc_id: &str, text: &str,
+        edges: crisp_search_query::explanation::PassageEdges)
+        -> Result<crisp_search_query::explanation::QueryEvidence> {
+        self.reader.reload()?;
+        let searcher = self.reader.searcher();
+        let identity = BooleanQuery::new(vec![
+            (Occur::Must, Box::new(TermQuery::new(Term::from_field_text(self.fields.doc_id, doc_id), IndexRecordOption::Basic))),
+            (Occur::Must, Box::new(TermQuery::new(Term::from_field_text(self.fields.owner_id, owner_id), IndexRecordOption::Basic))),
+        ]);
+        let addresses = searcher.search(&identity, &TopDocs::with_limit(2))?;
+        ensure!(addresses.len() == 1,
+            "This document has missing or ambiguous full-text postings; refresh its index before explaining it");
+        crisp_search_query::explanation::explain(query, &searcher, &self.search_fields(), addresses[0].1, text, edges)
+    }
+
     /// Browse actual indexed words in lexical order. Counts use live documents
     /// and a union of all text fields, so the same word in a title and body is
     /// counted once. The owner filter is honored before returning vocabulary.

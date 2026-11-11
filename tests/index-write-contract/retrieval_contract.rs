@@ -2,6 +2,45 @@
 use crate::index::{ingest::chunk_row_id, schema::DocumentChunk, LocalIndex};
 use std::collections::HashMap;
 
+#[tokio::test]
+async fn natural_hybrid_keeps_semantic_candidates_filters_and_separate_cached_intents() {
+    use crate::index::{FtsIndex, search::SearchEngine, schema::SearchFilters};
+    use std::sync::Arc;
+    let directory = tempfile::tempdir().unwrap();
+    let local = Arc::new(LocalIndex::open_or_create(directory.path(), 4).await.unwrap());
+    let fts = Arc::new(FtsIndex::open_or_create(&directory.path().join("fts")).unwrap());
+    let mut rows = Vec::new();
+    for (id, body, owner, ext, embedding) in [
+        ("lexical", "alpha contract", "owner", "pdf", vec![0.0, 1.0, 0.0, 0.0]),
+        ("semantic", "related topic", "owner", "pdf", vec![1.0, 0.0, 0.0, 0.0]),
+        ("other-owner", "alpha contract", "elsewhere", "pdf", vec![1.0, 0.0, 0.0, 0.0]),
+        ("other-format", "alpha contract", "owner", "txt", vec![1.0, 0.0, 0.0, 0.0]),
+    ] {
+        let mut row = chunk(id, 0, 1, body);
+        row.owner_id = owner.into(); row.ext = Some(ext.into()); row.embedding = Some(embedding);
+        rows.push(row);
+    }
+    local.ingest_batch(&rows).await.unwrap();
+    let engine = SearchEngine::new(fts.clone(), local.clone(),
+        Some(Arc::new(tokio::sync::Mutex::new(crate::index::embedder::Embedder))));
+    let advanced = SearchFilters { owner_id: Some("owner".into()), ext: vec!["pdf".into()], ..Default::default() };
+    let natural = SearchFilters { query_intent: Some("natural".into()), ..advanced.clone() };
+    let raw = "alpha AND warranty";
+    assert!(engine.search_hybrid(raw, &advanced, 10).await.unwrap().is_empty());
+    let hits = engine.search_hybrid(raw, &natural, 10).await.unwrap();
+    let mut ids: Vec<_> = hits.iter().map(|hit| hit.doc_id.as_str()).collect(); ids.sort();
+    assert_eq!(ids, ["lexical", "semantic"]);
+    assert!(engine.search_hybrid(raw, &advanced, 10).await.unwrap().is_empty(), "intent changes cannot reuse a cached answer");
+    assert_eq!(engine.search_hybrid("body:alpha", &advanced, 10).await.unwrap()[0].doc_id, "lexical");
+    let text = engine.search_text("alpha: AND warranty?", &natural, 10).await.unwrap();
+    assert_eq!(text.len(), 1); assert_eq!(text[0].doc_id, "lexical");
+    let summary = crate::index::search_summary::summarize(local, fts,
+        "alpha: AND warranty?".into(), natural, None).await.unwrap();
+    assert_eq!(summary.matching_documents, 1);
+    assert_eq!(summary.query, "alpha: AND warranty?");
+    assert_eq!(summary.effective_query, "alpha OR \"and\" OR warranty");
+}
+
 fn chunk(id: &str, index: i32, total: i32, text: &str) -> DocumentChunk {
     serde_json::from_value(serde_json::json!({
         "id": chunk_row_id(id, index), "doc_id": id,

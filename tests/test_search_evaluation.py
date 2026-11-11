@@ -77,6 +77,17 @@ class SearchEvaluationTests(unittest.TestCase):
         saved["recipe"]["ownerId"] = "reader"
         self.assertEqual(evaluate.evaluate_report({**case, "ownerId": "reader"}, saved, 10)["recallAtK"], 1)
 
+    def test_query_intent_is_recorded_and_optional_expected_intent_is_enforced(self):
+        case = {"id": "q", "query": "needle", "relevance": {"a": 1}, "queryIntent": "natural"}
+        saved = report(["a"])
+        with self.assertRaisesRegex(ValueError, "Query intent differs"):
+            evaluate.evaluate_report(case, saved, 10)
+        saved["recipe"].update(version=4, queryIntent="natural")
+        self.assertEqual(evaluate.evaluate_report(case, saved, 10)["recallAtK"], 1)
+        saved["recipe"]["queryIntent"] = "guess"
+        with self.assertRaisesRegex(ValueError, "supported query intent"):
+            evaluate.evaluate_report(case, saved, 10)
+
     def test_fraction_thresholds_and_boolean_empty_expectations_are_validated(self):
         with self.assertRaisesRegex(ValueError, "boolean"):
             evaluate.evaluate_report({"id": "q", "query": "needle", "expectEmpty": "false"}, report([]), 10)

@@ -39,6 +39,57 @@ async fn call<T:serde::Serialize>(fixture:&Fixture,path:&str,body:&T)->reqwest::
 }
 
 #[tokio::test]
+async fn natural_query_plan_round_trips_real_search_preserves_filters_and_rejects_changed_receipts() {
+    use crate::desktop::{remote_client::RemoteClient, IndexBackend};
+    let fixture = fixture().await;
+    let mut lexical = chunk("reader", "lexical", "alpha contract"); lexical.ext = "pdf".into(); lexical.embedding = vec![0.0, 1.0];
+    let mut semantic = chunk("reader", "semantic", "related topic"); semantic.ext = "pdf".into();
+    let mut outsider = chunk("other", "outsider", "alpha contract"); outsider.ext = "pdf".into();
+    let excluded = chunk("reader", "other-format", "alpha contract");
+    fixture.index.ingest_batch(&IngestBatch { chunks:vec![lexical, semantic, outsider, excluded], container_group_version:None }).await.unwrap();
+    let client = RemoteClient::new(&fixture.url, "complete-secret");
+    let filters = crate::desktop::schema::SearchFilters { query_intent:Some("natural".into()),
+        owner_id:Some("reader".into()), ext:vec!["pdf".into()], ..Default::default() };
+    let query = "alpha AND warranty?";
+    let text = client.search_text(query, &filters, 20).await.unwrap();
+    assert_eq!(text.len(), 1); assert_eq!(text[0].doc_id, "lexical");
+    let hybrid = client.search_hybrid(query, &[1.0,0.0], &filters, 20).await.unwrap();
+    let ids:BTreeSet<_> = hybrid.iter().map(|hit|hit.doc_id.as_str()).collect();
+    assert_eq!(ids, BTreeSet::from(["lexical", "semantic"]));
+    let advanced = crate::desktop::schema::SearchFilters {query_intent:None, ..filters.clone()};
+    assert!(client.search_hybrid(query, &[1.0,0.0], &advanced, 20).await.unwrap().is_empty());
+    for (fuzzy, synonyms) in [(true,false),(false,true),(true,true)] {
+        let expanded = crate::desktop::schema::SearchFilters { fuzzy, synonyms, ..advanced.clone() };
+        let hits = client.search_hybrid("contract", &[1.0,0.0], &expanded, 20).await.unwrap();
+        let ids:BTreeSet<_> = hits.iter().map(|hit|hit.doc_id.as_str()).collect();
+        assert_eq!(ids,BTreeSet::from(["lexical","semantic"]),"expansion must preserve local hybrid semantics");
+        let constrained = client.search_hybrid("body:contract", &[1.0,0.0], &expanded, 20).await.unwrap();
+        assert_eq!(constrained.len(),1); assert_eq!(constrained[0].doc_id,"lexical");
+    }
+    let scope = crate::desktop::remote_client::complete_search_scope(query, &filters).unwrap();
+    assert_eq!(scope.query, "alpha OR \"and\" OR warranty");
+    let complete_request = request(scope);
+    let complete = client.complete_search(&complete_request).await.unwrap();
+    assert_eq!(complete.matching_documents, 1);
+    client.close_complete_search(&complete_request.request_id).await.unwrap();
+
+    let plan = SearchQueryPlan {version:QUERY_PLAN_VERSION,intent:"natural".into(),original_query:query.into(),fuzzy:false,synonyms:false};
+    let base = SearchRequest {query:Some("alpha OR \"and\" OR warranty".into()), mode:Some("hybrid".into()),
+        query_plan:Some(plan.clone()), embedding:Some(vec![1.0,0.0]), ..Default::default()};
+    let response = call(&fixture,"/v1/search",&base).await;
+    assert_eq!(response.status(),200);
+    assert_eq!(response.headers().get(QUERY_PLAN_VERSION_HEADER).unwrap(),"1");
+    let mut wrong = base.clone(); wrong.query = Some("NOT alpha".into());
+    assert_eq!(call(&fixture,"/v1/search",&wrong).await.status(),422);
+    let mut wrong = base.clone(); wrong.query_plan.as_mut().unwrap().version = 99;
+    assert_eq!(call(&fixture,"/v1/search",&wrong).await.status(),409);
+    let mut wrong = base.clone(); wrong.query_plan.as_mut().unwrap().intent = "guess".into();
+    assert_eq!(call(&fixture,"/v1/search",&wrong).await.status(),422);
+    let mut wrong = base.clone(); wrong.embedding_query = Some("different model input".into()); wrong.embedding_query_version = Some(1);
+    assert_eq!(call(&fixture,"/v1/search",&wrong).await.status(),422);
+}
+
+#[tokio::test]
 async fn complete_http_counts_all_633_documents_with_facets_and_enumerates_every_owner_scoped_page() {
     let fixture=fixture().await;let owner="reader'one";
     let mut chunks:Vec<_>=(0..633).map(|n|{

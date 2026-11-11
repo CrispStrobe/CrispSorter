@@ -3004,6 +3004,9 @@ enum IndexCmd {
         /// when `--image` is provided.
         #[arg(default_value = "")]
         query: String,
+        /// Interpret prose literally, or use exact Boolean/phrase/proximity syntax.
+        #[arg(long, default_value = "advanced", value_parser = ["advanced", "natural"])]
+        query_intent: String,
         /// Maximum results.
         #[arg(long, default_value_t = 20)]
         limit: usize,
@@ -3769,6 +3772,7 @@ async fn cmd_index_async(
 
         IndexCmd::Search {
             query,
+            query_intent,
             limit,
             ext,
             hash,
@@ -3834,6 +3838,7 @@ async fn cmd_index_async(
                 .filter(|e| !e.is_empty())
                 .collect();
             let filters = crate::index::SearchFilters {
+                query_intent: Some(query_intent),
                 owner_id: owner,
                 language: lang,
                 year_min,
@@ -12187,6 +12192,23 @@ mod tests {
                 }
                 other => panic!("expected Index Search, got {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn index_search_query_intent_is_explicit_and_legacy_default_is_advanced() {
+        for intent in ["advanced", "natural"] {
+            let cli = Cli::try_parse_from(["crispsorter", "index", "search", "alpha: AND beta?", "--query-intent", intent]).unwrap();
+            match cli.command {
+                Command::Index { cmd: IndexCmd::Search { query_intent, .. }, .. } => assert_eq!(query_intent, intent),
+                other => panic!("expected Index Search, got {other:?}"),
+            }
+        }
+        assert!(Cli::try_parse_from(["crispsorter", "index", "search", "query", "--query-intent", "guess"]).is_err());
+        let cli = Cli::try_parse_from(["crispsorter", "index", "search", "query"]).unwrap();
+        match cli.command {
+            Command::Index { cmd: IndexCmd::Search { query_intent, .. }, .. } => assert_eq!(query_intent, "advanced"),
+            other => panic!("expected Index Search, got {other:?}"),
         }
     }
 

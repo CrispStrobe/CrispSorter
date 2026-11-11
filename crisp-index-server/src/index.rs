@@ -39,6 +39,8 @@ pub use complete_search::CompleteError;
 #[path = "../../shared/stored_passage.rs"]
 mod stored_passage;
 pub use stored_passage::PassageReadError;
+#[path = "../../shared/query_explanation.rs"]
+mod query_explanation;
 
 #[derive(Debug)]
 pub struct AmbiguousDocument;
@@ -892,6 +894,21 @@ impl SearchIndex {
         stored_passage::read_passage(&self.vector.table, &request.doc_id, Some(&request.owner_id), request.chunk_index).await
     }
 
+    /// Read source text and explain current postings under the same consistent index lease.
+    pub async fn explain_passage(&self, request: &crisp_index_protocol::QueryExplanationRequest)
+        -> Result<crisp_index_protocol::QueryExplanation> {
+        query_explanation::validate_request(request)?;
+        let _guard = self.read_guard().await?;
+        let passage = stored_passage::read_passage(&self.vector.table, &request.doc_id,
+            Some(&request.owner_id), request.chunk_index).await?;
+        let evidence = if request.mode == "vector" { None } else {
+            Some(self.fts.explain_passage(&request.lexical_query, &request.owner_id, &request.doc_id, &passage.text,
+                crisp_search_query::explanation::PassageEdges { start:passage.start_char==Some(0),
+                    end:passage.next_chunk_index.is_none() && !passage.truncated })?)
+        };
+        query_explanation::response(request, passage, evidence)
+    }
+
     /// Validate all syntax and actual dictionary expansions before model work.
     pub async fn validate_query(&self, query: &str, filters: &SearchFilters) -> Result<()> {
         let _guard = self.gate.lock().await;
@@ -1136,12 +1153,24 @@ impl SearchIndex {
         filters: &SearchFilters,
         limit: usize,
     ) -> Result<Vec<SearchHit>> {
-        if limit == 0 {
-            return Ok(Vec::new());
-        }
+        let plan = crisp_search_query::query_plan::plan_query(query, crisp_search_query::query_plan::QueryIntent::Advanced)?;
+        self.search_hybrid_with_plan(&plan, embedding, filters, limit).await
+    }
+
+    /// Run a prepared intent without mistaking generated OR clauses for user
+    /// constraints. Metadata predicates always remain binding in every channel.
+    pub async fn search_hybrid_with_plan(
+        &self,
+        plan: &crisp_search_query::query_plan::QueryPlan,
+        embedding: &[f32],
+        filters: &SearchFilters,
+        limit: usize,
+    ) -> Result<Vec<SearchHit>> {
+        let query = plan.lexical_query.as_str();
+        if limit == 0 { return Ok(Vec::new()); }
         ensure!(limit <= 200, "Result limit exceeds 200");
         filters.validate().map_err(|error| anyhow!(error))?;
-        let constrained = crisp_search_query::has_explicit_syntax(query)?;
+        let constrained = plan.requires_lexical_match;
         validate_embedding(embedding, self.vector.dims)?;
         let _guard = self.gate.lock().await;
         self.repair_locked().await?;

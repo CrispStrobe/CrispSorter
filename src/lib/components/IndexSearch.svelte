@@ -109,6 +109,7 @@
     let searchRoot = $state<HTMLDivElement>();
     let queryInput = $state<HTMLInputElement>();
     let mode        = $state<'hybrid' | 'text' | 'vector'>('hybrid');
+    let queryIntent = $state<'advanced' | 'natural'>('advanced');
     let vectorEnabled = $state(true);
     let activeBackend = $state<string | null>(null);
     let limit       = $state(20);
@@ -501,11 +502,18 @@
         revealResultsOnNarrowScreen();
         if (!validateFilters()) return;
         const request = ++fedRequest;
+        if (queryIntent === 'natural') {
+            fedLoading = false; fedSearched = true; fedResults = [];
+            fedErrors = { global: i18n.lang === 'de'
+                ? 'Natürliche Sprache wird über Suchen mit dem ausgewählten Index unterstützt. Für Alle bitte Erweiterte Syntax wählen.'
+                : 'Use Search with the selected index for Natural language. Choose Advanced syntax for All sources.' };
+            return;
+        }
         // The current remote federation wire paths do not carry these
         // options. Never silently broaden an explicitly filtered search.
         if (filterFuzzy || filterSynonyms || includeUnmounted || smartSearch || refinementScope.length || ownerScope !== null
             || (activeFilterKeys.length > 0 && fedBackendsActive.some(backend => backend !== 'local'))) {
-            fedSearched = true; fedResults = []; fedErrors = { global: labels.remoteUnsupported };
+            fedLoading = false; fedSearched = true; fedResults = []; fedErrors = { global: labels.remoteUnsupported };
             return;
         }
         fedLoading  = true;
@@ -1012,7 +1020,7 @@
     const searchOptionsChanged = $derived(displayedRecipeKey !== null && displayedRecipeKey !== searchRequestKey(currentRecipe()));
 
     function currentRecipe(): SearchRecipe {
-        return normalizeSearchRecipe({ query, mode, limit, filters: currentFilters, smart: smartSearch, docIdScope: refinementScope, ownerId: ownerScope,
+        return normalizeSearchRecipe({ query, queryIntent, mode, limit, filters: currentFilters, smart: smartSearch, docIdScope: refinementScope, ownerId: ownerScope,
             view: { sort: resultSort, compact: compactResults, preview: previewPreference, reportFormat,
                 displayTags: [...searchTags], tagCloud: showSearchTagCloud } }, resultLimitMaximum);
     }
@@ -1028,6 +1036,7 @@
     }
 
     function applyRecipe(recipe: SearchRecipe): void {
+        queryIntent = recipe.queryIntent;
         query = recipe.query;
         void runSkeletonSearch(query);
         mode = !vectorEnabled && recipe.mode !== 'text' ? 'text' : recipe.mode;
@@ -1469,11 +1478,18 @@
         revealResultsOnNarrowScreen();
         if (!validateFilters()) return;
         const request = ++remoteRequest;
+        if (queryIntent === 'natural' && mode !== 'vector') {
+            remoteLoading = false; remoteSearched = true; remoteResults = [];
+            remoteError = i18n.lang === 'de'
+                ? 'Natürliche Sprache wird über Suchen mit dem ausgewählten Index unterstützt. Für Cloud bitte Erweiterte Syntax wählen.'
+                : 'Use Search with the selected index for Natural language. Choose Advanced syntax for Cloud search.';
+            return;
+        }
         const recipe = currentRecipe();
         const f = recipe.filters;
         if (f.audioMin != null || f.audioMax != null || f.cameraMake || f.cameraModel || f.fuzzy
             || f.synonyms || f.colbert || f.omni || f.includeUnmounted || recipe.smart || recipe.docIdScope.length || recipe.ownerId !== null) {
-            remoteSearched = true; remoteResults = []; remoteError = labels.remoteUnsupported;
+            remoteLoading = false; remoteSearched = true; remoteResults = []; remoteError = labels.remoteUnsupported;
             return;
         }
         remoteLoading  = true;
@@ -2106,8 +2122,15 @@
     </div>
 
     <!-- ── Mode chips ─────────────────────────────────────────────────────────── -->
-    <SearchQueryTools bind:query onapply={() => void runSkeletonSearch(query)} />
+    <SearchQueryTools bind:query onapply={() => { queryIntent = 'advanced'; void runSkeletonSearch(query); }} />
     <div class="mode-row">
+        <label class="query-intent-control">
+            <span>{i18n.lang === 'de' ? 'Abfragesprache' : 'Query interpretation'}</span>
+            <select bind:value={queryIntent} aria-label={i18n.lang === 'de' ? 'Abfragesprache' : 'Query interpretation'} disabled={mode === 'vector'}>
+                <option value="advanced">{i18n.lang === 'de' ? 'Erweiterte Syntax' : 'Advanced syntax'}</option>
+                <option value="natural">{i18n.lang === 'de' ? 'Natürliche Sprache' : 'Natural language'}</option>
+            </select>
+        </label>
         {#each (['hybrid', 'text', 'vector'] as const) as m}
             <button class="mode-chip" class:active={mode === m} disabled={!vectorEnabled && m !== 'text'}
                     title={!vectorEnabled && m !== 'text' ? 'Enable vector embeddings in Search Index settings.' : ''}
@@ -2118,6 +2141,11 @@
     </div>
 
     <p class="search-help">{labels.modesHint}</p>
+    {#if mode !== 'vector' && queryIntent === 'natural'}
+        <p class="search-help">{i18n.lang === 'de'
+            ? 'Wörter und Satzzeichen werden als normaler Text behandelt. Volltext findet beliebige enthaltene Wörter; Hybrid ergänzt inhaltlich ähnliche Dokumente. Alle gesetzten Filter gelten weiterhin.'
+            : 'Words and punctuation are treated as ordinary text. Full text matches any of the indexed words; Hybrid adds related documents. All selected filters still apply.'}</p>
+    {/if}
     {#if activeFilterKeys.length || refinementScope.length || ownerScope !== null || smartSearch}
         <div class="active-filters" aria-label={labels.active}>
             {#each activeFilterKeys as key}
@@ -2766,7 +2794,7 @@
                     {#if r.snippet}
                         <div class="chunk-preview">
                             <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-                            {@html highlightSnippet(r.snippet, executedQuery || query)}{#if r.snippet.length >= 400}…{/if}
+                            {@html highlightSnippet(r.snippet, executedRecipe ? executedQuery : '')}{#if r.snippet.length >= 400}…{/if}
                         </div>
                     {:else}
                         <div class="chunk-preview no-snippet">(Kein Textauszug verfügbar)</div>
@@ -2989,7 +3017,7 @@
                                     <div class="chunk-text">
                                         {#if chunk.snippet}
                                             <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-                                            {@html highlightSnippet(chunk.snippet.slice(0, 280), executedQuery || query)}{#if chunk.snippet.length > 280}…{/if}
+                                            {@html highlightSnippet(chunk.snippet.slice(0, 280), executedRecipe ? executedQuery : '')}{#if chunk.snippet.length > 280}…{/if}
                                         {:else}
                                             <span style="color:#52525b">(leer)</span>
                                         {/if}
@@ -3045,7 +3073,9 @@
             {/if}
             <div class="preview-body">
                 {#if previewTab === 'indexed' && previewing.chunk_index >= 0}
-                    <SearchPassage docId={previewing.doc_id} ownerId={previewing.owner_id} chunkIndex={previewing.chunk_index} query={executedQuery || query} sourceHash={previewing.source_hash || ''} />
+                    <SearchPassage docId={previewing.doc_id} ownerId={previewing.owner_id} chunkIndex={previewing.chunk_index} query={executedRecipe ? executedQuery : ''} sourceHash={previewing.source_hash || ''}
+                        mode={executedRecipe?.mode ?? mode} queryIntent={executedRecipe?.queryIntent ?? queryIntent}
+                        fuzzy={executedRecipe?.filters.fuzzy ?? false} synonyms={executedRecipe?.filters.synonyms ?? false} />
                 {:else if isContainerMemberUri(previewing.location_uri)}
                     {#if memberPreviewBusy}
                         <p class="hint" role="status"><Loader2 size={14} class="spin" /> {i18n.lang === 'de' ? 'Quelle prüfen und Eintrag vorbereiten…' : 'Verifying the source and preparing its member…'}</p>
@@ -3279,6 +3309,9 @@
 </div>
 
 <style>
+    .query-intent-control { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; font-size: 0.75rem; }
+    .query-intent-control select { max-width: 100%; border: 1px solid var(--border-color, #454545); border-radius: 0.35rem; padding: 0.25rem 0.4rem; color: inherit; background: var(--bg-secondary, #242424); }
+
     .corpus-export-controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; margin-top: 10px; }
     .corpus-export-controls label { display: flex; flex-direction: column; gap: 4px; font-size: .7rem; color: #a1a1aa; }
     .corpus-export-controls select { color: #e4e4e7; background: #18181b; border: 1px solid #52525b; border-radius: 4px; padding: 5px; }

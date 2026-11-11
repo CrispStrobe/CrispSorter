@@ -17,8 +17,9 @@ synthetic fixture for a measured model result.
    measure retrieval quality because they omit returned results.
 3. Repeat the complete query set for each experiment. Record application/model
    versions, hardware, indexing settings, and cache conditions in the environment
-   description. Use the exact executed query from the report when a natural
-   language conversion changed the typed query.
+   description. Preserve the exact executed query and its recorded
+   `queryIntent`; Natural language keeps the original text while the shared
+   planner derives its lexical expression.
 4. Create a manifest beside the reports and run the evaluator:
 
 ```sh
@@ -75,6 +76,12 @@ returned window. An optional `docIdScope` on a judged query requires the exact
 document scope from its recipe. Additive view preferences in newer recipes do
 not change retrieval metrics. An optional `ownerId` requires the exact owner
 restriction recorded in the recipe, including an explicit empty owner.
+
+A query may specify `"queryIntent": "advanced"` or `"queryIntent": "natural"`
+to require that exact interpretation. Omit it when deliberately comparing
+interpretations of the same original text. Recipe versions before 4 default to
+Advanced syntax; unknown interpretation values are rejected. This receipt
+keeps a changed interpretation visible rather than attributing it to a model.
 
 Reports retain `ownerId` and a collision-free `documentKey` for each result. When
 several owners can use the same document ID, set a judged query's `identity` to
