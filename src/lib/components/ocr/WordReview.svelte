@@ -200,7 +200,7 @@
 <style>
   .word-review {
     padding: 10px;
-    border-top: 1px solid #34465c;
+    border-top: 1px solid #3f3f46;
     background: #0d192888;
     min-width: 0;
   }
@@ -212,12 +212,12 @@
   }
   h4 {
     margin: 0;
-    color: #d1dfef;
+    color: #e4e4e7;
     font-size: 12px;
     font-weight: 600;
   }
   .word-count {
-    color: #a1b4ca;
+    color: #a1a1aa;
     font-size: 11px;
   }
   .next-word {
@@ -228,20 +228,20 @@
     padding: 4px 0;
     border: 0;
     background: transparent;
-    color: #b9d7f6;
+    color: #bfdbfe;
     font: inherit;
     font-size: 11px;
     cursor: pointer;
   }
   .next-word:disabled {
-    color: #7f91a7;
+    color: #a1a1aa;
     cursor: default;
   }
   .word-help,
   .word-instruction,
   .word-detail {
     margin: 7px 0;
-    color: #a6b9ce;
+    color: #a1a1aa;
     font-size: 11px;
     line-height: 1.55;
   }
@@ -255,25 +255,25 @@
   }
   .evidence-source button {
     padding: 4px 7px;
-    border: 1px solid #344b65;
+    border: 1px solid #3f3f46;
     border-radius: 4px;
     background: transparent;
-    color: #a6bbd2;
+    color: #a1a1aa;
     font: inherit;
     font-size: 11px;
     cursor: pointer;
   }
   .evidence-source button[aria-pressed="true"] {
-    color: #d1e8ff;
-    border-color: #6084ad;
-    background: #1e3a55;
+    color: #dbeafe;
+    border-color: #71717a;
+    background: #3f3f46;
   }
   .word-list {
     padding: 9px;
-    border: 1px solid #34465c;
+    border: 1px solid #3f3f46;
     border-radius: 5px;
-    background: #101b2b;
-    color: #d1deef;
+    background: #18181b;
+    color: #e4e4e7;
     font-size: 14px;
     line-height: 2.2;
     white-space: pre-wrap;
@@ -309,24 +309,24 @@
     white-space: nowrap;
   }
   .word[data-word-confidence-band="high"], .legend-item.high {
-    --word-fg: #a7f3c7;
-    --word-bg: #153b2c;
+    --word-fg: #bbf7d0;
+    --word-bg: #052e16;
   }
   .word[data-word-confidence-band="medium"], .legend-item.medium {
     --word-fg: #fde68a;
-    --word-bg: #493719;
+    --word-bg: #78350f;
   }
   .word[data-word-confidence-band="low"], .legend-item.low {
     --word-fg: #fecaca;
-    --word-bg: #501f2a;
+    --word-bg: #7f1d1d;
   }
   .word[data-word-confidence-band="unscored"], .legend-item.unscored {
-    --word-fg: #cbd5e1;
-    --word-bg: #273448;
+    --word-fg: #d4d4d8;
+    --word-bg: #27272a;
   }
   .word[data-word-confidence-band="edited"], .legend-item.edited {
     --word-fg: #bfdbfe;
-    --word-bg: #163964;
+    --word-bg: #1e3a8a;
   }
   .word[data-word-confidence-band="medium"] .word-text {
     text-decoration: underline dotted;
@@ -342,7 +342,7 @@
     gap: 6px 10px;
     margin-top: 8px;
     font-size: 10px;
-    color: #c0d0e2;
+    color: #d4d4d8;
   }
   .legend-item {
     display: inline-flex;
@@ -361,19 +361,19 @@
     gap: 5px;
     margin-top: 8px;
     font-size: 11px;
-    color: #b7c9dd;
+    color: #d4d4d8;
     cursor: pointer;
   }
   .show-scores input {
-    accent-color: #93c4ff;
+    accent-color: #93c5fd;
     margin: 0;
   }
   .word.selected {
-    outline: 2px solid #93c4ff;
+    outline: 2px solid #93c5fd;
     outline-offset: 1px;
   }
   button:focus-visible {
-    outline: 2px solid #b8d9ff;
+    outline: 2px solid #bfdbfe;
     outline-offset: 2px;
   }
   .word:disabled {

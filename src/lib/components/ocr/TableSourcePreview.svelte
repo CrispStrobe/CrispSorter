@@ -43,12 +43,12 @@
 
 <style>
   .table-source-preview { min-width: 0; margin-top: 11px; }
-  .source-status { display: inline-block; margin-bottom: 9px; padding: 4px 7px; border: 1px solid #45766c; border-radius: 4px; background: #173d35; color: #b5e7d7; font-size: 10px; }
-  .source-status.historical { border-color: #967648; background: #3b3121; color: #edd0a0; }
-  .source-warning { margin: 8px 0 11px; color: #e8cea3; font-size: 11px; line-height: 1.65; overflow-wrap: anywhere; }
-  .source-image { box-sizing: border-box; display: block; width: 100%; height: 130px; margin-bottom: 13px; border: 1px solid #4d6585; border-radius: 5px; background: #fff; }
-  rect { fill: none; stroke: #246abc; stroke-width: 2px; }
-  label { display: flex; flex-direction: column; gap: 6px; margin: 9px 0; color: #bdd2ed; font-size: 11px; }
-  select { box-sizing: border-box; width: 100%; min-width: 0; padding: 8px; border: 1px solid #466282; border-radius: 5px; background: #102036; color: #e0ecfc; font: inherit; }
-  select:focus-visible { outline: 2px solid #a6d1ff; outline-offset: 2px; }
+  .source-status { display: inline-block; margin-bottom: 9px; padding: 4px 7px; border: 1px solid #71717a; border-radius: 4px; background: #14532d; color: #86efac; font-size: 10px; }
+  .source-status.historical { border-color: #71717a; background: #27272a; color: #fcd34d; }
+  .source-warning { margin: 8px 0 11px; color: #fcd34d; font-size: 11px; line-height: 1.65; overflow-wrap: anywhere; }
+  .source-image { box-sizing: border-box; display: block; width: 100%; height: 130px; margin-bottom: 13px; border: 1px solid #71717a; border-radius: 5px; background: #fff; }
+  rect { fill: none; stroke: #2563eb; stroke-width: 2px; }
+  label { display: flex; flex-direction: column; gap: 6px; margin: 9px 0; color: #bfdbfe; font-size: 11px; }
+  select { box-sizing: border-box; width: 100%; min-width: 0; padding: 8px; border: 1px solid #52525b; border-radius: 5px; background: #18181b; color: #dbeafe; font: inherit; }
+  select:focus-visible { outline: 2px solid #bfdbfe; outline-offset: 2px; }
 </style>

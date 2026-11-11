@@ -279,38 +279,38 @@
 </dialog>
 
 <style>
-  .table-repair-dialog { box-sizing: border-box; width: min(1120px, calc(100vw - 28px)); max-width: calc(100vw - 28px); max-height: calc(100vh - 30px); overflow: auto; padding: 22px; border: 1px solid #587496; border-radius: 10px; background: #142438; color: #dae8f9; box-shadow: 0 18px 80px #0009; font: inherit; font-size: 13px; }
+  .table-repair-dialog { box-sizing: border-box; width: min(1120px, calc(100vw - 28px)); max-width: calc(100vw - 28px); max-height: calc(100vh - 30px); overflow: auto; padding: 22px; border: 1px solid #71717a; border-radius: 10px; background: #27272a; color: #dbeafe; box-shadow: 0 18px 80px #0009; font: inherit; font-size: 13px; }
   .table-repair-dialog::backdrop { background: #07101dd4; }
   h2 { margin: 0 0 6px; font-size: 20px; } h3 { margin: 15px 0 7px; font-size: 16px; } h4 { margin: 0; font-size: 13px; }
-  .table-name { margin: 0 0 12px; color: #aac2df; overflow-wrap: anywhere; }
-  .source-header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 15px; margin-bottom: 10px; color: #a8bfdc; font-size: 11px; }
-  .source-badge { padding: 4px 7px; border: 1px solid #44776d; border-radius: 4px; background: #173d35; color: #b7e8d8; }
-  .source-badge.historical { border-color: #987747; background: #3c3120; color: #ead1a3; }
-  .source-preview { box-sizing: border-box; display: block; width: 100%; height: 140px; border: 1px solid #4e6686; border-radius: 5px; background: #fff; }
-  .source-preview rect { fill: none; stroke: #2369bd; stroke-width: 2px; }
-  .field-label { display: flex; flex-direction: column; gap: 6px; min-width: 0; margin: 13px 0; color: #c0d4ef; font-size: 12px; }
-  input[type="number"], select, textarea { box-sizing: border-box; width: 100%; min-width: 0; padding: 9px 10px; border: 1px solid #476384; border-radius: 5px; background: #0d1d30; color: #e1edfc; font: inherit; font-size: 13px; line-height: 1.6; }
+  .table-name { margin: 0 0 12px; color: #93c5fd; overflow-wrap: anywhere; }
+  .source-header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 15px; margin-bottom: 10px; color: #93c5fd; font-size: 11px; }
+  .source-badge { padding: 4px 7px; border: 1px solid #71717a; border-radius: 4px; background: #14532d; color: #86efac; }
+  .source-badge.historical { border-color: #71717a; background: #27272a; color: #fcd34d; }
+  .source-preview { box-sizing: border-box; display: block; width: 100%; height: 140px; border: 1px solid #71717a; border-radius: 5px; background: #fff; }
+  .source-preview rect { fill: none; stroke: #2563eb; stroke-width: 2px; }
+  .field-label { display: flex; flex-direction: column; gap: 6px; min-width: 0; margin: 13px 0; color: #bfdbfe; font-size: 12px; }
+  input[type="number"], select, textarea { box-sizing: border-box; width: 100%; min-width: 0; padding: 9px 10px; border: 1px solid #52525b; border-radius: 5px; background: #172554; color: #dbeafe; font: inherit; font-size: 13px; line-height: 1.6; }
   textarea { resize: vertical; }
   input[type="number"] { max-width: 220px; }
   .coordinate-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 14px; }
   .coordinate-grid input { max-width: none; }
-  .help { margin: 9px 0 12px; color: #a6bdd9; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+  .help { margin: 9px 0 12px; color: #93c5fd; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
   .repair-options[hidden] { display: none; }
-  .header-choice { display: flex; align-items: center; gap: 9px; margin: 15px 0; color: #c7d9f0; font-size: 12px; }
+  .header-choice { display: flex; align-items: center; gap: 9px; margin: 15px 0; color: #bfdbfe; font-size: 12px; }
   .current-table { margin: 17px 0 10px; }
   .table-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
   .table-comparison > div { min-width: 0; }
-  .removed-values { margin: 13px 0; padding: 12px; border: 1px solid #a77b49; border-radius: 5px; background: #382e22; }
-  .removed-values h4 { color: #f2d3a5; line-height: 1.6; }
-  .warning, .error { margin: 12px 0; padding: 11px; border: 1px solid #947344; border-radius: 5px; background: #3a3022; color: #efd5a8; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
-  .error { border-color: #a66a7a; background: #452737; color: #ffd4df; }
-  .repair-warnings { padding-left: 21px; color: #e5cea5; font-size: 12px; line-height: 1.7; }
-  .local-notice { color: #b9d9fb; font-size: 12px; line-height: 1.7; }
-  .dialog-actions { position: sticky; bottom: -22px; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 9px; margin: 18px -1px -1px; padding: 14px 0 2px; border-top: 1px solid #3a5575; background: #142438; }
-  button { padding: 9px 12px; border: 1px solid #5b7697; border-radius: 5px; background: #243f5e; color: #e0edfd; font: inherit; font-size: 12px; cursor: pointer; }
-  button.primary { background: #326ab4; border-color: #8bb6ec; }
+  .removed-values { margin: 13px 0; padding: 12px; border: 1px solid #d97706; border-radius: 5px; background: #27272a; }
+  .removed-values h4 { color: #fcd34d; line-height: 1.6; }
+  .warning, .error { margin: 12px 0; padding: 11px; border: 1px solid #71717a; border-radius: 5px; background: #27272a; color: #fcd34d; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+  .error { border-color: #71717a; background: #27272a; color: #fecaca; }
+  .repair-warnings { padding-left: 21px; color: #fcd34d; font-size: 12px; line-height: 1.7; }
+  .local-notice { color: #bfdbfe; font-size: 12px; line-height: 1.7; }
+  .dialog-actions { position: sticky; bottom: -22px; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 9px; margin: 18px -1px -1px; padding: 14px 0 2px; border-top: 1px solid #52525b; background: #27272a; }
+  button { padding: 9px 12px; border: 1px solid #71717a; border-radius: 5px; background: #3f3f46; color: #dbeafe; font: inherit; font-size: 12px; cursor: pointer; }
+  button.primary { background: #2563eb; border-color: #93c5fd; }
   button:disabled, input:disabled, select:disabled { opacity: .5; cursor: default; }
-  button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid #a7d2ff; outline-offset: 2px; }
+  button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid #bfdbfe; outline-offset: 2px; }
   h3:focus { outline: none; }
   @media (max-width: 720px) { .table-repair-dialog { padding: 16px; } .table-comparison { grid-template-columns: minmax(0, 1fr); } .dialog-actions { bottom: -16px; } .dialog-actions button { flex: 1 1 auto; } }
 </style>

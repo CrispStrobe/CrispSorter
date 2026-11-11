@@ -90,6 +90,20 @@
   const height = $derived(
     original && originalHeight ? originalHeight : page.height,
   );
+  /** Region number badges that fit without covering another badge. Dense
+   *  word-level OCR otherwise stacks dozens of badges over the text itself. */
+  const visibleLabels = $derived.by(() => {
+    const shown = new Set<string>();
+    const placed: { x: number; y: number }[] = [];
+    const W = 27, H = 20; // badge size in screen pixels, with a small margin
+    for (const region of page.regions) {
+      const x = region.x * scale, y = Math.max(0, region.y * scale - 18);
+      if (placed.some((p) => Math.abs(p.x - x) < W && Math.abs(p.y - y) < H)) continue;
+      placed.push({ x, y });
+      shown.add(region.id);
+    }
+    return shown;
+  });
   const scale = $derived(
     fit === "custom"
       ? zoom
@@ -284,11 +298,11 @@
 }} />
 
 <div class="canvas-shell">
-  <div class="canvas-hint">
+{#if mode !== "select" || original || photoQuad}  <div class="canvas-hint">
     <MousePointer2 size={13} /><span>{hint}</span><span class="scale"
       >{Math.round(scale * 100)}%</span
     >
-  </div>
+  </div>{/if}
   <div class="viewport" bind:this={viewport}>
     <div
       class="paper"
@@ -353,7 +367,7 @@
                     }
                   }}
                 />
-                {#if scale >= 0.25 || selectedId === region.id}<g
+                {#if (scale >= 0.25 && visibleLabels.has(region.id)) || selectedId === region.id}<g
                     class="region-label"
                     transform="translate({box.x},{Math.max(
                       0,
@@ -435,7 +449,7 @@
     display: flex;
     flex-direction: column;
     min-width: 0;
-    background: #171c24;
+    background: #18181b;
   }
   .canvas-hint {
     height: 34px;
@@ -443,9 +457,9 @@
     align-items: center;
     gap: 8px;
     padding: 0 16px;
-    color: #a0adbe;
-    background: #141a22;
-    border-bottom: 1px solid #29313d;
+    color: #a1a1aa;
+    background: #18181b;
+    border-bottom: 1px solid #27272a;
     font-size: 11px;
     flex: none;
   }
@@ -456,7 +470,7 @@
   }
   .scale {
     margin-left: auto;
-    color: #d5dfec;
+    color: #e4e4e7;
     font-variant-numeric: tabular-nums;
   }
   .viewport {
@@ -467,7 +481,7 @@
     display: grid;
     align-items: start;
     justify-items: center;
-    background-image: radial-gradient(#363f4b 0.7px, transparent 0.7px);
+    background-image: radial-gradient(#3f3f46 0.7px, transparent 0.7px);
     background-size: 16px 16px;
   }
   .paper {
@@ -515,11 +529,11 @@
   }
   .region.selected {
     fill: #4f9fff24;
-    stroke: #338cff;
+    stroke: #3b82f6;
     stroke-width: 2;
   }
   .region:focus-visible {
-    stroke: #147cfb;
+    stroke: #3b82f6;
     stroke-width: 3;
     outline: none;
   }
@@ -539,7 +553,7 @@
   }
   .draft {
     fill: #4f9fff22;
-    stroke: #338cff;
+    stroke: #3b82f6;
     stroke-width: 2;
     stroke-dasharray: 6 4;
     vector-effect: non-scaling-stroke;
@@ -547,22 +561,22 @@
   }
   .word-source {
     fill: #ffd56a33;
-    stroke: #ffcd52;
+    stroke: #fcd34d;
     stroke-width: 2;
     vector-effect: non-scaling-stroke;
     pointer-events: none;
   }
   .resize-handle {
     fill: #fff;
-    stroke: #338cff;
+    stroke: #3b82f6;
     stroke-width: 2;
     vector-effect: non-scaling-stroke;
     cursor: nwse-resize;
   }
   .photo-mask { fill: #08121a99; pointer-events: none; }
-  .photo-outline { fill: transparent; stroke: #80c2ff; stroke-width: 2; vector-effect: non-scaling-stroke; pointer-events: none; }
-  .photo-corner { position: absolute; width: 44px; height: 44px; min-width: 44px; min-height: 44px; transform: translate(-50%, -50%); border: 2px solid #d9efff; border-radius: 50%; color: #fff; background: #236ebdcc; box-shadow: 0 2px 8px #0009; font-size: 14px; font-weight: 700; touch-action: none; cursor: grab; }
-  .photo-corner:focus-visible { outline: 3px solid #f5c77a; outline-offset: 3px; }
+  .photo-outline { fill: transparent; stroke: #93c5fd; stroke-width: 2; vector-effect: non-scaling-stroke; pointer-events: none; }
+  .photo-corner { position: absolute; width: 44px; height: 44px; min-width: 44px; min-height: 44px; transform: translate(-50%, -50%); border: 2px solid #dbeafe; border-radius: 50%; color: #fff; background: #236ebdcc; box-shadow: 0 2px 8px #0009; font-size: 14px; font-weight: 700; touch-action: none; cursor: grab; }
+  .photo-corner:focus-visible { outline: 3px solid #fcd34d; outline-offset: 3px; }
   .photo-corner:active { cursor: grabbing; }
   .recognizing {
     position: absolute;

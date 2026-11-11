@@ -731,7 +731,13 @@ fn validate_config(config: &crate::extractors::OcrPipelineConfig) -> Result<(), 
 }
 
 pub(crate) fn recognition_config(mut config: crate::extractors::OcrPipelineConfig, engine: Option<&str>, language: Option<&str>) -> Result<(crate::extractors::OcrPipelineConfig, Vec<String>), String> {
-    let engine = engine.filter(|s| !s.is_empty()).unwrap_or("auto");
+    let mut engine = engine.filter(|s| !s.is_empty()).unwrap_or("auto");
+    // "Automatic" without explicit OCR stages used the native router, which
+    // picks the printed-text TrOCR model for screenshots: English-only and
+    // uppercase (it was fine-tuned on receipts). Tesseract keeps case, umlauts
+    // and other scripts for the selected language.
+    let routed_to_tesseract = engine == "auto" && config.stages.is_empty() && cfg!(feature = "crispembed");
+    if routed_to_tesseract { engine = "tesseract"; }
     let language = language.filter(|s| !s.is_empty() && *s != "auto");
     let mut warnings = Vec::new();
     if let Some(language) = language {
@@ -759,6 +765,10 @@ pub(crate) fn recognition_config(mut config: crate::extractors::OcrPipelineConfi
             }
             stage
         };
+        if routed_to_tesseract {
+            warnings.push(format!("Automatic recognition used Tesseract ({}). Choose another engine in Recognize to compare.",
+                language.unwrap_or("eng")));
+        }
         stage.source_type = "auto".into();
         stage.min_confidence = config.min_confidence;
         stage.min_chars = config.min_chars;
@@ -1004,6 +1014,13 @@ fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipel
     if result.regions.is_empty() {
         warnings.push("No text was returned. Verify whether this page is blank, or retry with a different engine. An empty result is not evidence of successful recognition.".into());
     }
+    // Word detectors (DBNet is trained on word boxes) return one region per
+    // word; review, editing and export work on lines.
+    let detected = result.regions.len();
+    result.regions = merge_word_regions_into_lines(std::mem::take(&mut result.regions));
+    if result.regions.len() != detected {
+        result.diagnostics["line_grouping"] = json!({"words": detected, "lines": result.regions.len()});
+    }
     if config.layout && zone.is_none() {
         annotate_layout(&recognition_path, config, &mut result.regions, &mut result.diagnostics, &mut warnings);
     }
@@ -1030,6 +1047,102 @@ fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipel
     }
     result.diagnostics["requested_config"] = serde_json::to_value(config).map_err(|e| e.to_string())?;
     Ok(RecognizedPage { page, regions: result.regions, elapsed_ms: started.elapsed().as_millis() as u64, warnings, diagnostics: result.diagnostics })
+}
+
+/// Join word regions that sit on the same text line into one line region.
+/// Words are joined with one space. Aligned per-codepoint confidences stay
+/// aligned: the inserted space takes the lower neighbouring score, so a word's
+/// own scores (and its minimum) are unchanged. Regions with native word
+/// evidence (already line-level, with word offsets) and non-text regions are
+/// left exactly as they are.
+fn merge_word_regions_into_lines(regions: Vec<crate::extractors::ocr_crispembed::OcrReviewRegion>) -> Vec<crate::extractors::ocr_crispembed::OcrReviewRegion> {
+    use crate::extractors::ocr_crispembed::OcrReviewRegion;
+    let mergeable = |r: &OcrReviewRegion| r.kind == "text" && r.word_evidence.is_none() && r.h > 0.0 && r.w > 0.0;
+    if regions.iter().filter(|r| mergeable(r)).count() < 2 { return regions; }
+    // Native order is kept for non-mergeable regions; text words are grouped.
+    let mut out: Vec<OcrReviewRegion> = Vec::with_capacity(regions.len());
+    let mut words: Vec<OcrReviewRegion> = Vec::new();
+    let mut slot: Option<usize> = None; // where the grouped lines go in `out`
+    for region in regions {
+        if mergeable(&region) {
+            if slot.is_none() { slot = Some(out.len()); }
+            words.push(region);
+        } else { out.push(region); }
+    }
+    // Lines by vertical overlap, then words left-to-right within a line.
+    words.sort_by(|a, b| (a.y + a.h / 2.0).total_cmp(&(b.y + b.h / 2.0)));
+    let mut lines: Vec<Vec<OcrReviewRegion>> = Vec::new();
+    for word in words {
+        let fits = |line: &Vec<OcrReviewRegion>| {
+            let top = line.iter().map(|r| r.y).fold(f32::MAX, f32::min);
+            let bottom = line.iter().map(|r| r.y + r.h).fold(f32::MIN, f32::max);
+            let height = line.iter().map(|r| r.h).sum::<f32>() / line.len() as f32;
+            let overlap = (bottom.min(word.y + word.h) - top.max(word.y)).max(0.0);
+            overlap >= 0.5 * height.min(word.h)
+        };
+        match lines.iter_mut().rev().take(3).find(|line| fits(line)) {
+            Some(line) => line.push(word),
+            None => lines.push(vec![word]),
+        }
+    }
+    let mut merged = Vec::new();
+    for mut line in lines {
+        line.sort_by(|a, b| a.x.total_cmp(&b.x));
+        // Split a line where the horizontal gap is a column gutter, not a space.
+        let height = line.iter().map(|r| r.h).sum::<f32>() / line.len() as f32;
+        let mut segments: Vec<Vec<OcrReviewRegion>> = vec![];
+        for word in line {
+            match segments.last_mut() {
+                Some(segment) if word.x - segment.iter().map(|r| r.x + r.w).fold(f32::MIN, f32::max) <= 2.5 * height => segment.push(word),
+                _ => segments.push(vec![word]),
+            }
+        }
+        for segment in segments { merged.push(join_line(segment)); }
+    }
+    merged.sort_by(|a, b| (a.y + a.h / 2.0).total_cmp(&(b.y + b.h / 2.0)).then(a.x.total_cmp(&b.x)));
+    let at = slot.unwrap_or(out.len()).min(out.len());
+    out.splice(at..at, merged);
+    out
+}
+
+fn join_line(mut words: Vec<crate::extractors::ocr_crispembed::OcrReviewRegion>) -> crate::extractors::ocr_crispembed::OcrReviewRegion {
+    if words.len() == 1 { return words.pop().unwrap(); }
+    let x = words.iter().map(|r| r.x).fold(f32::MAX, f32::min);
+    let y = words.iter().map(|r| r.y).fold(f32::MAX, f32::min);
+    let right = words.iter().map(|r| r.x + r.w).fold(f32::MIN, f32::max);
+    let bottom = words.iter().map(|r| r.y + r.h).fold(f32::MIN, f32::max);
+    let aligned = words.iter().all(|r| r.char_conf_aligned && r.char_conf.len() == r.text.chars().count());
+    let mut text = String::new();
+    let mut char_conf: Vec<f32> = Vec::new();
+    let (mut weighted, mut weight) = (0.0f64, 0.0f64);
+    let mut any_score = false;
+    for (index, word) in words.iter().enumerate() {
+        if index > 0 {
+            text.push(' ');
+            if aligned {
+                let left = char_conf.last().copied().unwrap_or(1.0);
+                let right = word.char_conf.first().copied().unwrap_or(left);
+                char_conf.push(left.min(right));
+            }
+        }
+        text.push_str(&word.text);
+        if aligned { char_conf.extend_from_slice(&word.char_conf); }
+        if let Some(score) = word.confidence.filter(|s| s.is_finite()) {
+            let n = word.text.chars().count().max(1) as f64;
+            weighted += f64::from(score) * n; weight += n; any_score = true;
+        }
+    }
+    let first = &words[0];
+    crate::extractors::ocr_crispembed::OcrReviewRegion {
+        text, x, y, w: right - x, h: bottom - y,
+        confidence: any_score.then(|| (weighted / weight) as f32),
+        confidence_basis: first.confidence_basis.clone(),
+        char_conf: if aligned { char_conf } else { Vec::new() },
+        char_conf_unit: if aligned { first.char_conf_unit.clone() } else { "unknown".into() },
+        char_conf_aligned: aligned,
+        word_evidence: None,
+        kind: "text".into(),
+    }
 }
 
 fn annotate_layout(path: &Path, config: &crate::extractors::OcrPipelineConfig, regions: &mut Vec<crate::extractors::ocr_crispembed::OcrReviewRegion>, diagnostics: &mut Value, warnings: &mut Vec<String>) {
@@ -1910,6 +2023,39 @@ pub async fn ocr_workspace_extract_fields(
 
 #[cfg(test)]
 mod tests {
+    fn word(text: &str, x: f32, y: f32, w: f32, h: f32, score: f32) -> crate::extractors::ocr_crispembed::OcrReviewRegion {
+        crate::extractors::ocr_crispembed::OcrReviewRegion {
+            text: text.into(), x, y, w, h, confidence: Some(score), confidence_basis: "recognition".into(),
+            char_conf: vec![score; text.chars().count()], char_conf_unit: "unicode_codepoint".into(),
+            char_conf_aligned: true, word_evidence: None, kind: "text".into(),
+        }
+    }
+
+    #[test]
+    fn word_regions_on_one_line_become_one_aligned_line() {
+        let lines = merge_word_regions_into_lines(vec![
+            word("Welt", 60.0, 11.0, 40.0, 20.0, 0.9), word("Hallo", 0.0, 10.0, 50.0, 20.0, 0.5),
+            word("zweite", 0.0, 50.0, 60.0, 20.0, 0.8), word("Zeile", 70.0, 51.0, 50.0, 20.0, 0.7),
+        ]);
+        assert_eq!(lines.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(), ["Hallo Welt", "zweite Zeile"]);
+        let first = &lines[0];
+        assert!(first.char_conf_aligned);
+        assert_eq!(first.char_conf.len(), first.text.chars().count());
+        assert_eq!(first.char_conf[..5], [0.5; 5]); // "Hallo" keeps its own scores
+        assert_eq!(first.char_conf[5], 0.5);        // the space takes the lower neighbour
+        assert_eq!((first.x, first.w), (0.0, 100.0));
+    }
+
+    #[test]
+    fn column_gutters_and_word_evidence_regions_are_not_joined() {
+        let mut evidence = word("Kopf", 0.0, 0.0, 40.0, 20.0, 0.9);
+        evidence.kind = "title".into();
+        let lines = merge_word_regions_into_lines(vec![
+            evidence, word("links", 0.0, 40.0, 50.0, 20.0, 0.9), word("rechts", 400.0, 40.0, 60.0, 20.0, 0.9),
+        ]);
+        assert_eq!(lines.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(), ["Kopf", "links", "rechts"]);
+    }
+
     use super::*;
 
     #[test]

@@ -108,19 +108,19 @@
   }
   .editor-help {
     margin: 0;
-    color: #a4b9d1;
+    color: #a1a1aa;
     font-size: 12px;
     line-height: 1.65;
   }
   .passage {
-    border: 1px solid #344b65;
+    border: 1px solid #3f3f46;
     border-radius: 6px;
-    background: #152336;
+    background: #27272a;
     min-width: 0;
     overflow: hidden;
   }
   .passage.selected {
-    border-color: #7ca7db;
+    border-color: #60a5fa;
   }
   .passage-heading {
     display: flex;
@@ -128,22 +128,22 @@
     align-items: center;
     gap: 6px;
     padding: 8px 10px;
-    border-bottom: 1px solid #344b65;
+    border-bottom: 1px solid #3f3f46;
   }
   .passage-heading label {
-    color: #d2e1f4;
+    color: #bfdbfe;
     font-size: 12px;
     font-weight: 600;
   }
   .passage-kind,
   .edited {
-    color: #9eb5d0;
+    color: #a1a1aa;
     font-size: 10px;
   }
   .edited {
-    color: #a4d2ff;
+    color: #bfdbfe;
   }
-  .shared-source { color: #e7c992; font-size: 10px; }
+  .shared-source { color: #fcd34d; font-size: 10px; }
   .passage-heading button {
     display: inline-flex;
     align-items: center;
@@ -152,7 +152,7 @@
     padding: 4px 0;
     border: 0;
     background: transparent;
-    color: #b5d6fc;
+    color: #bfdbfe;
     font: inherit;
     font-size: 11px;
     cursor: pointer;
@@ -161,10 +161,10 @@
     opacity: 0.5;
     cursor: default;
   }
-  .passage-tools { display: flex; flex-wrap: wrap; gap: 7px 14px; padding: 9px 10px; border-top: 1px solid #344b65; }
-  .passage-tools button { display: inline-flex; align-items: center; gap: 5px; padding: 4px 0; border: 0; background: transparent; color: #b5d6fc; font: inherit; font-size: 11px; cursor: pointer; }
+  .passage-tools { display: flex; flex-wrap: wrap; gap: 7px 14px; padding: 9px 10px; border-top: 1px solid #3f3f46; }
+  .passage-tools button { display: inline-flex; align-items: center; gap: 5px; padding: 4px 0; border: 0; background: transparent; color: #bfdbfe; font: inherit; font-size: 11px; cursor: pointer; }
   .passage-tools button:disabled { opacity: .5; cursor: default; }
-  .passage-tools button:focus-visible { outline: 2px solid #b8d9ff; outline-offset: 2px; }
+  .passage-tools button:focus-visible { outline: 2px solid #bfdbfe; outline-offset: 2px; }
   .passage textarea {
     display: block;
     box-sizing: border-box;
@@ -174,19 +174,19 @@
     padding: 10px;
     border: 0;
     border-radius: 0;
-    background: #101d2e;
-    color: #e1ebf8;
+    background: #18181b;
+    color: #dbeafe;
     font: inherit;
     font-size: 14px;
     line-height: 1.7;
     resize: vertical;
   }
   .passage textarea:focus-visible {
-    outline: 2px solid #93c4ff;
+    outline: 2px solid #93c5fd;
     outline-offset: -2px;
   }
   .passage-heading button:focus-visible {
-    outline: 2px solid #b8d9ff;
+    outline: 2px solid #bfdbfe;
     outline-offset: 2px;
   }
 </style>

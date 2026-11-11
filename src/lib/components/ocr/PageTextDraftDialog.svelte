@@ -213,44 +213,44 @@
 </dialog>
 
 <style>
-  .page-draft-dialog { box-sizing: border-box; width: min(1020px, calc(100vw - 28px)); max-height: calc(100vh - 32px); overflow: auto; padding: 24px; border: 1px solid #5a7495; border-radius: 10px; background: #142438; color: #dce9fa; box-shadow: 0 18px 80px #0009; font: inherit; font-size: 13px; }
+  .page-draft-dialog { box-sizing: border-box; width: min(1020px, calc(100vw - 28px)); max-height: calc(100vh - 32px); overflow: auto; padding: 24px; border: 1px solid #71717a; border-radius: 10px; background: #27272a; color: #dbeafe; box-shadow: 0 18px 80px #0009; font: inherit; font-size: 13px; }
   .page-draft-dialog::backdrop { background: #07101dd4; }
   h2 { margin: 0 0 6px; font-size: 21px; } h3 { margin: 0 0 7px; font-size: 15px; }
-  .source-context, .help { color: #aec4df; line-height: 1.65; overflow-wrap: anywhere; }
+  .source-context, .help { color: #93c5fd; line-height: 1.65; overflow-wrap: anywhere; }
   .source-context { margin: 4px 0 12px; font-size: 12px; }
   .help { margin: 10px 0; font-size: 12px; }
-  .draft-status { display: inline-block; padding: 5px 9px; border: 1px solid #406c66; border-radius: 4px; background: #173a35; color: #b5e7d7; font-size: 11px; }
-  .draft-status.save-error { color: #ffcfda; background: #4a2636; border-color: #aa6a7b; }
-  label { display: flex; flex-direction: column; gap: 6px; min-width: 0; color: #c9dcf3; margin: 10px 0; }
-  textarea { box-sizing: border-box; display: block; width: 100%; min-width: 0; min-height: 125px; padding: 11px; border: 1px solid #4b6584; border-radius: 5px; background: #0c1a2b; color: #e4eefb; font: inherit; font-size: 14px; line-height: 1.75; resize: vertical; white-space: pre-wrap; }
+  .draft-status { display: inline-block; padding: 5px 9px; border: 1px solid #71717a; border-radius: 4px; background: #052e16; color: #86efac; font-size: 11px; }
+  .draft-status.save-error { color: #fecaca; background: #27272a; border-color: #71717a; }
+  label { display: flex; flex-direction: column; gap: 6px; min-width: 0; color: #bfdbfe; margin: 10px 0; }
+  textarea { box-sizing: border-box; display: block; width: 100%; min-width: 0; min-height: 125px; padding: 11px; border: 1px solid #52525b; border-radius: 5px; background: #172554; color: #dbeafe; font: inherit; font-size: 14px; line-height: 1.75; resize: vertical; white-space: pre-wrap; }
   .draft-label textarea { min-height: min(48vh, 420px); }
   .draft-editing[hidden] { display: none; }
-  .draft-details { display: flex; flex-wrap: wrap; gap: 6px 20px; justify-content: space-between; color: #9cb5d3; font-size: 11px; }
+  .draft-details { display: flex; flex-wrap: wrap; gap: 6px 20px; justify-content: space-between; color: #93c5fd; font-size: 11px; }
   .text-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
   .review-summary { margin: 18px 0 6px; }
-  .review-summary > p { color: #b8cce5; line-height: 1.6; }
+  .review-summary > p { color: #d4d4d8; line-height: 1.6; }
   .review-summary h3:focus { outline: none; }
-  .affected-details { margin: 14px 0; padding: 12px; border: 1px solid #42617f; border-radius: 5px; }
-  summary { cursor: pointer; color: #c7dffb; line-height: 1.7; }
+  .affected-details { margin: 14px 0; padding: 12px; border: 1px solid #52525b; border-radius: 5px; }
+  summary { cursor: pointer; color: #bfdbfe; line-height: 1.7; }
   .coverage-preview { display: block; width: 100%; height: 180px; margin-top: 10px; background: #fff; border-radius: 4px; }
   rect { stroke-width: 3px; fill: transparent; }
-  .previous-area { stroke: #c78300; stroke-dasharray: 8 5; }
-  .proposed-area { stroke: #1d67d4; fill: #277be514; }
-  .warnings { padding-left: 22px; color: #f1d5a1; font-size: 12px; line-height: 1.7; }
-  .coverage-choice { flex-direction: row; align-items: flex-start; gap: 10px; padding: 12px; border: 1px solid #9c8051; border-radius: 5px; color: #f1dbb5; background: #3a3124; line-height: 1.65; }
+  .previous-area { stroke: #d97706; stroke-dasharray: 8 5; }
+  .proposed-area { stroke: #2563eb; fill: #277be514; }
+  .warnings { padding-left: 22px; color: #fcd34d; font-size: 12px; line-height: 1.7; }
+  .coverage-choice { flex-direction: row; align-items: flex-start; gap: 10px; padding: 12px; border: 1px solid #71717a; border-radius: 5px; color: #fde68a; background: #27272a; line-height: 1.65; }
   .coverage-choice input { flex: none; margin-top: 4px; }
-  .warning, .error, .discard-confirmation { padding: 12px; border: 1px solid #a98045; border-radius: 5px; background: #3b3123; color: #f3dcb2; font-size: 12px; line-height: 1.7; }
-  .error { border-color: #ad687b; background: #492635; color: #ffd6e0; }
-  .local-notice { color: #b8d9fa; line-height: 1.6; }
+  .warning, .error, .discard-confirmation { padding: 12px; border: 1px solid #d97706; border-radius: 5px; background: #27272a; color: #fde68a; font-size: 12px; line-height: 1.7; }
+  .error { border-color: #71717a; background: #27272a; color: #fecaca; }
+  .local-notice { color: #bfdbfe; line-height: 1.6; }
   .discard-confirmation { margin-top: 14px; }
   .discard-confirmation p { margin: 0; }
   .dialog-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin-top: 14px; }
-  .primary-actions { justify-content: flex-end; padding-top: 14px; border-top: 1px solid #38536f; }
+  .primary-actions { justify-content: flex-end; padding-top: 14px; border-top: 1px solid #52525b; }
   .secondary-actions { justify-content: flex-start; }
-  button { padding: 8px 12px; border: 1px solid #587391; border-radius: 5px; background: #243e5c; color: #dfecfd; font: inherit; cursor: pointer; }
-  button.primary { background: #326bb6; border-color: #85b2ed; }
-  button.danger { background: #74394a; border-color: #c27e91; }
+  button { padding: 8px 12px; border: 1px solid #71717a; border-radius: 5px; background: #3f3f46; color: #dbeafe; font: inherit; cursor: pointer; }
+  button.primary { background: #2563eb; border-color: #60a5fa; }
+  button.danger { background: #3f3f46; border-color: #a1a1aa; }
   button:disabled, textarea:disabled { opacity: .5; cursor: default; }
-  button:focus-visible, textarea:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px solid #a4d1ff; outline-offset: 2px; }
+  button:focus-visible, textarea:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
   @media (max-width: 650px) { .page-draft-dialog { padding: 17px; } .text-comparison { grid-template-columns: minmax(0, 1fr); gap: 0; } .dialog-actions button { flex: 1 1 auto; } }
 </style>

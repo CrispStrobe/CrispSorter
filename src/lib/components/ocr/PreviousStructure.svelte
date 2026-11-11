@@ -53,18 +53,18 @@
 </details>{/if}
 
 <style>
-  .previous-structure { margin: 10px 0; padding: 10px; border: 1px solid #465e7a; border-radius: 5px; color: #c4d8ef; background: #132136; font-size: 11px; }
-  summary { cursor: pointer; line-height: 1.7; color: #bfd8f6; }
-  p { color: #a9bfd9; line-height: 1.6; overflow-wrap: anywhere; }
+  .previous-structure { margin: 10px 0; padding: 10px; border: 1px solid #52525b; border-radius: 5px; color: #bfdbfe; background: #18181b; font-size: 11px; }
+  summary { cursor: pointer; line-height: 1.7; color: #bfdbfe; }
+  p { color: #93c5fd; line-height: 1.6; overflow-wrap: anywhere; }
   label { display: flex; flex-direction: column; gap: 6px; }
-  select { width: 100%; padding: 7px; border: 1px solid #496585; border-radius: 4px; background: #0d1b2c; color: #dbeafa; font: inherit; }
-  article { padding: 10px 0; border-top: 1px solid #344c68; }
+  select { width: 100%; padding: 7px; border: 1px solid #52525b; border-radius: 4px; background: #18181b; color: #dbeafe; font: inherit; }
+  article { padding: 10px 0; border-top: 1px solid #3f3f46; }
   h4 { margin: 0 0 6px; font-size: 11px; }
-  .old-text { white-space: pre-wrap; overflow-wrap: anywhere; color: #dbe7f8; font-size: 13px; line-height: 1.75; }
+  .old-text { white-space: pre-wrap; overflow-wrap: anywhere; color: #dbeafe; font-size: 13px; line-height: 1.75; }
   .source-image { margin-top: 8px; }
   svg { display: block; width: 100%; max-height: 160px; background: white; margin-top: 7px; }
   .pagination { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
-  button { padding: 6px; border: 1px solid #4b6a8b; border-radius: 4px; background: #243e5c; color: #d5e8ff; font: inherit; cursor: pointer; }
+  button { padding: 6px; border: 1px solid #71717a; border-radius: 4px; background: #3f3f46; color: #dbeafe; font: inherit; cursor: pointer; }
   button:disabled { opacity: .5; cursor: default; }
-  summary:focus-visible, select:focus-visible, button:focus-visible { outline: 2px solid #a3cfff; outline-offset: 2px; }
+  summary:focus-visible, select:focus-visible, button:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
 </style>

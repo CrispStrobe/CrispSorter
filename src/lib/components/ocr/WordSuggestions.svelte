@@ -74,21 +74,21 @@
 </section>
 
 <style>
-  .word-suggestions { padding: 10px; border-top: 1px solid #34465c; min-width: 0; background: #101d2a; }
-  h4 { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 9px; font-size: 12px; color: #d1dfef; }
-  h4 span { font-weight: 400; color: #b4cce4; overflow-wrap: anywhere; }
+  .word-suggestions { padding: 10px; border-top: 1px solid #3f3f46; min-width: 0; background: #18181b; }
+  h4 { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 9px; font-size: 12px; color: #e4e4e7; }
+  h4 span { font-weight: 400; color: #93c5fd; overflow-wrap: anywhere; }
   .preferences { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
-  label { display: flex; flex-direction: column; gap: 4px; color: #abc0d6; font-size: 10px; min-width: 0; }
-  input, select { box-sizing: border-box; width: 100%; min-width: 0; padding: 5px 6px; border: 1px solid #3c5068; border-radius: 4px; background: #101925; color: #e1eaf5; font: inherit; font-size: 12px; }
+  label { display: flex; flex-direction: column; gap: 4px; color: #d4d4d8; font-size: 10px; min-width: 0; }
+  input, select { box-sizing: border-box; width: 100%; min-width: 0; padding: 5px 6px; border: 1px solid #52525b; border-radius: 4px; background: #18181b; color: #e4e4e7; font: inherit; font-size: 12px; }
   .actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-  button { padding: 5px 7px; border: 1px solid #415771; border-radius: 4px; background: #1a2c40; color: #d2e5fa; font: inherit; font-size: 11px; cursor: pointer; }
+  button { padding: 5px 7px; border: 1px solid #52525b; border-radius: 4px; background: #27272a; color: #dbeafe; font: inherit; font-size: 11px; cursor: pointer; }
   button:disabled, input:disabled, select:disabled { opacity: .55; cursor: default; }
-  button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid #81b8f8; outline-offset: 2px; }
-  .hint { margin: 8px 0 0; color: #a7bbd1; font-size: 11px; line-height: 1.55; }
+  button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
+  .hint { margin: 8px 0 0; color: #a1a1aa; font-size: 11px; line-height: 1.55; }
   ul { list-style: none; padding: 0; margin: 8px 0 0; }
-  li { padding: 8px 0; border-top: 1px solid #2d4159; }
+  li { padding: 8px 0; border-top: 1px solid #3f3f46; }
   .candidate { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-  .candidate strong { font-size: 13px; font-weight: 600; color: #dceafb; overflow-wrap: anywhere; }
-  .candidate > span { font-size: 10px; color: #a7bbd1; }
+  .candidate strong { font-size: 13px; font-weight: 600; color: #dbeafe; overflow-wrap: anywhere; }
+  .candidate > span { font-size: 10px; color: #a1a1aa; }
   @media (max-width: 500px) { .preferences { grid-template-columns: minmax(0, 1fr); } }
 </style>

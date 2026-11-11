@@ -253,36 +253,36 @@
 </section>
 
 <style>
-  .proofreading-panel { padding: 14px; min-height: 0; overflow-y: auto; min-width: 0; color: #c5d5e8; background: #111d2b; border-bottom: 1px solid #34465c; font-size: 12px; }
+  .proofreading-panel { padding: 14px; min-height: 0; overflow-y: auto; min-width: 0; color: #d4d4d8; background: #18181b; border-bottom: 1px solid #3f3f46; font-size: 12px; }
   .panel-heading, .manager-toolbar, .actions, .checks, .pagination { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
   .panel-heading { justify-content: space-between; }
-  h3 { margin: 0; color: #e0ebf8; font-size: 14px; }
-  .hint { color: #a7bbd1; font-size: 11px; line-height: 1.6; margin: 9px 0; }
-  label { display: flex; flex-direction: column; gap: 5px; min-width: 0; margin: 9px 0; color: #bdd0e6; font-size: 11px; }
+  h3 { margin: 0; color: #dbeafe; font-size: 14px; }
+  .hint { color: #a1a1aa; font-size: 11px; line-height: 1.6; margin: 9px 0; }
+  label { display: flex; flex-direction: column; gap: 5px; min-width: 0; margin: 9px 0; color: #d4d4d8; font-size: 11px; }
   .field-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 9px; }
   .check { flex-direction: row; align-items: center; gap: 6px; }
-  input:not([type="checkbox"]), select, textarea { box-sizing: border-box; width: 100%; min-width: 0; padding: 6px 7px; border: 1px solid #3c5068; border-radius: 4px; background: #0e1723; color: #e1eaf5; font: inherit; font-size: 12px; }
+  input:not([type="checkbox"]), select, textarea { box-sizing: border-box; width: 100%; min-width: 0; padding: 6px 7px; border: 1px solid #52525b; border-radius: 4px; background: #18181b; color: #e4e4e7; font: inherit; font-size: 12px; }
   textarea { resize: vertical; line-height: 1.5; }
   input[type="checkbox"] { margin: 0; flex: none; }
-  button { padding: 5px 8px; border: 1px solid #415771; border-radius: 4px; background: #1a2c40; color: #d2e5fa; font: inherit; font-size: 11px; cursor: pointer; }
-  button[aria-pressed="true"] { border-color: #80b4ed; background: #25486b; }
+  button { padding: 5px 8px; border: 1px solid #52525b; border-radius: 4px; background: #27272a; color: #dbeafe; font: inherit; font-size: 11px; cursor: pointer; }
+  button[aria-pressed="true"] { border-color: #60a5fa; background: #3f3f46; }
   button:disabled, input:disabled, select:disabled, textarea:disabled { opacity: .55; cursor: default; }
-  button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid #81b8f8; outline-offset: 2px; }
-  .notice { padding: 9px; margin: 9px 0; border: 1px solid #344b64; border-radius: 4px; background: #15263a; color: #bcd4ef; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+  button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
+  .notice { padding: 9px; margin: 9px 0; border: 1px solid #3f3f46; border-radius: 4px; background: #27272a; color: #bfdbfe; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
   .notice p { margin: 0 0 8px; }
   .notice button { margin-left: 6px; }
-  .notice.error { border-color: #9b5764; background: #38202a; color: #ffd0d8; }
+  .notice.error { border-color: #71717a; background: #27272a; color: #fecaca; }
   .manager-toolbar { margin: 13px 0; }
   .spacer { flex: 1; }
   .file-input { display: none; }
-  form { padding: 10px; border: 1px solid #34465c; border-radius: 5px; background: #0e1a29; }
+  form { padding: 10px; border: 1px solid #3f3f46; border-radius: 5px; background: #18181b; }
   .entry-list { list-style: none; padding: 0; margin: 8px 0; }
-  .entry-list li { padding: 10px 0; border-bottom: 1px solid #2b4058; min-width: 0; }
+  .entry-list li { padding: 10px 0; border-bottom: 1px solid #3f3f46; min-width: 0; }
   .entry-list li > div:first-child { display: flex; flex-direction: column; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
-  .entry-list strong { color: #dceafb; font-size: 12px; }
-  .entry-list span { color: #a7bbd1; font-size: 10px; white-space: pre-wrap; }
+  .entry-list strong { color: #dbeafe; font-size: 12px; }
+  .entry-list span { color: #a1a1aa; font-size: 10px; white-space: pre-wrap; }
   .entry-list .actions { margin-top: 7px; }
-  .preview-controls { margin: 10px 0; padding-bottom: 8px; border-bottom: 1px solid #34465c; }
+  .preview-controls { margin: 10px 0; padding-bottom: 8px; border-bottom: 1px solid #3f3f46; }
   .pagination { justify-content: space-between; font-size: 10px; }
   @media (max-width: 500px) { .field-grid { grid-template-columns: minmax(0, 1fr); gap: 0; } }
 </style>

@@ -113,22 +113,22 @@
 </section>{/if}
 
 <style>
-  .passage-sources { padding: 10px; border-top: 1px solid #34465c; background: #121e2d; min-width: 0; }
-  summary { cursor: pointer; color: #bdd6f2; font-size: 12px; padding: 4px 0; overflow-wrap: anywhere; }
-  summary:focus-visible, button:focus-visible, textarea:focus-visible { outline: 2px solid #83b8f4; outline-offset: 2px; }
-  .source-help, .source-meta { font-size: 11px; color: #a8bed7; line-height: 1.6; margin: 8px 0; overflow-wrap: anywhere; }
-  .source-component { margin-top: 8px; padding: 7px 9px; border: 1px solid #354c65; border-radius: 5px; min-width: 0; }
+  .passage-sources { padding: 10px; border-top: 1px solid #3f3f46; background: #18181b; min-width: 0; }
+  summary { cursor: pointer; color: #bfdbfe; font-size: 12px; padding: 4px 0; overflow-wrap: anywhere; }
+  summary:focus-visible, button:focus-visible, textarea:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
+  .source-help, .source-meta { font-size: 11px; color: #d4d4d8; line-height: 1.6; margin: 8px 0; overflow-wrap: anywhere; }
+  .source-component { margin-top: 8px; padding: 7px 9px; border: 1px solid #3f3f46; border-radius: 5px; min-width: 0; }
   .source-area { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; }
   svg { display: block; width: 100%; height: 85px; background: #fff; border-radius: 4px; }
-  label { display: flex; flex-direction: column; gap: 5px; margin: 10px 0; font-size: 11px; color: #bfd0e5; }
-  textarea { box-sizing: border-box; width: 100%; min-width: 0; padding: 8px; border: 1px solid #344b64; border-radius: 4px; background: #0e1826; color: #dce8f7; font: inherit; font-size: 12px; line-height: 1.6; resize: vertical; }
+  label { display: flex; flex-direction: column; gap: 5px; margin: 10px 0; font-size: 11px; color: #d4d4d8; }
+  textarea { box-sizing: border-box; width: 100%; min-width: 0; padding: 8px; border: 1px solid #3f3f46; border-radius: 4px; background: #18181b; color: #dbeafe; font: inherit; font-size: 12px; line-height: 1.6; resize: vertical; }
   .source-words { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
-  button { padding: 5px 7px; border: 1px solid #425a76; border-radius: 4px; background: #1a2d43; color: #d1e6fe; font: inherit; font-size: 11px; cursor: pointer; max-width: 100%; overflow-wrap: anywhere; }
-  button.active { border-color: #e9c670; }
+  button { padding: 5px 7px; border: 1px solid #52525b; border-radius: 4px; background: #27272a; color: #dbeafe; font: inherit; font-size: 11px; cursor: pointer; max-width: 100%; overflow-wrap: anywhere; }
+  button.active { border-color: #fbbf24; }
   button:disabled { opacity: .5; cursor: default; }
-  .source-words small { margin-left: 7px; color: #a7bed9; white-space: nowrap; }
-  .evidence-pagination { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; color: #a7bed9; font-size: 10px; margin: 8px 0; }
+  .source-words small { margin-left: 7px; color: #93c5fd; white-space: nowrap; }
+  .evidence-pagination { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; color: #93c5fd; font-size: 10px; margin: 8px 0; }
   .source-characters { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0; }
-  .source-characters > span { display: inline-flex; flex-direction: column; align-items: center; gap: 3px; padding: 5px; border: 1px solid #405974; border-radius: 3px; min-width: 24px; color: #d9e7f8; font-size: 12px; }
-  .source-characters small { color: #a7bed9; font-size: 9px; }
+  .source-characters > span { display: inline-flex; flex-direction: column; align-items: center; gap: 3px; padding: 5px; border: 1px solid #52525b; border-radius: 3px; min-width: 24px; color: #dbeafe; font-size: 12px; }
+  .source-characters small { color: #93c5fd; font-size: 9px; }
 </style>
