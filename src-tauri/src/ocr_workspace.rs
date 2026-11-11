@@ -629,7 +629,7 @@ fn prepare_page_with_progress(root: &Path, source: &Path, config: &crate::extrac
     // physical sheet size. Only the subsequent pixel crop changes the paper.
     let before_cleanup = (image.width(), image.height());
     let recipe = config.stages.first().map(|s| s.cleanup.clone()).unwrap_or_default();
-    if config.stages.iter().any(|s| s.cleanup.page_split) {
+    if config.stages.iter().any(|s| s.cleanup.enabled && s.cleanup.page_split) {
         warnings.push("This profile requests spread splitting. Use Split page to create and review both halves; recognition retains the complete current page.".into());
     }
     let use_cleanup = config.stages.first().map(|s| s.cleanup.enabled).unwrap_or(config.cleanup_enabled);
@@ -645,7 +645,7 @@ fn prepare_page_with_progress(root: &Path, source: &Path, config: &crate::extrac
     physical_size = physical_size.map(|(w, h)| (w * f64::from(image.width()) / f64::from(before_cleanup.0), h * f64::from(image.height()) / f64::from(before_cleanup.1)));
     progress("Saving the prepared page");
     let page = persist_image(root, &image)?;
-    let page = if recipe.auto_crop {
+    let page = if use_cleanup && recipe.auto_crop {
         if let Some((left, top, right, bottom)) = ocr_crispembed::content_bbox(Path::new(&page.image_path)) {
             let rect = PixelRect { x: left as f64, y: top as f64, w: (right - left) as f64, h: (bottom - top) as f64 };
             let (x, y, w, h) = checked_rect(rect, page.width, page.height)
@@ -2444,6 +2444,24 @@ mod tests {
         assert!(checked_physical_size(Some(80.0), None).is_err());
         assert!(checked_physical_size(Some(f64::NAN), Some(40.0)).is_err());
         assert!(checked_physical_size(Some(20_000.0), Some(40.0)).is_err());
+    }
+
+    #[test]
+    fn inactive_stage_crop_and_split_preserve_review_pixels_and_paper_size() {
+        let root = tempfile::tempdir().unwrap();
+        let input = image();
+        let source = persist_image(root.path(), &input).unwrap();
+        let config = serde_json::from_value(json!({
+            "enabled": true, "cleanup_enabled": true,
+            "stages": [{"engine":"tesseract", "rec_model":"custom-language.gguf",
+                "cleanup":{"enabled":false,"auto_crop":true,"page_split":true}}],
+        })).unwrap();
+        let prepared = prepare_page(root.path(), Path::new(&source.image_path), &config, Some((80.0,40.0))).unwrap();
+        assert_eq!((prepared.page.width, prepared.page.height), (input.width(), input.height()));
+        assert_eq!(decode_page(Path::new(&prepared.page.image_path)).unwrap().to_rgb8(), input.to_rgb8());
+        assert_eq!(prepared.page.page_width_points, Some(80.0));
+        assert_eq!(prepared.page.page_height_points, Some(40.0));
+        assert!(prepared.warnings.is_empty(), "inactive crop/split options must not run or request review");
     }
 
     #[test]

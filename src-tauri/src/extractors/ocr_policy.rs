@@ -247,7 +247,7 @@ pub fn validate_table_config(config: &OcrPipelineConfig) -> Result<(), String> {
         || ![Some("tesseract"), Some("tesseract_fraktur"), Some("auto")].contains(&config.engine.as_deref()) {
         return Err("The native table parser requires one embedded Tesseract cell recognizer. Choose Tesseract or use normal OCR with the selected engine; its weights were not substituted.".into());
     }
-    if config.cpu_pixel_budget || config.layout || stage.is_some_and(|s| s.cleanup.page_split || s.rec_model.as_deref()==Some("auto")
+    if config.cpu_pixel_budget || config.layout || stage.is_some_and(|s| (config.enabled && s.cleanup.enabled && s.cleanup.page_split) || s.rec_model.as_deref()==Some("auto")
         || s.det_prob_threshold != 0.3 || s.det_box_threshold != 0.5 || s.det_target_short != 736
         || s.det_model.as_deref().is_some_and(|model| !model.is_empty() && model != "dbnet-det"))
         || [&config.punct_model, &config.truecase_model, &config.lid_model, &config.tess_model_dir].iter()
@@ -334,7 +334,8 @@ pub fn validate_lilt_config(config: &OcrPipelineConfig) -> Result<(), String> {
     let stage = stage.unwrap();
     if config.cpu_pixel_budget || config.layout || stage.det_prob_threshold != 0.3
         || stage.det_box_threshold != 0.5 || stage.det_target_short != 736
-        || stage.cleanup.page_split || [&config.punct_model, &config.truecase_model, &config.lid_model]
+        || (config.enabled && stage.cleanup.enabled && stage.cleanup.page_split)
+        || [&config.punct_model, &config.truecase_model, &config.lid_model]
             .iter().any(|m| m.as_deref().is_some_and(|m| !m.trim().is_empty())) {
         return Err("LiLT's internal OCR cannot apply the selected CPU budget, layout, detector tuning, page splitting or text postprocessing. Use text-based field extraction to retain those options.".into());
     }
@@ -576,5 +577,33 @@ mod tests {
         opts.ocr_tier = OcrTier::Tier1;
         assert!(resolve_table_config(&opts).is_err());
         assert!(resolve_lilt_config(&opts).is_err());
+    }
+
+    #[test]
+    fn specialists_ignore_inactive_split_recipes_without_replacing_models() {
+        for engine in ["tesseract", "dbnet_trocr"] {
+            for (smart_enabled, cleanup_enabled) in [(false, true), (true, false), (true, true)] {
+                let mut opts = ExtractOptions::default();
+                opts.ocr_pipeline = serde_json::from_value(json!({
+                    "enabled": smart_enabled, "engine": engine, "stages": [{
+                        "engine": engine, "rec_model": "custom-recognizer.gguf",
+                        "cleanup": {"enabled": cleanup_enabled, "page_split": true, "auto_crop": true}
+                    }]
+                })).unwrap();
+                let result = if engine == "tesseract" { resolve_table_config(&opts) }
+                    else { resolve_lilt_config(&opts) };
+                if smart_enabled && cleanup_enabled {
+                    assert!(result.unwrap_err().contains("page splitting"), "{engine}");
+                } else {
+                    let (resolved, _) = result.unwrap();
+                    let stage = &resolved.stages[0];
+                    assert_eq!(stage.rec_model.as_deref(), Some("custom-recognizer.gguf"));
+                    assert!(!stage.cleanup.enabled);
+                    assert!(stage.cleanup.page_split && stage.cleanup.auto_crop);
+                    assert_eq!(opts.ocr_pipeline.stages[0].cleanup.enabled, cleanup_enabled,
+                        "resolution must not edit the saved recipe");
+                }
+            }
+        }
     }
 }
