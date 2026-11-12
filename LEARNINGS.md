@@ -15,7 +15,8 @@ gh pr merge <N> --merge --match-head-commit <that sha>
 ```
 
 The script pins the head SHA, re-reads the PR head on every poll and before it
-exits (exit 3 if it moved), reads check runs and statuses for that SHA only,
+exits (exit 3 if it moved), reads check runs, statuses and Actions workflow runs
+for that SHA only (a queued workflow may not have created any check run yet),
 treats queued, pending, cancelled and neutral as not green, waits a settle period
 for late workflows, and exits 0 only when every check is success or skipped.
 `--allow-stalled "<name>"` ignores one named check only while it is still pending,
