@@ -1,0 +1,67 @@
+name: Windows index commit qualification
+
+# A manually requested, narrow reproduction of the independent image-index
+# ingest failure. It does not run or dispatch the application's full CI matrix.
+on:
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: 'Choose the bounded recovery test or the full stress control'
+        type: choice
+        options: [recovery, stress]
+        default: recovery
+
+permissions:
+  contents: read
+
+jobs:
+  windows-index-commit:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - id: protoc
+        uses: arduino/setup-protoc@v3
+        continue-on-error: true
+        with:
+          version: "29.0"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - if: steps.protoc.outcome == 'failure'
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "29.0"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tests/index-write-contract
+      - name: Production directory control
+        id: control
+        continue-on-error: true
+        env:
+          CRISP_FTS_TRACE: "0"
+          FTS_TEST_SCOPE: ${{ inputs.scope }}
+        run: |
+          $filter = if ($env:FTS_TEST_SCOPE -eq 'stress') { 'windows_fts_' } else { 'windows_fts_atomic_commit_failure' }
+          cargo test --locked --manifest-path tests/index-write-contract/Cargo.toml $filter -- --nocapture
+      - name: Single-buffer directory trace
+        if: always() && steps.control.outcome != 'skipped'
+        id: trace
+        continue-on-error: true
+        env:
+          CRISP_FTS_TRACE: "1"
+          FTS_TEST_SCOPE: ${{ inputs.scope }}
+        run: |
+          $filter = if ($env:FTS_TEST_SCOPE -eq 'stress') { 'windows_fts_' } else { 'windows_fts_atomic_commit_failure' }
+          cargo test --locked --manifest-path tests/index-write-contract/Cargo.toml $filter -- --nocapture
+      - name: Retain both outcomes
+        if: always()
+        env:
+          CONTROL: ${{ steps.control.outcome }}
+          TRACE: ${{ steps.trace.outcome }}
+        run: |
+          Write-Output "Production control: $env:CONTROL; directory trace: $env:TRACE"
+          if ($env:CONTROL -ne 'success' -or $env:TRACE -ne 'success') { exit 1 }

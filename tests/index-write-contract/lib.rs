@@ -45,11 +45,13 @@ mod ocr_word_evidence { pub const SYSTEM_TESSERACT_AVAILABLE: bool = false; }
 pub mod audio {pub mod probe {include!(concat!(env!("OUT_DIR"),"/audio_metadata.rs"));}}
 pub mod bg_ingest { pub use crate::bg_queue_production as queue; include!(concat!(env!("OUT_DIR"), "/bg_ingest.rs")); }
 
+#[path = "fts_probe.rs"] mod fts_probe;
+
 pub mod index {
     pub mod schema { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../src-tauri/src/index/schema.rs")); }
     pub use crate::fts_query_production as fts_query;
     pub use crate::synonyms_production as synonyms;
-    pub mod fts_index { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../src-tauri/src/index/fts_index.rs")); }
+    pub mod fts_index { include!(concat!(env!("OUT_DIR"), "/fts_index.rs")); }
     pub use crate::search_summary_production as search_summary;
     pub use crate::search_report_production as search_report;
     pub use crate::report_output_production as report_output;
@@ -145,6 +147,9 @@ mod search_export_contract;
 
 #[cfg(test)]
 mod migration_contract;
+
+#[cfg(test)]
+mod windows_fts_contract;
 
 pub mod images {pub mod exif {include!(concat!(env!("OUT_DIR"),"/image_metadata.rs"));} pub mod vit_embed {
     pub fn embed_image(_: &std::path::Path) -> anyhow::Result<Vec<f32>> { anyhow::bail!("Image models are unavailable") }
