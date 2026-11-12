@@ -322,8 +322,9 @@ establishes decoded OCR, a positively recognized blank page, CrispSorter
 application behavior or GPU execution.
 
 The [Android x86_64 candidate app run](https://github.com/CrispStrobe/CrispSorter/actions/runs/43313212722)
-was building the app at this update. It reuses the verified candidate runtime and exercises
-the app IPC native-failure and white-raster blank controls. Until it completes,
-these controls have only source review and response-validator tests; even a pass
-will not establish Ovis inference, same-context recovery or physical-device
-behavior.
+built the app and reached its emulator boundary check, but failed because the
+negative request was rejected before the required native pipeline error. The
+retained rejection must be diagnosed and the setup corrected without weakening
+the assertion. The blank control and later checks did not complete. This run
+does not establish native failure propagation, Ovis inference, same-context
+recovery or physical-device behavior.
