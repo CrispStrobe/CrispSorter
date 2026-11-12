@@ -205,3 +205,29 @@ from text matching, and saves/reloads the resulting project. Input hashes are
 retained in `tests/results/ocr-studio/native-quality-inputs.json`; they are input
 verification, not a native recognition pass. The combined helper controls at
 `456cee5244db25d35b00dac3e2e8a66dd5e272d7` passed 62 Python and eight Node tests.
+
+## Outstanding integration and release work
+
+* Complete the current-source Android x86_64 emulator qualification, including
+  actual app image import after the postMessage fix. Inspect the full retained
+  receipt and investigate any later failure; earlier model verification and
+  startup are partial evidence only. Repeat affected native checks when the
+  production source changes.
+* Resolve the intermittent Windows Tantivy index repair access-denied failure
+  using a bounded Windows reproduction and operation-level evidence. Preserve
+  pending-repair journal durability; a later passing diagnostic does not erase
+  the reproduced failure. Run the relevant Windows tests on the eventual fix.
+* Run the source-pinned app benchmark on the representative real-scan corpus,
+  with pinned models, failure-penalized quality, resource measurements and
+  strict GPU execution. Wait for any already-running equivalent job to finish
+  before submitting another; use Kaggle for compute-heavy work. Do not enable
+  a new default on synthetic or incomplete evidence.
+* Rebuild and qualify binaries for every supported platform from the final
+  integrated revision, then update the existing release and TestFlight build.
+  The existing draft binaries and TestFlight upload predate this revision.
+  Android signing is available; Windows Authenticode and Apple Developer ID
+  private signing material are not. Label unsigned artifacts accurately and
+  obtain the missing credentials before claiming signed desktop distribution.
+* Run the physical-device protocol when Android and iPhone hardware becomes
+  available, including real camera and provider-grant lifecycle checks. Until
+  then, keep those cases explicitly unrun and distinguish simulator evidence.

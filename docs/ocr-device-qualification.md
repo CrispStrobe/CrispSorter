@@ -132,3 +132,23 @@ An overall qualification report should link the underlying case evidence and
 list unrun cases. Keep synthetic UI, native inference, provider helper tests,
 full application commands, and observed camera/picker flows individually
 identifiable so a later change can rerun the affected level.
+
+## Current Android import follow-up
+
+The Android WebView uses Tauri postMessage, which delivers JSON rather than a
+raw byte body. The application now sends bounded base64 for Android and an
+unknown platform, while retaining raw bytes on known desktop and iOS targets.
+The native import and generic image OCR commands validate metadata first and
+accept either representation. Legacy JSON byte arrays are limited to 1 MiB;
+the normal base64 and raw paths retain the 32 MiB input limit. The maximum
+size is a validation limit, not a measured device-memory guarantee.
+
+The preceding emulator run reached the real app and verified installed model
+hashes, but failed at image IPC before this fix. Rebuild the Android x86_64
+app from the current source and run the retained full WebView flow; do not
+reuse the older APK or count the failed attempt as a pass. The mobile native
+workflow supports a single-target manual run (Android x86_64 by default),
+while push runs retain the complete target matrix. Record its source revision,
+artifact hash, actual import, recognition, export and recovery results before
+claiming success. Physical Android and iPhone devices are unavailable; camera,
+real provider grants, low-memory behavior and device performance remain unrun.
