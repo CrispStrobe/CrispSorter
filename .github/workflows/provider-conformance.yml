@@ -10,8 +10,8 @@ on:
     paths: ['src-tauri/Cargo.toml', 'Cargo.lock', 'scripts/crisp_cloud_rev.py', 'src-tauri/src/drives/**', 'docs/STORAGE_ENGINE_ARCHITECTURE.md', '.github/workflows/provider-conformance.yml']
   workflow_dispatch:
 concurrency:
-  group: provider-conformance-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' && (github.event_name == 'push' || github.event_name == 'pull_request') }}
 jobs:
   conformance:
     runs-on: ubuntu-24.04

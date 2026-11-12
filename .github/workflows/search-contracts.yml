@@ -36,9 +36,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: search-contracts-${{ github.ref }}
-  cancel-in-progress: true
-
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' && (github.event_name == 'push' || github.event_name == 'pull_request') }}
 jobs:
   evaluation-contract:
     runs-on: ubuntu-latest

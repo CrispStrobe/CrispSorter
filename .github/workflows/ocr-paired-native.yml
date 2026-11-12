@@ -81,12 +81,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ocr-paired-native-${{ github.ref }}
-  # Finish the active source-paired check so incremental saves retain useful
-  # native diagnostics and the build cache. GitHub keeps only the latest pending
-  # successor in this group; that source still needs its own complete result.
-  cancel-in-progress: false
-
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' && (github.event_name == 'push' || github.event_name == 'pull_request') }}
 env:
   # A source build and Rust binding from the SAME immutable revision. Do not
   # reuse a released binary with a newer binding: that would skip the ABI check.

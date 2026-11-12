@@ -32,9 +32,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ocr-workspace-browser-${{ github.head_ref || github.ref_name }}
-  cancel-in-progress: ${{ contains(fromJSON('["feat/ocr-document-studio", "feat/ocr-reliability-qualification", "feat/ocr-native-validation", "feat/ocr-studio-integration", "feat/ocr-export-controls", "feat/ocr-phone-corner-focus"]'), github.head_ref || github.ref_name) }}
-
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' && (github.event_name == 'push' || github.event_name == 'pull_request') }}
 jobs:
   browser:
     runs-on: ubuntu-latest

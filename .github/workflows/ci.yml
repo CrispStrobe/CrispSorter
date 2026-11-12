@@ -68,6 +68,10 @@ env:
   CARGO_HTTP_MULTIPLEXING: "false"
   CARGO_NET_GIT_FETCH_WITH_CLI: "true"
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' && (github.event_name == 'push' || github.event_name == 'pull_request') }}
+
 jobs:
   # Fast, cheap checks that run on every push + PR. Full cross-platform
   # Tauri builds live in release.yml and only fire on version tags.

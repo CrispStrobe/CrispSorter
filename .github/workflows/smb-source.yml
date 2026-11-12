@@ -6,8 +6,8 @@ on:
     paths: ['crates/crisp-smb-source/**', 'src-tauri/src/drives/**', 'src-tauri/src/sync/transfer_queue.rs', 'src-tauri/src/operation_log.rs', 'src-tauri/src/cli/**', 'src-tauri/Cargo.toml', 'Cargo.lock', 'src/lib/drives/smbSettings*', 'src/lib/components/IndexIngest.svelte', 'tests/browser/smb-settings.spec.ts', 'scripts/test_smb_source.py', 'scripts/test_smb_fixture_runner.py', '.github/workflows/smb-source.yml']
   workflow_dispatch:
 concurrency:
-  group: smb-source-${{ github.event.pull_request.head.ref || github.ref_name }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' && (github.event_name == 'push' || github.event_name == 'pull_request') }}
 jobs:
   direct-rust:
     runs-on: ubuntu-latest

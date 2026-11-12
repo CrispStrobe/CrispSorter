@@ -30,9 +30,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ocr-image-source-${{ github.head_ref || github.ref_name }}
-  cancel-in-progress: true
-
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' && (github.event_name == 'push' || github.event_name == 'pull_request') }}
 jobs:
   source-contracts:
     runs-on: ubuntu-latest
