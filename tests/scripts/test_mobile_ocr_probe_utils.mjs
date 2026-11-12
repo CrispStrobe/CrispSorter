@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { probeOptions, processMemory, summarizeMemory, textErrorRate, validateBuildSource, validatePackagedAndroidLibraries } from '../../scripts/mobile_ocr_probe_utils.mjs';
+import { isWithinAppRoot, probeOptions, processMemory, summarizeMemory, textErrorRate, validateBuildSource, validatePackagedAndroidLibraries } from '../../scripts/mobile_ocr_probe_utils.mjs';
+
+test('canonical app data may be the sandbox root or a descendant, never a sibling prefix', () => {
+  assert.equal(isWithinAppRoot('/sandbox/app', '/sandbox/app'), true);
+  assert.equal(isWithinAppRoot('/sandbox/app', '/sandbox/app/files'), true);
+  assert.equal(isWithinAppRoot('/sandbox/app', '/sandbox/application'), false);
+  assert.equal(isWithinAppRoot('/sandbox/app', '/elsewhere'), false);
+  assert.equal(isWithinAppRoot('', '/anything'), false);
+});
 
 const argumentsFor = serial => ['--serial', serial, '--apk', 'test.apk', '--inputs', 'inputs', '--output', 'evidence',
   '--source-commit', 'a'.repeat(40), '--embed-commit', 'b'.repeat(40), '--build-receipt', 'build.json'];

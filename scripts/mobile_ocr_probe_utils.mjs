@@ -2,6 +2,12 @@ import assert from 'node:assert/strict';
 
 const hex = (value, length) => typeof value === 'string' && new RegExp('^[0-9a-f]{' + length + '}$', 'i').test(value);
 
+/** Both paths must already be canonicalized by the selected device. */
+export function isWithinAppRoot(root, candidate) {
+  return typeof root === 'string' && root.length > 1 && typeof candidate === 'string'
+    && (candidate === root || candidate.startsWith(root + '/'));
+}
+
 export function validateBuildSource(build) {
   assert.equal(build.schema_version, 2, 'A source-aware app build receipt is required.');
   assert.equal(build.application_source_clean, true, 'Application source or dependency lock changed.');

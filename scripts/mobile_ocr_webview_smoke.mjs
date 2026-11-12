@@ -36,7 +36,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { probeOptions, processMemory, summarizeMemory, textErrorRate, validateBuildSource, validatePackagedAndroidLibraries } from './mobile_ocr_probe_utils.mjs';
+import { isWithinAppRoot, probeOptions, processMemory, summarizeMemory, textErrorRate, validateBuildSource, validatePackagedAndroidLibraries } from './mobile_ocr_probe_utils.mjs';
 import { assessQualityFixture } from './mobile_ocr_quality.mjs';
 
 const PACKAGE = 'com.crispstrobe.crispsorter';
@@ -490,7 +490,8 @@ async function main() {
       assert(value.engines.includes('tesseract'));
       const rawAppData = remotePath(await invoke('get_app_data_dir'));
       appData = remotePath((await runAs(['realpath', rawAppData])).stdout.trim());
-      assert(appData.startsWith(privateRoot + '/'), 'Native app data is outside the app sandbox.');
+      receipt.app_data_scope = { is_root: appData === privateRoot, is_descendant: appData.startsWith(privateRoot + '/') };
+      assert(isWithinAppRoot(privateRoot, appData), 'Native app data is outside the app sandbox.');
       const projects = await invoke('ocr_workspace_list');
       assert.deepEqual(projects, [], 'Use a fresh dedicated test installation; existing projects must not be overwritten or erased.');
       const registry = await invoke('embedder_registry_list', {}, 60_000);
