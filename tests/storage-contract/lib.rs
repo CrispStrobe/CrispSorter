@@ -83,3 +83,158 @@ mod tests {
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
     }
 }
+
+#[cfg(test)]
+mod provider_search_tests {
+    use super::drives::*;
+    use std::path::Path;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CountingDrive {
+        local: LocalDrive,
+        listings: AtomicUsize,
+        stats: AtomicUsize,
+    }
+
+    impl CountingDrive {
+        fn new(root: &Path) -> Self {
+            Self {
+                local: LocalDrive::new("search-fixture", root),
+                listings: AtomicUsize::new(0),
+                stats: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl CloudDrive for CountingDrive {
+        fn label(&self) -> &str { "search-fixture" }
+        fn drive_type(&self) -> DriveType { DriveType::Local }
+        fn list_dir(&self, path: &Path) -> anyhow::Result<Vec<DirEntry>> {
+            self.listings.fetch_add(1, Ordering::Relaxed);
+            self.local.list_dir(path)
+        }
+        fn stat(&self, path: &Path) -> anyhow::Result<FileStat> {
+            self.stats.fetch_add(1, Ordering::Relaxed);
+            self.local.stat(path)
+        }
+        fn read_file(&self, path: &Path) -> anyhow::Result<Vec<u8>> { self.local.read_file(path) }
+        fn write_file(&self, _: &Path, _: &[u8]) -> anyhow::Result<()> { anyhow::bail!("read-only fixture") }
+        fn delete(&self, _: &Path) -> anyhow::Result<()> { anyhow::bail!("read-only fixture") }
+    }
+
+    fn scan(drive: &CountingDrive, depth: Option<usize>, budget: Option<usize>) -> WalkScan {
+        walk_with_scan_budget(drive, Path::new(""), depth, budget, &mut |path, error| {
+            panic!("unexpected listing failure at {}: {error}", path.display())
+        })
+    }
+
+    #[test]
+    fn provider_search_bounds_wide_empty_directory_tree() {
+        let root = tempfile::tempdir().unwrap();
+        for i in 0..10 { std::fs::create_dir(root.path().join(format!("dir-{i}"))).unwrap(); }
+        let drive = CountingDrive::new(root.path());
+        let result = scan(&drive, None, Some(3));
+        assert!(result.entries.is_empty());
+        assert_eq!(result.scanned_entries, 3);
+        assert!(result.limit_reached);
+        assert_eq!(drive.listings.load(Ordering::Relaxed), 1);
+        assert_eq!(drive.stats.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn provider_search_bounds_deep_directory_only_traversal() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("a/b/c/d/e/f")).unwrap();
+        let drive = CountingDrive::new(root.path());
+        let result = scan(&drive, None, Some(3));
+        assert!(result.entries.is_empty());
+        assert_eq!(result.scanned_entries, 3);
+        assert!(result.limit_reached);
+        assert_eq!(drive.listings.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn provider_search_preserves_file_results_and_reports_actual_truncation() {
+        let root = tempfile::tempdir().unwrap();
+        for name in ["invoice-a.txt", "invoice-b.txt", "receipt.txt"] {
+            std::fs::write(root.path().join(name), b"TOTAL: 42").unwrap();
+        }
+        let drive = CountingDrive::new(root.path());
+        let result = scan(&drive, Some(2), Some(2));
+        assert_eq!(result.scanned_entries, 2);
+        assert!(result.limit_reached);
+        assert_eq!(drive.stats.load(Ordering::Relaxed), 2);
+        assert_eq!(result.entries.iter().map(|e| e.path.to_str().unwrap()).collect::<Vec<_>>(),
+            ["invoice-a.txt", "invoice-b.txt"]);
+        for entry in &result.entries {
+            assert!(!entry.is_dir);
+            assert_eq!(entry.size, Some(9));
+            assert!(content_search_matches(&read_file_bounded(&drive, &entry.path, MAX_CONTENT_SEARCH_BYTES).unwrap(), "total"));
+        }
+        let complete = scan(&drive, Some(2), Some(3));
+        assert_eq!(complete.scanned_entries, 3);
+        assert_eq!(complete.entries.len(), 3);
+        assert!(!complete.limit_reached, "exactly enough budget must not claim truncation");
+    }
+
+    #[test]
+    fn provider_search_counts_directories_and_files_in_the_same_budget() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("a-dir")).unwrap();
+        std::fs::write(root.path().join("b.txt"), b"file").unwrap();
+        std::fs::write(root.path().join("a-dir/nested.txt"), b"nested").unwrap();
+        let drive = CountingDrive::new(root.path());
+        let result = scan(&drive, None, Some(2));
+        assert_eq!(result.scanned_entries, 2);
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].path, Path::new("b.txt"));
+        assert!(result.limit_reached);
+        assert_eq!(drive.listings.load(Ordering::Relaxed), 1);
+        let complete = scan(&drive, None, None);
+        assert_eq!(complete.scanned_entries, 3);
+        assert_eq!(complete.entries.len(), 2);
+        assert!(!complete.limit_reached);
+    }
+
+    #[test]
+    fn provider_search_depth_bound_does_not_claim_scan_truncation() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("a/b")).unwrap();
+        let drive = CountingDrive::new(root.path());
+        let result = scan(&drive, Some(0), Some(1));
+        assert_eq!(result.scanned_entries, 1);
+        assert!(!result.limit_reached);
+        assert_eq!(drive.listings.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn provider_search_zero_budget_makes_no_provider_calls() {
+        let root = tempfile::tempdir().unwrap();
+        let drive = CountingDrive::new(root.path());
+        let result = scan(&drive, None, Some(0));
+        assert_eq!(result.scanned_entries, 0);
+        assert!(result.entries.is_empty());
+        assert!(result.limit_reached);
+        assert_eq!(drive.listings.load(Ordering::Relaxed), 0);
+        let empty = scan(&drive, None, Some(1));
+        assert_eq!(empty.scanned_entries, 0);
+        assert!(!empty.limit_reached);
+    }
+
+    #[test]
+    fn provider_search_legacy_walk_wrappers_keep_file_and_error_semantics() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("sub")).unwrap();
+        std::fs::write(root.path().join("sub/f.txt"), b"x").unwrap();
+        let drive = CountingDrive::new(root.path());
+        let mut errors = 0;
+        let mut on_error = |_: &Path, _: anyhow::Error| { errors += 1; };
+        assert_eq!(walk(&drive, Path::new(""), None, &mut on_error).len(), 1);
+        assert!(walk_limited(&drive, Path::new(""), None, Some(1), &mut on_error).is_empty());
+        let missing = walk_with_scan_budget(&drive, Path::new("missing"), None, Some(1), &mut on_error);
+        assert!(missing.entries.is_empty());
+        assert_eq!(missing.scanned_entries, 0);
+        assert!(!missing.limit_reached);
+        assert_eq!(errors, 1);
+    }
+}

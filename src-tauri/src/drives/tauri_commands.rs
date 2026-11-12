@@ -744,16 +744,48 @@ pub async fn drive_search(
     max_results: Option<usize>,
     content: Option<bool>,
 ) -> Result<Vec<super::WalkEntry>, String> {
+    drive_search_report(state, drive_id, root, query, max_depth, max_results, content)
+        .await
+        .map(|report| report.results)
+}
+
+/// Search metadata is additive: the original `drive_search` array contract
+/// remains available to existing IPC consumers.
+#[derive(Serialize)]
+pub struct DriveSearchReport {
+    pub results: Vec<super::WalkEntry>,
+    pub scanned_entries: usize,
+    pub scan_limit: usize,
+    pub scan_limit_reached: bool,
+    /// The result cap was filled; more matches may exist. Determining whether
+    /// another content match exists would require additional provider reads.
+    pub results_limit_reached: bool,
+}
+
+#[tauri::command]
+pub async fn drive_search_report(
+    state: State<'_, AppState>,
+    drive_id: String,
+    root: String,
+    query: String,
+    max_depth: Option<usize>,
+    max_results: Option<usize>,
+    content: Option<bool>,
+) -> Result<DriveSearchReport, String> {
     let query = query.trim().to_lowercase();
     if query.is_empty() {
-        return Ok(Vec::new());
+        return Ok(DriveSearchReport {
+            results: Vec::new(), scanned_entries: 0,
+            scan_limit: max_results.unwrap_or(100).clamp(1, 1000).saturating_mul(100),
+            scan_limit_reached: false, results_limit_reached: false,
+        });
     }
     let (log, cfg) = drive_operation(&state, "storage.drive.search", &drive_id).await?;
     let content = content.unwrap_or(false);
     // The query and matched names stay out of the log; only counts do.
     let result = drive_search_inner(&state, &cfg, root, query, max_depth, max_results, content, &log).await;
-    finish_operation(&log, &result, "drive_search_failed", |entries| json!({
-        "results": entries.len(),
+    finish_operation(&log, &result, "drive_search_failed", |report| json!({
+        "results": report.results.len(),
         "mode": if content { "search.content" } else { "search.name" },
     }));
     result
@@ -769,7 +801,7 @@ async fn drive_search_inner(
     max_results: Option<usize>,
     content: bool,
     log: &OperationLog,
-) -> Result<Vec<super::WalkEntry>, String> {
+) -> Result<DriveSearchReport, String> {
     let drive = instantiate_registered(state, cfg).await?;
     let capabilities = drive.capabilities();
     if !capabilities.list {
@@ -783,9 +815,13 @@ async fn drive_search_inner(
     let depth = max_depth.unwrap_or(8).min(32);
     let limit = max_results.unwrap_or(100).clamp(1, 1000);
     let scan_limit = limit.saturating_mul(100).max(limit);
-    let entries = super::walk_limited(&*drive, Path::new(&root), Some(depth), Some(scan_limit), &mut errors);
-    log.step("walked", json!({"items": entries.len(), "warnings": skipped}));
-    Ok(entries
+    let scan = super::walk_with_scan_budget(&*drive, Path::new(&root), Some(depth), Some(scan_limit), &mut errors);
+    log.step("walked", json!({
+        "items": scan.entries.len(), "warnings": skipped,
+        "scanned_entries": scan.scanned_entries, "scan_limit": scan_limit,
+        "scan_limit_reached": scan.limit_reached,
+    }));
+    let results: Vec<_> = scan.entries
         .into_iter()
         .filter(|entry| {
             if drive_search_path_matches(&entry.path, &query) {
@@ -800,7 +836,14 @@ async fn drive_search_inner(
                 .unwrap_or(false)
         })
         .take(limit)
-        .collect())
+        .collect();
+    // Keep the existing short-circuiting content search: probing for one more
+    // match could read every remaining scanned file when this cap is exact.
+    let results_limit_reached = results.len() == limit;
+    Ok(DriveSearchReport {
+        results, scanned_entries: scan.scanned_entries, scan_limit,
+        scan_limit_reached: scan.limit_reached, results_limit_reached,
+    })
 }
 
 /// Stat a file or directory on a drive.

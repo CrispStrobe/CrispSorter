@@ -38,7 +38,7 @@ trait used by CrispSorter.
 | Listing | Cache-aware native listings with invalidation after mutations; bounded recursive filename search | Remote full-text search is not assumed; fallback content search is bounded to readable files of at most 256 KiB |
 | Transfers | Shared bounded `TransferQueue`, retry/backoff, cancellation, progress, reader/writer APIs, and native resume checkpoints | The legacy synchronous trait uses a bounded blocking adapter; FUSE remains synchronous by design |
 | Mutations | Create, rename, move, copy, replace/update, timestamps where the gateway safely permits them, delete/trash | Capabilities are checked before IPC; unsupported operations fail explicitly |
-| Reversible trash | Native Internxt/Filen and Google Drive restore paths; duplicate UI and CLI/Tauri restore guards | LocalDrive and generic WebDAV do not claim recoverability; OneDrive recycle-bin restore is gated pending opaque-ID/account semantics |
+| Reversible trash | Google Drive restore path; duplicate UI and CLI/Tauri restore guards | Native Internxt/Filen path-only restore is disabled until durable object-ID receipts exist; LocalDrive and generic WebDAV do not claim recoverability; OneDrive recycle-bin restore is gated pending opaque-ID/account semantics |
 | Versions | Google Drive and OneDrive list/restore contracts, UI capability gating, ignored live tests | OAuth tokens are required explicitly for live runs |
 | Search | Recursive bounded filename/path search in GUI and CLI; optional bounded content scan | Do not turn this into an unrestricted provider walk |
 | Proxy | HTTP(S), SOCKS5/SOCKS5H, persisted non-secret settings, keychain password, shared construction paths | Proxy passwords never serialize into settings or drive metadata |
@@ -91,6 +91,24 @@ the common restore boundary. The Tauri command and `crispsorter drives
 restore-deleted` CLI both check the capability before invoking it. Duplicate
 mutations persist bounded audit records; cloud moves can be undone, while
 trash restore is offered only for providers advertising a real restore API.
+
+Native Filen and Internxt have real UUID-based restore APIs, but the app's
+current delete audit records only a path. A basename, even when unique in the
+current trash listing, does not prove which object was deleted: another
+same-named object may have replaced it. Their app adapters therefore reject
+path-only restore before keychain/network access and advertise
+`reversible_trash = false`. Duplicate deletion is blocked by the existing
+recoverable-trash guard; ordinary explicit provider deletion is unchanged.
+Use the provider client to restore existing native trash. Google Drive's
+existing restore implementation is unchanged.
+
+Re-enabling native duplicate trash requires a durable delete receipt containing
+provider/account identity, object UUID, object kind and original destination.
+Restore must validate that receipt against fresh trash metadata and the selected
+provider, refuse ambiguous/mismatched objects, and preserve the receipt across
+restart. Internxt's UUID restore requires a destination folder; Filen restores
+to its recorded location. Supplying a destination alone cannot repair missing
+object identity.
 
 Sync-pair comparison is metadata-only until the user explicitly applies a
 policy. Confirmed one-click `local_wins` and `remote_wins` use the existing

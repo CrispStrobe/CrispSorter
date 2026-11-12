@@ -13618,9 +13618,10 @@ fn cmd_drives(
             }
             let mut walk_errors = |_path: &std::path::Path, _error: anyhow::Error| {};
             let scan_limit = limit.saturating_mul(100).max(limit);
-            let rows: Vec<_> = crate::drives::walk_limited(
+            let scan = crate::drives::walk_with_scan_budget(
                 drive.as_ref(), std::path::Path::new(&path), Some(max_depth.min(32)), Some(scan_limit), &mut walk_errors,
-            ).into_iter().filter(|entry| entry.path.file_name()
+            );
+            let rows: Vec<_> = scan.entries.into_iter().filter(|entry| entry.path.file_name()
                 .and_then(|name| name.to_str())
                 .map(|name| name.to_lowercase().contains(&query)).unwrap_or(false)
                 || (content && !entry.is_dir && entry.size.unwrap_or(u64::MAX) <= crate::drives::MAX_CONTENT_SEARCH_BYTES
@@ -13630,9 +13631,18 @@ fn cmd_drives(
             let json = json || matches!(out, OutFormat::Json);
             if json {
                 println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                    "drive": drive_id, "path": path, "query": query, "n": rows.len(), "results": rows
+                    "drive": drive_id, "path": path, "query": query, "n": rows.len(), "results": rows,
+                    "scanned_entries": scan.scanned_entries, "scan_limit": scan_limit,
+                    "scan_limit_reached": scan.limit_reached,
+                    "results_limit_reached": rows.len() == limit
                 })).unwrap());
             } else {
+                if scan.limit_reached {
+                    eprintln!("search scan limit reached after {} entries; results may be incomplete", scan.scanned_entries);
+                }
+                if rows.len() == limit {
+                    eprintln!("search result limit reached; additional matches may exist");
+                }
                 for row in &rows {
                     println!("{}  {}", row.size.map(|n| n.to_string()).unwrap_or_else(|| "?".into()), row.path.display());
                 }

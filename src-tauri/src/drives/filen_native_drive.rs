@@ -352,20 +352,13 @@ impl CloudDrive for NativeFilenDrive {
         })
     }
 
-    fn restore_deleted(&self, trash_path: &Path, _destination: Option<&Path>) -> Result<()> {
-        let name =
-            leaf_name(trash_path).ok_or_else(|| anyhow!("Filen trash path has no item name"))?;
-        self.with_client(None, |_session, client| {
-            // The trash changes outside this client (other devices, the web
-            // app), so never answer this from the listing cache.
-            let item = client
-                .list_folder_fresh("trash")?
-                .into_iter()
-                .find(|item| item.name == name)
-                .ok_or_else(|| anyhow!("Filen trash item not found: {}", trash_path.display()))?;
-            client.restore(&item.uuid, kind(&item))
-        })
+    fn restore_deleted(&self, _trash_path: &Path, _destination: Option<&Path>) -> Result<()> {
+        // A path does not identify a trashed object: multiple deleted items
+        // can share a name and the current audit has no durable UUID receipt.
+        // Do not list trash or mutate an item chosen by basename.
+        Err(anyhow!("Native trash restore requires a durable object-ID receipt; restore using the provider client"))
     }
+
     fn stat(&self, path: &Path) -> Result<FileStat> {
         let item =
             self.with_client(None, |session, client| resolve_fresh(client, session, path))?;
@@ -391,7 +384,9 @@ impl CloudDrive for NativeFilenDrive {
             streaming: true,
             resumable_upload: true,
             resumable_download: true,
-            reversible_trash: true,
+            // The provider has a UUID restore API, but the app's path-only
+            // delete/restore contract cannot safely identify its trash item.
+            reversible_trash: false,
             ..DriveCapabilities::basic()
         }
     }
@@ -486,6 +481,22 @@ impl CloudDrive for NativeFilenDrive {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn path_only_restore_is_refused_without_credentials_or_network() {
+        let drive = NativeFilenDrive::from_keychain("Native Filen", "trash-contract-test");
+        assert!(drive.capabilities().delete);
+        assert!(!drive.capabilities().reversible_trash);
+        for destination in [None, Some(Path::new("/original"))] {
+            let error = drive
+                .restore_deleted(Path::new("/original/report.pdf"), destination)
+                .unwrap_err();
+            assert!(error.to_string().contains("object-ID receipt"));
+            assert!(!error.to_string().contains("report.pdf"));
+        }
+        assert!(!drive.clients.is_cached());
+    }
+
     #[test]
     fn missing_session_is_reported_without_network() {
         crate::drives::secret::install_mock_for_tests();

@@ -335,29 +335,11 @@ impl CloudDrive for NativeInternxtDrive {
         })
     }
 
-    fn restore_deleted(&self, trash_path: &Path, destination: Option<&Path>) -> Result<()> {
-        let name = trash_path
-            .file_name()
-            .ok_or_else(|| anyhow!("Internxt trash path has no item name"))?
-            .to_string_lossy()
-            .into_owned();
-        let destination =
-            destination.ok_or_else(|| anyhow!("Internxt restore requires a destination folder"))?;
-        self.with_client(None, |session, client| {
-            let item = client
-                .list_trash(None, usize::MAX)?
-                .into_iter()
-                .find(|item| item.name == name)
-                .ok_or_else(|| {
-                    anyhow!("Internxt trash item not found: {}", trash_path.display())
-                })?;
-            let folder_uuid = resolve_folder(client, session, destination, false)?;
-            client.restore_from_trash(
-                &item.uuid,
-                if item.is_dir { "folders" } else { "files" },
-                &folder_uuid,
-            )
-        })
+    fn restore_deleted(&self, _trash_path: &Path, _destination: Option<&Path>) -> Result<()> {
+        // A path does not identify a trashed object: multiple deleted items
+        // can share a name and the current audit has no durable UUID receipt.
+        // Do not list trash or mutate an item chosen by basename.
+        Err(anyhow!("Native trash restore requires a durable object-ID receipt; restore using the provider client"))
     }
 
     fn capabilities(&self) -> DriveCapabilities {
@@ -369,7 +351,9 @@ impl CloudDrive for NativeInternxtDrive {
             streaming: true,
             resumable_upload: true,
             resumable_download: true,
-            reversible_trash: true,
+            // The provider has a UUID restore API, but the app's path-only
+            // delete/restore contract cannot safely identify its trash item.
+            reversible_trash: false,
             ..DriveCapabilities::basic()
         }
     }
@@ -507,6 +491,21 @@ impl CloudDrive for NativeInternxtDrive {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn path_only_restore_is_refused_without_credentials_or_network() {
+        let drive = NativeInternxtDrive::from_keychain("Native Internxt", "trash-contract-test");
+        assert!(drive.capabilities().delete);
+        assert!(!drive.capabilities().reversible_trash);
+        for destination in [None, Some(Path::new("/original"))] {
+            let error = drive
+                .restore_deleted(Path::new("/original/report.pdf"), destination)
+                .unwrap_err();
+            assert!(error.to_string().contains("object-ID receipt"));
+            assert!(!error.to_string().contains("report.pdf"));
+        }
+        assert!(!drive.clients.is_cached());
+    }
 
     #[test]
     fn drive_metadata_is_available_without_a_session() {

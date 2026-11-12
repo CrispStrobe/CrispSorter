@@ -8,8 +8,8 @@ fn main() {
     let source = root.join("drives/filesystem.rs");
     println!("cargo:rerun-if-changed={}", source.display());
     let parsed = syn::parse_file(&fs::read_to_string(&source).unwrap()).unwrap();
-    let names = ["DriveCapabilities", "CloudDrive", "DriveType", "DirEntry", "FileVersion", "FileStat", "WalkEntry", "LocalDrive", "NonReplayableWrite"];
-    let functions = ["read_file_bounded", "content_search_matches", "walk", "walk_limited"];
+    let names = ["DriveCapabilities", "CloudDrive", "DriveType", "DirEntry", "FileVersion", "FileStat", "WalkEntry", "WalkScan", "LocalDrive", "NonReplayableWrite"];
+    let functions = ["read_file_bounded", "content_search_matches", "walk", "walk_limited", "walk_with_scan_budget"];
     let mut generated = String::from("use anyhow::{anyhow, Context, Result}; use serde::{Deserialize, Serialize}; use std::{io::{Read,Write}, path::{Path,PathBuf}};");
     let mut selected = Vec::new();
     for item in parsed.items {

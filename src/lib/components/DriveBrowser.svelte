@@ -1,5 +1,6 @@
 <script lang="ts">
     import { onMount } from 'svelte';
+    import { searchProvider, providerSearchNotice, type ProviderSearchEntry } from '$lib/drives/providerSearch';
     import { invoke } from '@tauri-apps/api/core';
     import { openPath } from '@tauri-apps/plugin-opener';
     import { ChevronRight, Copy, Folder, FolderPlus, Loader2, RefreshCw, Search, Trash2 } from 'lucide-svelte';
@@ -49,7 +50,8 @@
     let driveSearchQuery = $state('');
     let driveSearchContent = $state(false);
     let driveSearchBusy = $state(false);
-    let driveSearchResults = $state<Array<{ path: string; is_dir: boolean; size: number | null; mtime_unix: number | null }>>([]);
+    let driveSearchResults = $state<ProviderSearchEntry[]>([]);
+    let driveSearchNotice = $state('');
     let rightPanel = $state<ContextPanel | null>(null);
     let duplicateAudit = $state<DuplicateDecisionAudit[]>([]);
     let duplicateMutationAudit = $state<DuplicateMutationAudit[]>([]);
@@ -74,16 +76,19 @@
     async function searchDrive() {
         if (!driveId || !driveSearchQuery.trim()) return;
         driveSearchBusy = true;
+        driveSearchNotice = '';
         error = '';
         try {
-            driveSearchResults = await invoke('drive_search', {
+            const report = await searchProvider({
                 driveId,
                 root: path,
                 query: driveSearchQuery.trim(),
                 maxDepth: 8,
                 maxResults: 100,
-                content: driveSearchContent && capabilities.read,
+                content: driveSearchContent && !!capabilities.read,
             });
+            driveSearchResults = report.results;
+            driveSearchNotice = providerSearchNotice(report);
         } catch (e) {
             error = `Could not search drive: ${String(e)}`;
             driveSearchResults = [];
@@ -412,8 +417,9 @@
     {#if driveSearchQuery.trim() && !driveSearchBusy}
         <div class="drive-search-results">
             <strong>{driveSearchContent ? 'Filename + bounded content matches' : 'Filename matches'} ({driveSearchResults.length})</strong>
+            {#if driveSearchNotice}<p role="status">{driveSearchNotice}</p>{/if}
             {#if driveSearchResults.length === 0}
-                <span class="muted">No provider-visible matches.</span>
+                <span class="muted">{driveSearchNotice ? 'No matches in the scanned files.' : 'No provider-visible matches.'}</span>
             {:else}
                 {#each driveSearchResults as result (result.path)}
                     <button class="drive-search-result" onclick={() => void openDriveSearchResult(result)}>
