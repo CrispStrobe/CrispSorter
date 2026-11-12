@@ -322,9 +322,9 @@ establishes decoded OCR, a positively recognized blank page, CrispSorter
 application behavior or GPU execution.
 
 The [Android x86_64 candidate app run](https://github.com/CrispStrobe/CrispSorter/actions/runs/43313212722)
-built the app and reached its emulator boundary check, but failed because the
-negative request was rejected before the required native pipeline error. The
-retained rejection must be diagnosed and the setup corrected without weakening
-the assertion. The blank control and later checks did not complete. This run
-does not establish native failure propagation, Ovis inference, same-context
-recovery or physical-device behavior.
+built the app and reached its emulator boundary check. The retained rejection
+contains the expected native pipeline failure, but the assertion used an obsolete
+app error prefix and failed; update the exact source-bound marker before a
+follow-up. The blank control and later checks did not complete. This single
+negative observation does not establish Ovis inference, same-context recovery
+or physical-device behavior.
