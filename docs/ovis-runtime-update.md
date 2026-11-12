@@ -313,9 +313,11 @@ result. A follow-up checkout and exact Windows packaged-header line-ending fix
 is under review in [PR 230](https://github.com/CrispStrobe/CrispEmbed/pull/230);
 the [Windows-only rerun](https://github.com/CrispStrobe/CrispEmbed/actions/runs/43313165931)
 passed its native C controls but its Rust control failed before execution because
-Cargo selected a non-MSVC `link.exe`. A Windows-only linker correction is in
-PR 230; [its targeted rerun](https://github.com/CrispStrobe/CrispEmbed/actions/runs/43316615562)
-must pass before claiming Rust behavior. None of these controls
+Cargo selected a non-MSVC `link.exe`. After the Windows-only linker correction,
+[the targeted rerun](https://github.com/CrispStrobe/CrispEmbed/actions/runs/43316615562)
+passed the packaged native and Rust model-free failure and legacy-empty controls.
+The source/archive/header checks remained in place, and the result receipt was
+retained. [PR 230](https://github.com/CrispStrobe/CrispEmbed/pull/230) is merged. None of these controls
 establishes decoded OCR, a positively recognized blank page, CrispSorter
 application behavior or GPU execution.
 
