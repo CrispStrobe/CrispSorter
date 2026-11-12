@@ -1,0 +1,63 @@
+{
+  "schema": "provider-conformance-hosted-v1",
+  "sorter_source": "8b21ce5798cda620e6a7f3c1611c73979c684a4d",
+  "cloud_source": "121bfa6682ab710cc19fbd7c7897e4aea0729920",
+  "dart": "3.13.7",
+  "steps": [
+    {
+      "name": "clone-sorter",
+      "exit": 0,
+      "elapsed_s": 7.92
+    },
+    {
+      "name": "checkout-sorter",
+      "exit": 0,
+      "elapsed_s": 0.47
+    },
+    {
+      "name": "clone-cloud",
+      "exit": 0,
+      "elapsed_s": 0.95
+    },
+    {
+      "name": "checkout-cloud",
+      "exit": 0,
+      "elapsed_s": 0.01
+    },
+    {
+      "name": "dart-download",
+      "exit": 0,
+      "elapsed_s": 6.43
+    },
+    {
+      "name": "dart-extract",
+      "exit": 0,
+      "elapsed_s": 8.4
+    },
+    {
+      "name": "rustup-download",
+      "exit": 0,
+      "elapsed_s": 0.07
+    },
+    {
+      "name": "rustup-install",
+      "exit": 0,
+      "elapsed_s": 19.27
+    },
+    {
+      "name": "python-setup",
+      "exit": 0,
+      "elapsed_s": 5.73
+    },
+    {
+      "name": "conformance",
+      "exit": 0,
+      "elapsed_s": 348.88
+    }
+  ],
+  "passed": true,
+  "elapsed_s": 398.14,
+  "result_summary": "131 cases; 363 cross-decryptions; 0 failures; 10 reviewed gaps",
+  "raw_report_sha256": "edaecf2f8b86fc4321c0f6df957ec4286667e42992318f9ea6e4997b4bc71d65",
+  "source_equivalence": "Upstream merge 33bdc33f64d0a2f1144dceec8ed372d18c12b551 has the same tree as the tested upstream source."
+}
