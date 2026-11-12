@@ -6,6 +6,16 @@ use std::{fs, path::PathBuf};
 fn main() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/src/index");
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    // Diagnostic-only paired control. With tracing disabled the original
+    // constructors and writers execute unchanged. This source is never shipped.
+    let fts_path = root.join("fts_index.rs");
+    println!("cargo:rerun-if-changed={}", fts_path.display());
+    let fts = fs::read_to_string(&fts_path).unwrap();
+    assert_eq!(fts.matches("Index::open_in_dir(dir)?").count(), 1);
+    assert_eq!(fts.matches("Index::create_in_dir(dir, schema)?").count(), 1);
+    let fts = fts.replace("Index::open_in_dir(dir)?", "if crate::fts_probe::enabled() { Index::open(crate::fts_probe::TraceDir::open(dir)?)? } else { Index::open_in_dir(dir)? }")
+        .replace("Index::create_in_dir(dir, schema)?", "if crate::fts_probe::enabled() { Index::open_or_create(crate::fts_probe::TraceDir::open(dir)?, schema)? } else { Index::create_in_dir(dir, schema)? }");
+    fs::write(out.join("fts_index.rs"), fts).unwrap();
     let file = root.join("local_index.rs");
     println!("cargo:rerun-if-changed={}", file.display());
     let parsed = syn::parse_file(&fs::read_to_string(&file).unwrap()).unwrap();
