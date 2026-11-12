@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: CrispStrobe/CrispEmbed
-          ref: v0.17.18
+          ref: v0.17.19
           path: repos/CrispEmbed
       - uses: actions/checkout@v4
         with:
@@ -53,7 +53,7 @@ jobs:
           mkdir -p ../CrispASR/build-flutter-bundle ../CrispEmbed/build src-tauri/bin
           curl -fsSL --retry 8 --retry-all-errors https://github.com/CrispStrobe/CrispASR/releases/download/v0.8.32/libcrispasr-macos-arm64.tar.gz -o /tmp/crispasr.tar.gz
           tar -xzf /tmp/crispasr.tar.gz -C ../CrispASR/build-flutter-bundle --strip-components=1
-          curl -fsSL --retry 8 --retry-all-errors https://github.com/CrispStrobe/CrispEmbed/releases/download/v0.17.18/crispembed-macos-arm64.tar.gz -o /tmp/crispembed.tar.gz
+          curl -fsSL --retry 8 --retry-all-errors https://github.com/CrispStrobe/CrispEmbed/releases/download/v0.17.19/crispembed-macos-arm64.tar.gz -o /tmp/crispembed.tar.gz
           tar -xzf /tmp/crispembed.tar.gz -C ../CrispEmbed/build
           curl -fsSL --retry 8 --retry-all-errors https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-mac-arm64.tgz -o /tmp/pdfium.tgz
           mkdir -p /tmp/pdfium
