@@ -155,3 +155,11 @@ Desktop candidate builds remain pending. These are candidate libraries, not
 finished application binaries, runtime error-path tests, or physical-device
 qualification. Artifacts expire after 14 days; keep
 verified copies outside Git until a reviewed release packages them.
+
+The [unpublished desktop candidate run](https://github.com/CrispStrobe/CrispEmbed/actions/runs/43302121233)
+passed the four CPU archive builds: Linux x86_64 and arm64, Windows x86_64,
+and macOS arm64. Its manifest identifies the same runtime source as the mobile
+candidate and separately identifies the workflow revision. The four retained
+archives were independently checked against the manifest's archive hashes and
+sizes. GPU variants were intentionally skipped; archive builds and hashes do
+not establish app integration, runtime error handling, or OCR quality.
