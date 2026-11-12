@@ -66,4 +66,4 @@ re-syncing; do not drop them silently.
    `docs/STORAGE_ENGINE_ARCHITECTURE.md`.
 3. Run `cargo test -p crisp-internxt --lib` and the provider-conformance workflow.
 
-- **Windows root paths** (2026-11-12): `resolve_path` walks only `Component::Normal` segments. Upstream skips only `/`, so on Windows the root component `\` was looked up as a folder name and every absolute path failed. Send this upstream.
+- **Windows root paths** (2026-11-12): `resolve_path` walks only `Component::Normal` segments. Upstream skips only `/`, so on Windows the root component `\` was looked up as a folder name and every absolute path failed. Upstream fix: CrispStrobe/crisp-cloud-rs#1.
