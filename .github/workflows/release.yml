@@ -14,6 +14,11 @@ on:
         description: 'Run the macOS App Store job (build cloud-only sandbox .pkg, sign, validate). Upload to ASC only if publish is also ON.'
         type: boolean
         default: false
+      mobile_profile:
+        description: 'standard omits native OCR; ocr fails closed until the signed OCR recipe and provenance are integrated. Use OCR mobile native integration for unpublished qualification.'
+        type: choice
+        options: [standard, ocr]
+        default: standard
       platform:
         description: 'Build all platforms, or retry one desktop platform without restarting the others. Single-platform retries never publish.'
         type: choice
@@ -24,6 +29,7 @@ on:
 # Bumping CRISPEMBED_REF / CRISPASR_REF / CRISPDOCX_REF here updates
 # all jobs at once — no more 3-place edits.
 env:
+  CRISPSORTER_MOBILE_RELEASE_PROFILE: ${{ inputs.mobile_profile || 'standard' }}
   # Python's stdout on a Windows runner is the console code page (cp1252),
   # so any inline `python -c` that prints file content dies on the first
   # non-ASCII character. The rewrite step prints slices of Cargo.toml,
@@ -111,6 +117,8 @@ jobs:
       IPA_FILE: CrispSorter_0.15.0_ios-arm64.ipa
     steps:
       - uses: actions/checkout@v4
+      - name: Check requested mobile release profile
+        run: python3 scripts/check_mobile_release_profile.py
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -168,6 +176,9 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - name: Check requested mobile release profile
+        if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all'
+        run: python3 scripts/check_mobile_release_profile.py
       - name: Require a draft release before uploading artifacts
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -223,6 +223,9 @@ def main():
                'version': json.loads((root / 'src-tauri/tauri.conf.json').read_text())['version'],
                'runtime_lock': json.loads((root / 'scripts/crispembed-runtime-lock.json').read_text()),
                'native_crispembed_included': args.platform in ['linux-x86_64', 'windows-x86_64', 'macos-arm64'], 'artifacts': []}
+    if args.platform in ['android-arm64', 'ios-arm64']:
+        from check_mobile_release_profile import profile
+        receipt['mobile_release_profile'] = profile()
     receipt['toolchains'] = {tool: subprocess.check_output([tool, '--version'], text=True).strip() for tool in ['rustc', 'cargo', 'node']}
     receipt['dependency_sources'] = {name: subprocess.check_output(['git', '-C', str(root / '_sibling' / name), 'rev-parse', 'HEAD'], text=True).strip()
                                      for name in ['CrispEmbed', 'CrispASR', 'crisp-docx'] if (root / '_sibling' / name).is_dir()}

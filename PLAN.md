@@ -25,6 +25,17 @@ runtime pin, version, default, workflow or code change accompanies this handoff;
 physical devices, representative corpus quality and complete-page coverage remain
 open. The separate native gutter candidate is not evaluated by this app-crop run.
 
+## Explicit signed mobile release profiles — 12 November 2026
+
+The ordinary Android/iOS release recipe omits `ocr-mobile`, paired native runtime
+and pinned ORT preparation. Its successful build is a standard mobile artifact,
+not evidence that native OCR is included or qualified. Release receipts now say
+so explicitly. The optional `mobile_profile: ocr` request fails before expensive
+builds or retained-IPA upload until that signed recipe and provenance integration
+exists; the default standard build, publication and authorized TestFlight route
+remain available. No new manual approval record or experimental runtime is added.
+See [the concrete integration handoff](docs/ocr-device-qualification.md#signed-mobile-release-profile-and-integration-handoff).
+
 ## Non-Unix receipt durability admission — 12 November 2026
 
 [Receipt run 43303387822](https://github.com/CrispStrobe/CrispSorter/actions/runs/43303387822)
