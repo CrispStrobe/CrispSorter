@@ -916,7 +916,7 @@ jobs:
           # Pinned (was: default branch) to the revision the vendored
           # crates/crisp-*-native sources correspond to. Keep in sync with
           # provider-conformance.yml and crates/*-native/VENDORED.md.
-          ref: 0f9097d2a0ca0ddd15ba56d13405d93b0be95c3a
+          ref: 0aaa6666a6108f4d4d29877a34afe6ec428e0467
           path: crisp-cloud-rs
 
       - uses: dtolnay/rust-toolchain@stable
