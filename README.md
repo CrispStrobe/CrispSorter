@@ -162,10 +162,17 @@ qualification. There is no Python subprocess fallback. See
 [the shared storage-engine design](docs/STORAGE_ENGINE_ARCHITECTURE.md) for reuse
 from the Flutter apps, runtime boundaries, licenses and tests:
 
+The Filen and Internxt clients live in
+[crisp-cloud-rs](https://github.com/CrispStrobe/crisp-cloud-rs) and are pinned
+by git `rev` in `src-tauri/Cargo.toml`; test or change them there:
+
 ```bash
-# Native client and CLI
+# Native client and CLI, in a crisp-cloud-rs checkout at the pinned rev
+# (python3 scripts/crisp_cloud_rev.py prints it)
 cargo test -p crisp-filen --lib
 cargo run -p crisp-filen -- --help
+
+# Back in CrispSorter:
 
 # Tauri desktop build with native Filen routing
 cargo check -p crispsorter --features desktop,drive-filen-native
@@ -181,6 +188,7 @@ credentials through the shell environment; do not commit them:
 ```bash
 export FILEN_EMAIL="$(sed -n 's/^FILEN_LOGIN=//p' /path/to/.env)"
 export FILEN_PASSWORD="$(sed -n 's/^FILEN_PW=//p' /path/to/.env)"
+# in the crisp-cloud-rs checkout
   cargo test -p crisp-filen --test filen_live \
   -- --ignored --nocapture --test-threads=1
 ```
