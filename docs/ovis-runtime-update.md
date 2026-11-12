@@ -365,3 +365,16 @@ document, UI and export gates. It downloads no host fixture weights and builds
 neither runtime nor app. The complete app flow remains the default mode.
 The replay route is prepared and has not been dispatched or executed; the
 original archive expires on 2026-11-26 and an unavailable archive fails closed.
+
+The [diagnostic Android emulator replay](https://github.com/CrispStrobe/CrispSorter/actions/runs/43325542179)
+passed all ten scoped steps with no cleanup errors. It used the retained app
+built at `a26ea39776b5510f55a73f0a0fde3f54b0724b20`, candidate runtime source
+`2d2ab3275022e095f4a8f580e276bb2e3aa3f59c`, and corrected harness source
+`336c584b21ba1a6a155e60e5b4c650b41693c572`. The deliberate incompatible-model
+request returned the native pipeline error through app IPC; a separate white
+raster returned zero regions and a non-NULL empty native text result through
+Tesseract. Baseline model hashes and the installed APK were checked. This does
+not qualify Ovis inference, patch bounds, same-context recovery, multistage
+fallback, physical devices or the later source revision. The previous replay's
+WebView loss remains unexplained; the successful replay does not establish its
+cause.
