@@ -389,9 +389,27 @@ path requires the original cutoff explicitly. These checks validate artifact
 identity and signing evidence, not physical-device behavior.
 
 The existing v0.15.0 draft and internal TestFlight build were produced from an
-earlier source revision. After the current source is qualified, prepare a new
-version and source-bound draft, build each supported platform, verify its
-receipts, and upload the new iOS build before reporting current-source
-TestFlight coverage. Windows Authenticode and macOS Developer ID credentials
+earlier source revision. The next source preparation uses 0.15.1 consistently in
+the frontend, Tauri config, app Cargo manifest and both lockfiles. The release
+preflight now checks those declarations before creating or changing a draft.
+The independent workspace default and registry dependencies retain their own
+versions. This preparation creates no tag, draft, binary or App Store upload;
+the final integrated commit must be the new draft's exact source target.
+
+The IPA upload identity check requires one provisioned application, the expected
+bundle ID and version, a nonempty executable, and an exact numeric build number.
+The retained upload route also requires its existing pinned SHA-256; it remains
+available for that 0.15.0 artifact when its checks pass. Normal iOS uploads check
+the archive against the current source version before contacting App Store
+Connect. These archive checks supplement signing and source-bound receipts;
+they do not prove that an artifact was built from a given commit or executed on
+a device, and they introduce no approval requirement.
+
+Current-source completion still requires new binaries for Linux, Windows, macOS,
+Android and iOS, their matching source/version/hash receipts and required signing
+evidence, and a newly uploaded iOS build selected by its exact build number and
+upload cutoff. A retained upload route can use the new IPA only after its exact
+version/hash are available from that source-bound artifact; the existing old
+IPA cannot establish new-source TestFlight coverage. Windows Authenticode and macOS Developer ID credentials
 are still required for signed desktop publication; see
 [desktop signing](desktop-signing.md).

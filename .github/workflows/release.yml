@@ -129,6 +129,7 @@ jobs:
           set -euo pipefail
           gh release download "v$IPA_VERSION" --repo "$GITHUB_REPOSITORY" --pattern "$IPA_FILE"
           echo "$IPA_SHA256  $IPA_FILE" | shasum -a 256 -c -
+          python3 scripts/check_testflight_ipa.py --ipa "$IPA_FILE" --version "$IPA_VERSION" --sha256 "$IPA_SHA256"
           unzip -q "$IPA_FILE" -d "$RUNNER_TEMP/ipa"
           APP=$(find "$RUNNER_TEMP/ipa/Payload" -maxdepth 1 -name '*.app' -type d -print -quit)
           test -n "$APP" && test -f "$APP/embedded.mobileprovision"
@@ -184,6 +185,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          python3 scripts/check_release_versions.py
           VERSION=$(python3 -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')
           TAG="v$VERSION"
           if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF_NAME" != "$TAG" ]; then
@@ -1590,6 +1592,8 @@ jobs:
           # Fail loud — a green run must never mean "uploaded nothing".
           [ -n "$IPA" ] && [ -f "$IPA" ] \
             || { echo "::error::no signed IPA to upload (build step should have failed first)"; exit 1; }
+          VERSION=$(python3 -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')
+          python3 scripts/check_testflight_ipa.py --ipa "$IPA" --version "$VERSION"
           # Read the actual CFBundle* from the IPA so altool's cross-check matches.
           APP=$(unzip -Z1 "$IPA" | grep -oE '^Payload/[^/]+\.app' | head -1)
           unzip -oq "$IPA" "$APP/Info.plist" -d "$RUNNER_TEMP/ipaplist"
