@@ -315,6 +315,35 @@ validates the committed lock before checkout and retains the library, notices,
 source/build receipts, ELF inspection, and linked probe for 14 days under
 `crispembed-mobile-candidate-android-x86_64`. It builds and links only; emulator
 execution and complete-app qualification require the separate paired OCR lane.
+
+For the error-propagation candidate, manually dispatch
+`ocr-mobile-native.yml` with `target: android-x86_64` and
+`candidate_runtime: true`. This checks out the exact source in the committed
+`scripts/ocr-mobile-error-propagation-candidate-lock.json` and reuses artifact
+`13985650215` from successful build/link run `43307953414`. The committed
+`scripts/ocr-mobile-candidate-artifact-lock.json` binds the producing workflow
+commit, archive SHA-256, and every library, notice, lock, receipt, and probe file.
+The staging helper verifies safe extraction, the clean source/submodule pins,
+notice bytes against source, and the Android dependency closure. A missing,
+expired, or mismatched artifact fails the candidate lane without rebuilding.
+The archive expires on 2026-11-26; a later replacement requires a newly reviewed
+artifact pin. Default dispatches and pushes continue building the original OCR
+runtime. Existing workflow concurrency remains in force.
+
+The candidate lane runs the existing Android app build and emulator gates. Its
+application build receipt records the explicit committed runtime lock and
+`candidate-reuse.json`, rechecks the pinned staged files, and retains existing
+packaged ELF, ONNX Runtime, notice, and source validation. The receipt tool's
+optional `--runtime-lock` accepts only a repository-contained lock with exact
+committed bytes; omitting it retains the production OCR lock. Preparing this
+route does not establish a successful app build or executed emulator result.
+The emulator runner forwards the selected lock and source through
+`OCR_MOBILE_RUNTIME_LOCK` and `OCR_MOBILE_RUNTIME_SOURCE`. Before the app-command
+consumer starts, its launcher validates that lock against the application and
+runtime receipts, including the lock hash, source/submodule identities and
+runtime receipt hash. Local invocations without these variables use the
+production OCR lock and reject candidate receipts.
+
 The [build/link qualification](https://github.com/CrispStrobe/CrispSorter/actions/runs/40875226935)
 completed successfully for Android ARM64, iOS ARM64, and iOS ARM64 simulator.
 That older run built native libraries and linked probes; it did not execute

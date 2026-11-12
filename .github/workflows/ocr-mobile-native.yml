@@ -8,6 +8,10 @@ on:
         type: choice
         default: android-x86_64
         options: [android-x86_64, android-arm64, ios-sim-arm64, all]
+      candidate_runtime:
+        description: Reuse the pinned error-propagation candidate from run 43307953414 (android-x86_64 only)
+        type: boolean
+        default: false
   push:
     branches: ['feat/ocr-document-studio', 'feat/ocr-mobile-build', 'feat/ocr-native-validation']
     paths:
@@ -91,17 +95,19 @@ jobs:
         working-directory: repos/CrispSorter
         env:
           REQUESTED_TARGET: ${{ github.event_name == 'workflow_dispatch' && (inputs.target || 'android-x86_64') || 'all' }}
-        run: echo "matrix=$(python3 scripts/ocr_mobile_target_matrix.py "$REQUESTED_TARGET")" >> "$GITHUB_OUTPUT"
+          CANDIDATE_RUNTIME: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_runtime || false }}
+        run: |
+          if [[ "$CANDIDATE_RUNTIME" == true && "$REQUESTED_TARGET" != android-x86_64 ]]; then
+            echo 'Candidate runtime qualification requires target android-x86_64' >&2
+            exit 1
+          fi
+          echo "matrix=$(python3 scripts/ocr_mobile_target_matrix.py "$REQUESTED_TARGET")" >> "$GITHUB_OUTPUT"
       - name: Read immutable feature runtime source
         id: runtime
         working-directory: repos/CrispSorter
-        run: |
-          python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import json, re
-          value = json.load(open('scripts/ocr-mobile-runtime-lock.json'))['source_commit']
-          assert re.fullmatch('[0-9a-f]{40}', value)
-          print('source=' + value)
-          PY
+        env:
+          RUNTIME_LOCK: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_runtime && 'scripts/ocr-mobile-error-propagation-candidate-lock.json' || 'scripts/ocr-mobile-runtime-lock.json' }}
+        run: python3 scripts/mobile_qualification_lock.py "$RUNTIME_LOCK" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
           repository: CrispStrobe/CrispEmbed
@@ -130,7 +136,7 @@ jobs:
           node --test tests/scripts/test_native_license_inventory.mjs
           python3 -m py_compile tools/ios-shell-probe/run.py
           python3 scripts/test_mobile_shell_probe.py
-          bash -n tools/mobile-ocr-probe/run_android.sh tools/mobile-ocr-probe/run_ios.sh
+          bash -n tools/mobile-ocr-probe/run_android.sh tools/mobile-ocr-probe/run_android_app_commands.sh tools/mobile-ocr-probe/run_ios.sh
           c++ -std=c++17 -Wall -Wextra -Werror -fsyntax-only -I ../CrispEmbed/src tools/mobile-ocr-probe/probe.cpp
 
   mobile:
@@ -138,6 +144,9 @@ jobs:
     # is prepared. The primary feature branch runs the complete target matrix.
     if: github.ref_name == 'feat/ocr-document-studio' || github.event_name == 'workflow_dispatch'
     needs: contracts
+    permissions:
+      contents: read
+      actions: read
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.contracts.outputs.target_matrix) }}
@@ -159,13 +168,9 @@ jobs:
       - name: Read immutable feature runtime source
         id: runtime
         working-directory: repos/CrispSorter
-        run: |
-          python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import json, re
-          value = json.load(open('scripts/ocr-mobile-runtime-lock.json'))['source_commit']
-          assert re.fullmatch('[0-9a-f]{40}', value)
-          print('source=' + value)
-          PY
+        env:
+          RUNTIME_LOCK: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_runtime && 'scripts/ocr-mobile-error-propagation-candidate-lock.json' || 'scripts/ocr-mobile-runtime-lock.json' }}
+        run: python3 scripts/mobile_qualification_lock.py "$RUNTIME_LOCK" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
           repository: CrispStrobe/CrispEmbed
@@ -242,12 +247,29 @@ jobs:
           if ! command -v xcodegen >/dev/null; then brew install xcodegen; fi
           if ! command -v protoc >/dev/null; then brew install protobuf; fi
           protoc --version
+      - name: Download reviewed Android candidate archive
+        if: github.event_name == 'workflow_dispatch' && inputs.candidate_runtime
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api repos/CrispStrobe/CrispSorter/actions/artifacts/13985650215/zip > "$RUNNER_TEMP/ocr-mobile-candidate.zip"
+      - name: Validate and stage reviewed Android candidate runtime
+        if: github.event_name == 'workflow_dispatch' && inputs.candidate_runtime
+        working-directory: repos/CrispSorter
+        run: |
+          python3 scripts/prepare_ocr_mobile_candidate_runtime.py \
+            --source ../CrispEmbed --archive "$RUNNER_TEMP/ocr-mobile-candidate.zip" \
+            --output "$RUNNER_TEMP/ocr-mobile-runtime"
+          echo "CRISPEMBED_SYS_LIB_DIR=$RUNNER_TEMP/ocr-mobile-runtime/lib" >> "$GITHUB_ENV"
       - name: Build matching native runtime
+        if: github.event_name != 'workflow_dispatch' || !inputs.candidate_runtime
         working-directory: repos/CrispSorter
         run: |
           python3 scripts/build_mobile_crispembed.py \
             --source ../CrispEmbed --output "$RUNNER_TEMP/ocr-mobile-runtime" \
-            --lock scripts/ocr-mobile-runtime-lock.json \
+            --lock '${{ steps.runtime.outputs.lock }}' \
             --target '${{ matrix.runtime }}' --jobs 2
           echo "CRISPEMBED_SYS_LIB_DIR=$RUNNER_TEMP/ocr-mobile-runtime/lib" >> "$GITHUB_ENV"
       - name: Stage pinned mobile ONNX runtime for existing indexing support
@@ -350,6 +372,7 @@ jobs:
           python3 scripts/ocr_mobile_build_receipt.py --platform android \
             --artifact "$RUNNER_TEMP/ocr-mobile-app/CrispSorter-ocr.apk" \
             --runtime-receipt "$RUNNER_TEMP/ocr-mobile-runtime/runtime-build.json" \
+            --runtime-lock '${{ steps.runtime.outputs.lock }}' \
             --ort-runtime-receipt "$OCR_ORT_ROOT/ort-runtime.json" \
             --output "$RUNNER_TEMP/ocr-mobile-app/build-receipt.json"
       - name: Build iOS OCR simulator application
@@ -390,6 +413,9 @@ jobs:
           sudo udevadm trigger --name-match=kvm
       - name: Execute native OCR, real app model installation and review export on Android
         if: matrix.runtime == 'android-x86_64'
+        env:
+          OCR_MOBILE_RUNTIME_LOCK: ${{ steps.runtime.outputs.lock }}
+          OCR_MOBILE_RUNTIME_SOURCE: ${{ steps.runtime.outputs.source }}
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 35
@@ -427,6 +453,9 @@ jobs:
           name: ocr-mobile-${{ matrix.runtime }}
           path: |
             ${{ runner.temp }}/ocr-mobile-runtime/runtime-build.json
+            ${{ runner.temp }}/ocr-mobile-runtime/source-lock.json
+            ${{ runner.temp }}/ocr-mobile-runtime/candidate-reuse.json
+            ${{ runner.temp }}/ocr-mobile-runtime/link-probe-elf.txt
             ${{ runner.temp }}/ocr-mobile-runtime/notices/
             ${{ runner.temp }}/ocr-mobile-licenses/
             ${{ runner.temp }}/ocr-mobile-ort/ort-runtime.json

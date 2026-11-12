@@ -378,13 +378,21 @@ def ort_identity(source, platform, artifact, runtime_path, expected_target):
     return {'receipt_sha256': digest(runtime_path), 'runtime': runtime, 'linkage': linkage, 'packaged_notices': packaged_notices}
 
 
-def record(source, platform, artifact, runtime_path, ort_runtime_path):
+def runtime_lock_identity(source, runtime_lock=None):
+    from mobile_qualification_lock import select_lock
+    relative = runtime_lock or 'scripts/ocr-mobile-runtime-lock.json'
+    selected = select_lock(str(relative), source)
+    path = source / selected['lock']
+    return json.loads(path.read_bytes()), {'path': selected['lock'], 'sha256': digest(path)}
+
+
+def record(source, platform, artifact, runtime_path, ort_runtime_path, runtime_lock=None):
     source, artifact, runtime_path = source.resolve(), artifact.resolve(), runtime_path.resolve()
     source_identity = source_tree_identity(source)
     source_commit = git(source, 'rev-parse', 'HEAD')
     tree = git(source, 'rev-parse', 'HEAD^{tree}')
     runtime = json.loads(runtime_path.read_text())
-    lock = json.loads((source / 'scripts/ocr-mobile-runtime-lock.json').read_text())
+    lock, lock_identity = runtime_lock_identity(source, runtime_lock)
     if runtime.get('source_commit') != lock['source_commit'] or runtime.get('ggml_commit') != lock['ggml_commit']:
         raise ValueError('Native runtime receipt does not match this application source lock')
     for key in ('source_commit', 'ggml_commit'):
@@ -400,12 +408,27 @@ def record(source, platform, artifact, runtime_path, ort_runtime_path):
     config = source / '.cargo/config.toml'
     ort = ort_identity(source, platform, artifact, ort_runtime_path.resolve(), runtime['target'])
     native_provenance = verify_native_provenance(artifact, platform, runtime_path.parent, runtime, lock)
+    reuse_path = runtime_path.parent / 'candidate-reuse.json'
+    reuse = None
+    if reuse_path.exists():
+        from prepare_ocr_mobile_candidate_runtime import committed_pin, verify_staged, PIN
+        reuse = json.loads(reuse_path.read_text())
+        if (reuse.get('schema_version') != 1 or reuse.get('artifact_pin') != committed_pin(source)
+                or reuse.get('artifact_pin_sha256') != digest(source / PIN)
+                or reuse.get('runtime_lock') != lock_identity['path']
+                or reuse.get('runtime_lock_sha256') != lock_identity['sha256']
+                or reuse.get('runtime_receipt_sha256') != digest(runtime_path)):
+            raise ValueError('Candidate reuse proof does not match its committed pin and runtime lock')
+        if reuse['artifact_pin']['runtime_lock'] != lock_identity['path']:
+            raise ValueError('Candidate artifact pin selects another runtime lock')
+        verify_staged(runtime_path.parent, reuse['artifact_pin'])
     return {'schema_version': 2, 'kind': 'ocr-mobile-app-build',
             'recorded_at': datetime.now(timezone.utc).isoformat(),
             'platform': platform, 'package': PACKAGE,
             'sorter_commit': source_commit, 'sorter_tree': tree, **source_identity,
             'crispembed_commit': runtime['source_commit'], 'ggml_commit': runtime['ggml_commit'],
             'runtime_receipt_sha256': digest(runtime_path), 'runtime': runtime,
+            'runtime_lock': lock_identity, 'candidate_reuse': reuse,
             'cargo_config_sha256': digest(config) if config.is_file() else None,
             'onnx_runtime': ort,
             'native_provenance': native_provenance,
@@ -419,10 +442,12 @@ def main():
     parser.add_argument('--platform', required=True, choices=('android', 'ios-simulator', 'ios-device'))
     parser.add_argument('--artifact', required=True, type=Path)
     parser.add_argument('--runtime-receipt', required=True, type=Path)
+    parser.add_argument('--runtime-lock', help='Committed repository-relative runtime lock; defaults to the production OCR lock')
     parser.add_argument('--ort-runtime-receipt', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path)
     args = parser.parse_args()
-    receipt = record(args.source, args.platform, args.artifact, args.runtime_receipt, args.ort_runtime_receipt)
+    receipt = record(args.source, args.platform, args.artifact, args.runtime_receipt, args.ort_runtime_receipt,
+                     args.runtime_lock)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open('x') as stream:
         json.dump(receipt, stream, indent=2)
