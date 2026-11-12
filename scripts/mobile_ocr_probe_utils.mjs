@@ -1,3 +1,4 @@
+import path from 'node:path';
 import assert from 'node:assert/strict';
 
 const hex = (value, length) => typeof value === 'string' && new RegExp('^[0-9a-f]{' + length + '}$', 'i').test(value);
@@ -6,6 +7,16 @@ const hex = (value, length) => typeof value === 'string' && new RegExp('^[0-9a-f
 export function isWithinAppRoot(root, candidate) {
   return typeof root === 'string' && root.length > 1 && typeof candidate === 'string'
     && (candidate === root || candidate.startsWith(root + '/'));
+}
+
+/** Aliases must first be proven by device realpath to resolve to canonicalRoot. */
+export function canonicalAppPath(value, canonicalRoot, verifiedAliases) {
+  assert(typeof value === 'string' && value.startsWith('/') && path.posix.normalize(value) === value,
+    'Private path must be absolute and normalized.');
+  assert(verifiedAliases.includes(canonicalRoot), 'Canonical sandbox root was not verified.');
+  const alias = verifiedAliases.find(root => isWithinAppRoot(root, value));
+  assert(alias, 'Private path is outside the verified Android app roots.');
+  return canonicalRoot + value.slice(alias.length);
 }
 
 export function validateBuildSource(build) {

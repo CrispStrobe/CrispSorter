@@ -1,5 +1,29 @@
 # CrispSorter — Development Plan
 
+## Android smoke sandbox paths — 12 November 2026
+
+[Mobile OCR run 43255928129](https://github.com/CrispStrobe/CrispSorter/actions/runs/43255928129)
+on `81ef8036` passed baseline installation and independent model hashes, then
+failed managed-page containment immediately after real binary image import.
+Its failure receipt reports `/data/user/0/com.crispstrobe.crispsorter` as app data;
+the old probe saved the import response only after validation, so the actual
+returned page path was lost. The relevant scripts are unchanged at PR #55 head
+`b34c6f83`.
+
+The bounded follow-up checks both exact Android package-root spellings with
+on-device `run-as realpath` before using them as aliases for containment. File
+inspection still requires the complete path to resolve exactly to the mapped
+sandbox path, rejecting internal symlinks and escapes. Production app storage,
+permissions and quality assertions are unchanged. Import results are retained
+before validation so a future failure preserves the actual native response.
+
+Local validation: all 11 focused probe utility tests passed, including alias
+containment and rejection of other packages/users, prefix spoofs, relative paths
+and traversal; JavaScript syntax and whitespace checks passed. Device alias
+equivalence and the complete Android flow remain pending hosted execution.
+The alias mismatch is a source-supported hypothesis until a new device receipt
+records the native response; this change does not establish OCR qualification.
+
 ## OCR text export compatibility — 9 November 2026
 
 - [x] Save selection-aware PDF script preflight and direct available text alternatives.

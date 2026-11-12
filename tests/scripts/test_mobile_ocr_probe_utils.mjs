@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { isWithinAppRoot, probeOptions, processMemory, summarizeMemory, textErrorRate, validateBuildSource, validatePackagedAndroidLibraries } from '../../scripts/mobile_ocr_probe_utils.mjs';
+import { canonicalAppPath, isWithinAppRoot, probeOptions, processMemory, summarizeMemory, textErrorRate, validateBuildSource, validatePackagedAndroidLibraries } from '../../scripts/mobile_ocr_probe_utils.mjs';
 
 test('canonical app data may be the sandbox root or a descendant, never a sibling prefix', () => {
   assert.equal(isWithinAppRoot('/sandbox/app', '/sandbox/app'), true);
@@ -8,6 +8,24 @@ test('canonical app data may be the sandbox root or a descendant, never a siblin
   assert.equal(isWithinAppRoot('/sandbox/app', '/sandbox/application'), false);
   assert.equal(isWithinAppRoot('/sandbox/app', '/elsewhere'), false);
   assert.equal(isWithinAppRoot('', '/anything'), false);
+});
+
+test('only device-verified Android package roots share a canonical spelling', () => {
+  const root = '/data/user/0/com.crispstrobe.crispsorter';
+  const alias = '/data/data/com.crispstrobe.crispsorter';
+  const suffix = '/ocr-workspace/assets/' + 'a'.repeat(64) + '.png';
+  // Reproduce the original lexical containment failure without relaxing scope.
+  assert.equal((alias + suffix).startsWith(root + '/ocr-workspace/assets/'), false);
+  assert.equal(canonicalAppPath(alias + suffix, root, [root, alias]), root + suffix);
+  assert.equal(canonicalAppPath(root + suffix, root, [root, alias]), root + suffix);
+  assert.equal(canonicalAppPath(root, root, [root, alias]), root);
+  assert.throws(() => canonicalAppPath(alias + suffix, root, [root]));
+  assert.throws(() => canonicalAppPath(root + suffix, root, [alias]));
+  for (const value of [alias + '-other' + suffix, '/data/data/other.app' + suffix,
+    '/data/user/10/com.crispstrobe.crispsorter' + suffix, '/sdcard' + suffix,
+    alias + '/ocr-workspace/../outside.png', alias + '//ocr-workspace/a.png', 'relative.png']) {
+    assert.throws(() => canonicalAppPath(value, root, [root, alias]));
+  }
 });
 
 const argumentsFor = serial => ['--serial', serial, '--apk', 'test.apk', '--inputs', 'inputs', '--output', 'evidence',
