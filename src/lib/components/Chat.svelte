@@ -23,6 +23,7 @@
     import 'katex/dist/katex.min.css';
     import 'deep-chat';
     import { logInfo, logWarn } from '../log';
+    import { beginOperation } from '../operationLog';
 
     // Global KaTeX for Deep Chat
     if (typeof window !== 'undefined') {
@@ -187,6 +188,9 @@
     });
 
     async function handleRequest(body: any, signals: any) {
+        // Question, passages, prompt and answer stay out of the log: the
+        // receipt carries source/citation counts and timing only.
+        const operation = beginOperation('chat.request');
         try {
             const userMsg = body.messages[body.messages.length - 1].text;
             // For browser-based engines, fall back to the loaded model even if selectedModel is empty
@@ -197,6 +201,7 @@
                 const noModelMsg = activeProviderId === 'webllm' ? 'WebLLM: no model loaded — open Settings and click Load.'
                     : activeProviderId === 'ort' ? 'ORT: no model loaded — open Settings and click Load.'
                     : 'No engine selected.';
+                operation.fail();
                 return signals.onResponse({ error: noModelMsg });
             }
 
@@ -217,14 +222,16 @@
                     }));
                 } else {
                     const items = batchManager.items.filter(i => selectedIds.includes(i.id));
-                    if (!items.length) return signals.onResponse({ text: 'Select documents to ask about, or choose Library or Conversation.' });
+                    if (!items.length) { operation.cancel(); return signals.onResponse({ text: 'Select documents to ask about, or choose Library or Conversation.' }); }
                     const documents = await Promise.all(items.map(async item => ({
                         ...item, extractedText: item.extractedText || await getExtractedText(item.id) || '',
                     })));
                     candidates = retrieveSelected(userMsg, documents);
                 }
                 evidence = buildEvidenceContext(userMsg, systemInstruction, candidates, llmContextLimit);
+                operation.stage('analyzing', { count: evidence.sources.length });
                 if (!evidence.sources.length) {
+                    operation.complete({ results: 0 });
                     return signals.onResponse({ text: 'I could not find supporting passages for this question. Try a more specific question, process the selected files, or search another collection.' });
                 }
                 prompt = evidence.prompt;
@@ -245,7 +252,9 @@
                 .replace(/(^|\n)\[([\s\S]*?)\]($|\n)/g, (m, pre, f, post) => /^S\d+$/.test(f.trim()) ? m : `${pre}\n$$\n${f.trim()}\n$$\n${post}`);
 
             signals.onResponse({ text: fixedText });
+            operation.complete({ count: evidence?.sources.length ?? 0, warnings: evidence && citationWarning ? 1 : 0 });
         } catch (error: any) {
+            operation.fail(error);
             signals.onResponse({ error: error.message });
         }
     }

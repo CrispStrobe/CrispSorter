@@ -1,6 +1,7 @@
 <script lang="ts">
     import { onMount } from 'svelte';
     import { invoke } from '@tauri-apps/api/core';
+    import { flog } from '$lib/log';
 
     type Rule = {
         name: string;
@@ -44,7 +45,11 @@
 
     async function saveRule() {
         let rule: Rule;
-        try { rule = JSON.parse(editor); } catch (e) { message = `Invalid rule JSON: ${e}`; return; }
+        try { rule = JSON.parse(editor); } catch (e) {
+            // The native automation.rule_save receipt never starts; record the refusal.
+            flog('warn', 'automation.rule_save refused: rule editor JSON is invalid');
+            message = `Invalid rule JSON: ${e}`; return;
+        }
         busy = true;
         try {
             rules = await invoke<Rule[]>('automation_save_rule', { rule });

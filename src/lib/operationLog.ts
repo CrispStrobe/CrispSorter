@@ -15,7 +15,9 @@ export type OperationName = 'ocr.session' | 'ocr.recognition' | 'ocr.worker' | '
   | 'pdf.linearize' | 'pdf.repair' | 'pdf.pdfa' | 'pdf.drop'
   | 'document.convert' | 'document.capabilities' | 'document.docx'
   | 'docx.check' | 'docx.properties' | 'docx.headings' | 'docx.restyle'
-  | 'docx.notes' | 'docx.quotes' | 'docx.clean' | 'docx.footnotes';
+  | 'docx.notes' | 'docx.quotes' | 'docx.clean' | 'docx.footnotes'
+  | 'batch.duplicate_scan' | 'batch.duplicate_cleanup' | 'batch.review_edit' | 'batch.index_add'
+  | 'chat.request';
 export type OperationPhase = 'queued' | 'loading' | 'ready' | 'reused' | 'disposed'
   | 'dispatching' | 'recognizing' | 'rendering' | 'text_ready' | 'page_completed'
   | 'checking' | 'saving' | 'saved' | 'committing' | 'published' | 'progress'
