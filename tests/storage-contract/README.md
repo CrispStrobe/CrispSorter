@@ -22,7 +22,9 @@ timestamps. They do not execute Tauri commands or establish provider CAS safety.
 The production sync inventory and local destination preflight are included
 directly as modules. Their focused tests exercise invalid provider names,
 Unicode-preserving nested inventory, platform filename checks and Unix symlink
-escape rejection. These preflight checks do not establish descriptor-based
+escape rejection. Inventory regressions also cover iterative depth-first order,
+entry/directory/depth budgets, provider errors, real symlink cycles and refusal
+to publish incomplete rows. These preflight checks do not establish descriptor-based
 protection against concurrent filesystem path swaps.
 
 ```sh

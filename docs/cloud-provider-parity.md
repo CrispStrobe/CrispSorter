@@ -201,6 +201,28 @@ download is queued or retried. Race-safe traversal/publication requires anchored
 directory handles and platform-specific APIs; this change does not claim that
 TOCTOU protection, atomic multi-file pull or provider CAS.
 
+### Bounded, complete sync inventory
+
+Sync inventory uses an iterative depth-first task stack rather than recursive
+calls. It preserves provider listing order, filter behavior and file-stat order.
+Production scans allow 64 nested directory levels, 10,000 directories including
+the root, and 100,000 listed entries across the scan. Directories and filtered-out
+files count toward the entry budget. Cyclic provider trees and provider-followed
+directory aliases therefore fail with an explicit budget error instead of exhausting
+the application call stack or walking indefinitely.
+
+New rows remain private until the complete scan succeeds. Provider stat/listing
+failures, invalid names and exhausted budgets leave the caller's existing output
+unchanged; callers propagate the error before transfers or watermark publication.
+The limits do not constrain the initial allocation inside a provider's `list_dir`
+implementation, provide a consistent remote snapshot, or replace that client's
+request timeout/pagination policy. These changes do not close the destination
+path-swap TOCTOU window described above.
+
+Cycle coverage includes a provider double over a real Unix directory-symlink
+cycle. That fixture explicitly follows the link; LocalDrive's own listing
+metadata does not expose directory symlinks as directories.
+
 ### Durable duplicate trash: Internxt receipt slice
 
 Only Internxt advertises `trash_receipts` and exposes the exact-object adapter.

@@ -3499,6 +3499,11 @@ a transfer without leaving the search/catalog workflow.
     advertise listing/stat, collecting filtered remote paths, sizes, and
     modification times without download or mutation. This is the metadata
     input for the remaining conflict-policy resolver. ✅ 2026-08-01
+    - [x] Inventory is now iterative with explicit depth/directory/entry budgets,
+      preserving depth-first order and filters. Cycles and provider failures
+      cannot publish partial rows; source-bound cycle/budget/error fixtures and
+      a real Unix symlink-cycle test cover this boundary. Provider per-listing
+      allocation, consistent snapshots and destination TOCTOU remain separate.
   - [x] Added pure metadata comparison and `sync_pair_compare`, classifying
     local-only, remote-only, unchanged, and divergent paths under explicit
     newest/local/remote/keep-both/manual policies without mutating either side.
