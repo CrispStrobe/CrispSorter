@@ -6,7 +6,8 @@ Behaviour per engine name (the value after --engine):
   fake_raw       prints plain text instead of JSON
   fake_sleep     sleeps 60 s (to be timed out), via a child process (process-group kill check)
   fake_child     spawns a child that holds ~40 MB for a moment, then prints like fake_ok
-  fake_crash     dies with SIGSEGV
+  fake_crash     dies from a signal (SIGSEGV; SIGTERM on macOS, where a real
+                 SIGSEGV writes a crash report and may show a crash dialog)
   fake_unsup     exits 1 with an "Unsupported OCR engine" error
   fake_cuda      exits 1 with the CUDA "no kernel image" message
 Every OCR call is appended to $FAKE_CALL_LOG (one JSON argv per line) when set.
@@ -54,7 +55,8 @@ elif engine == "fake_child":
     subprocess.run([sys.executable, "-c", "b = bytearray(40 * 1024 * 1024); import time; time.sleep(1.0)"])
     emit()
 elif engine == "fake_crash":
-    os.kill(os.getpid(), signal.SIGSEGV)
+    # Any non-SIGKILL signal is classified as "crash" by the runner.
+    os.kill(os.getpid(), signal.SIGTERM if sys.platform == "darwin" else signal.SIGSEGV)
 elif engine == "fake_unsup":
     print("error: OCR failed: Unsupported OCR engine: fake_unsup", file=sys.stderr); sys.exit(1)
 elif engine == "fake_cuda":
