@@ -105,6 +105,30 @@ delete APIs are unchanged. Google Drive explicit path-based restore still uses
 unique live ancestors and a trashed leaf; legacy duplicate path-only history
 never enables restore. Use the provider app to restore existing native trash.
 
+### Newest-wins metadata safety
+
+Pair comparison marks an existing file for manual review when the remote
+modification time is unknown, or when timestamps match but sizes differ. A
+newest-wins push rejects the entire plan before transfers if any such conflict
+exists. Returning a partial plan would let a later upload advance the watermark
+past an unresolved file. Zero timestamps also require review: the local scanner
+uses zero for unavailable or pre-epoch modification times, so a genuine Unix-
+epoch timestamp cannot be distinguished from missing metadata. Unknown-time files
+remain in incremental plans even after a newer watermark. Epoch-zero files
+need an explicit policy; representable negative timestamps can still be ordered.
+Explicit local/remote conflict decisions retain their existing behavior. The CLI pair comparison shares these decisions; CLI push still
+requires its explicit local-wins policy.
+
+For file-manager move/copy against an existing destination, newest-wins permits
+replacement only when both timestamps are known and the source is strictly
+newer. Unknown, zero or equal timestamps preserve the destination. These checks do
+not add provider conditional writes: source or destination changes after a
+comparison, failed destination lookups, retry/offline replay, and provider cache
+freshness remain separate transaction/CAS work. Equal size and timestamp still
+mean metadata-unchanged, not verified content equality; timestamp precision and
+clock skew can also hide differences. Keep-both and durable per-file manual
+resolution remain open.
+
 ### Durable duplicate trash: Internxt receipt slice
 
 Only Internxt advertises `trash_receipts` and exposes the exact-object adapter.

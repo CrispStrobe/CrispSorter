@@ -540,6 +540,7 @@ pub async fn sync_pair_push(
     let plan = if conflict_policy == Some(super::conflict::ConflictPolicy::NewestWins) {
         let remote = sync_pair_remote_plan(state.clone(), id.clone()).await?;
         super::pairs::local_push_plan(&plan, &remote, super::conflict::ConflictPolicy::NewestWins)
+            .map_err(|error| error.to_string())?
     } else {
         plan
     };

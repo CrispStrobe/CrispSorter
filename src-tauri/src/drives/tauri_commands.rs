@@ -164,8 +164,9 @@ fn mutation_destination(
         ),
         ConflictPolicy::NewestWins => {
             let source_is_newer = match (source_mtime, destination_mtime) {
-                (Some(source), Some(existing)) => source > existing,
-                (Some(_), None) => true,
+                (Some(source), Some(existing)) if source != 0 && existing != 0 => source > existing,
+                // Missing metadata is not evidence that the destination is
+                // older. Preserve it until an explicit policy resolves this.
                 _ => false,
             };
             Ok(if source_is_newer {
@@ -1731,6 +1732,15 @@ mod mutation_conflict_tests {
             .unwrap(),
             MutationResolution::Skip
         );
+    }
+
+    #[test]
+    fn newest_preserves_destination_when_timestamps_are_missing_or_equal() {
+        for (source, destination) in [(Some(20), None), (None, Some(20)), (None, None), (Some(20), Some(20)), (Some(0), Some(20)), (Some(20), Some(0)), (Some(0), Some(0))] {
+            assert_eq!(mutation_destination(source, destination, Path::new("report.txt"), ConflictPolicy::NewestWins).unwrap(), MutationResolution::Skip);
+            // The user's explicit overwrite policy remains an override.
+            assert_eq!(mutation_destination(source, destination, Path::new("report.txt"), ConflictPolicy::RemoteWins).unwrap(), MutationResolution::UseDestination);
+        }
     }
 
     #[test]

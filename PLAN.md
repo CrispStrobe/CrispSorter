@@ -3502,6 +3502,14 @@ a transfer without leaving the search/catalog workflow.
   - [ ] Add per-file newest-wins, keep-both, and manual resolution for sync
     pairs; newest-wins local push now skips remote-newer files using remote
     metadata, while keep-both/manual remain explicitly guarded.
+    - [x] Fail closed on ambiguous newest-wins metadata: unknown remote times
+      (including the local zero sentinel) and equal-time/different-size pairs
+      require review, and reject the whole
+      push plan before any transfer can advance its watermark. Existing-file
+      move/copy replacement now requires two known, strictly ordered times.
+      Source-bound decision tests cover missing/equal timestamps and explicit
+      overrides. Provider CAS, lookup-error/absence handling, retry/replay
+      preconditions and content-hash verification remain separate work.
   - [x] Manual cloud-backup conflicts now expose an explicit local preview
     action when the queued path is an absolute filesystem path; provider and
     relative remote paths remain guarded. ✅ 2026-08-01
