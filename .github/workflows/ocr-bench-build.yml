@@ -1,0 +1,221 @@
+name: OCR bench build
+
+# Builds the `crispsorter` CLI once (linux x86_64, release) and packages it twice for the
+# OCR benchmark (bench/ocr/): with the CPU CrispEmbed runtime and with the CUDA one. Both
+# tarballs go to the private HF dataset repo as bin/<git sha>/{cpu,cuda}.tar.gz (+ .sha256,
+# .build-info.json). Manual only: never runs on push.
+#
+# Why one compile for both variants: the binary links libcrispembed.so dynamically and the
+# backend lives in the CrispEmbed/ggml shared libraries (CUDA is picked at runtime via
+# ggml_backend_init_best), so the Rust side is identical; the CUDA variant swaps the .so set.
+# The only Rust code behind `crispembed-cuda` is a backend *label* in a GUI command.
+#
+# Built on Ubuntu 22.04 (glibc 2.35) so the binary also starts on Kaggle's image; the
+# BUILD-INFO.json records the glibc floor actually required by the binary + libraries.
+
+on:
+  workflow_dispatch:
+    inputs:
+      features:
+        description: 'Cargo features (OCR: crispembed + licence API, sidecars for System Tesseract, paddle-ocr for PaddleOCR; ocrs is always compiled)'
+        type: string
+        default: 'desktop,sidecars,crispembed,crispembed-license-api,paddle-ocr'
+      cuda_asset:
+        description: 'CrispEmbed CUDA archive: -cuda-bundled carries cudart/cublas (needed on driver-only hosts such as Kaggle)'
+        type: choice
+        options: [crispembed-linux-x86_64-cuda-bundled.tar.gz, crispembed-linux-x86_64-cuda.tar.gz]
+        default: crispembed-linux-x86_64-cuda-bundled.tar.gz
+      upload:
+        description: 'Upload the tarballs to the HF dataset repo'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ocr-bench-build-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  HF_REPO: cstr/crispsorter-ocr-bench
+  # Keep equal to .github/workflows/ci.yml (same tag/commit the app CI builds against).
+  CRISPEMBED_REPO: CrispStrobe/CrispEmbed
+  CRISPEMBED_REF: v0.17.19
+  CRISPEMBED_COMMIT: c364feb974b91e14cbf328c6949f3df36e89ce81
+  CRISPASR_REPO: CrispStrobe/CrispASR
+  CRISPASR_REF: v0.8.32
+  CRISPDOCX_REPO: CrispStrobe/crisp-docx
+  CRISPDOCX_REF: ddf7830d8d92e6b59b10874d144a59f163a256e1
+  PYTHONIOENCODING: utf-8
+  CARGO_TERM_COLOR: always
+  RUST_MIN_STACK: 16777216
+
+jobs:
+  build:
+    name: Build + package (cpu, cuda)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 240
+    env:
+      PROTOC: /usr/bin/protoc
+    steps:
+      - name: Free disk space (release build of the full tree)
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          df -h /
+
+      - name: Check out CrispSorter
+        uses: actions/checkout@v4
+        with:
+          path: repos/CrispSorter
+
+      - name: Check out sibling CrispEmbed (cargo path dep)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISPEMBED_REPO }}
+          ref: ${{ env.CRISPEMBED_COMMIT }}
+          path: repos/CrispEmbed
+
+      - name: Check out sibling CrispASR (cargo path dep)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISPASR_REPO }}
+          ref: ${{ env.CRISPASR_REF }}
+          path: repos/CrispASR
+
+      - name: Check out sibling crisp-docx (cargo path dep)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CRISPDOCX_REPO }}
+          ref: ${{ env.CRISPDOCX_REF }}
+          path: repos/crisp-docx
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf protobuf-compiler libssl-dev libfuse3-dev pkg-config binutils
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Download + verify CrispEmbed runtimes
+        working-directory: repos/CrispSorter
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="https://github.com/${{ env.CRISPEMBED_REPO }}/releases/download/${{ env.CRISPEMBED_REF }}"
+          mkdir -p ../ce-assets
+          curl -fL --retry 8 --retry-all-errors -o ../ce-assets/crispembed-linux-x86_64.tar.gz "$base/crispembed-linux-x86_64.tar.gz"
+          python3 scripts/verify_crispembed_bundle.py ../ce-assets/crispembed-linux-x86_64.tar.gz \
+            --asset crispembed-linux-x86_64.tar.gz --source ../CrispEmbed
+          cuda="${{ inputs.cuda_asset }}"
+          curl -fL --retry 8 --retry-all-errors -o "../ce-assets/$cuda" "$base/$cuda"
+          # The CPU archive is verified against scripts/crispembed-runtime-lock.json above. The CUDA
+          # archives are not in that lock (the app does not ship them); these are the GitHub
+          # release asset digests of v0.17.19. Bump together with CRISPEMBED_REF.
+          case "$cuda" in
+            crispembed-linux-x86_64-cuda-bundled.tar.gz) want=f403153964b5f4f2b7bf2f7396d16727a169d0ff1139e122d1776ff5ba4fe7f6 ;;
+            crispembed-linux-x86_64-cuda.tar.gz) want=0f07aa8bd8709b6f1e039d8f65c68aae63d2c3173bcfd28e5722fe7e1ced14b8 ;;
+            *) want="" ;;
+          esac
+          got=$(sha256sum "../ce-assets/$cuda" | cut -d' ' -f1)
+          echo "$cuda sha256 $got (pinned $want)"
+          [ -n "$want" ] && [ "$got" = "$want" ] || { echo "::error::CUDA archive digest mismatch"; exit 1; }
+          # Link against the CPU runtime (flat tarball; crispembed-sys looks in <sibling>/build/).
+          mkdir -p ../CrispEmbed/build
+          tar -xzf ../ce-assets/crispembed-linux-x86_64.tar.gz -C ../CrispEmbed/build
+          # Record the CUDA architectures the CUDA ggml backend actually carries (P100 = sm_60
+          # needs SASS sm_60 or PTX <= compute_60; ggml's default list has compute_50 PTX).
+          mkdir -p ../ce-cuda && tar -xzf "../ce-assets/$cuda" -C ../ce-cuda --wildcards '*libggml-cuda*'
+          f=$(find ../ce-cuda -name 'libggml-cuda.so*' -type f | head -1)
+          if command -v cuobjdump >/dev/null 2>&1; then cuobjdump --list-elf --list-ptx "$f" | sort -u | tee ../ce-assets/cuda-archs.txt
+          else strings -a "$f" | grep -oE '(sm|compute)_[0-9]{2,3}[a-z]?' | sort -u | tee ../ce-assets/cuda-archs.txt || true; fi
+
+      - name: Rust dependency cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: repos/CrispSorter -> target
+          key: ocr-bench-release
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: repos/CrispSorter/package-lock.json
+
+      - name: Build the frontend (tauri-build needs frontendDist)
+        working-directory: repos/CrispSorter
+        run: |
+          npm ci
+          npm run build
+          mkdir -p src-tauri/bin && touch src-tauri/bin/.gitkeep
+
+      - name: Build the CLI (release)
+        working-directory: repos/CrispSorter
+        run: |
+          df -h /
+          cargo build --release --bin crispsorter -p crispsorter --features "${{ inputs.features }}"
+          ls -la target/release/crispsorter
+          df -h /
+
+      - name: Smoke-test the binary (help only; no model downloads)
+        working-directory: repos/CrispSorter
+        run: |
+          LD_LIBRARY_PATH=../CrispEmbed/build target/release/crispsorter --help | head -40
+          LD_LIBRARY_PATH=../CrispEmbed/build target/release/crispsorter ocr --help | head -20
+          LD_LIBRARY_PATH=../CrispEmbed/build target/release/crispsorter -f json version
+
+      - name: Package cpu + cuda
+        working-directory: repos/CrispSorter
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha=$(git rev-parse HEAD)
+          echo "GIT_SHA=$sha" >> "$GITHUB_ENV"
+          common=(--binary target/release/crispsorter --git-sha "$sha" --git-ref "${{ github.ref }}"
+                  --features "${{ inputs.features }}" --crispembed-ref "${{ env.CRISPEMBED_REF }}"
+                  --crispembed-commit "${{ env.CRISPEMBED_COMMIT }}" --out ../dist)
+          python3 bench/ocr/package_build.py "${common[@]}" --variant cpu \
+            --crispembed-archive ../ce-assets/crispembed-linux-x86_64.tar.gz --crispembed-asset crispembed-linux-x86_64.tar.gz
+          python3 bench/ocr/package_build.py "${common[@]}" --variant cuda \
+            --crispembed-archive "../ce-assets/${{ inputs.cuda_asset }}" --crispembed-asset "${{ inputs.cuda_asset }}"
+          cp ../ce-assets/cuda-archs.txt ../dist/cuda-archs.txt
+          ls -la ../dist
+          {
+            echo "### OCR bench build \`$sha\`"
+            echo '```'; cat ../dist/*.sha256; echo '```'
+            echo "CUDA archs found in libggml-cuda: $(tr '\n' ' ' < ../dist/cuda-archs.txt)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload to HF (bin/<sha>/)
+        if: inputs.upload
+        working-directory: repos/CrispSorter
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          [ -n "$HF_TOKEN" ] || { echo "::error::repository secret HF_TOKEN is not set"; exit 1; }
+          python3 -m pip install --quiet 'huggingface_hub>=0.25'
+          python3 - <<'EOF'
+          import os
+          from huggingface_hub import HfApi
+          api = HfApi(token=os.environ["HF_TOKEN"])
+          repo, sha = os.environ["HF_REPO"], os.environ["GIT_SHA"]
+          api.create_repo(repo, repo_type="dataset", private=True, exist_ok=True)
+          for name in sorted(os.listdir("../dist")):
+              api.upload_file(path_or_fileobj=f"../dist/{name}", path_in_repo=f"bin/{sha}/{name}", repo_id=repo,
+                              repo_type="dataset", commit_message=f"ocr-bench build {sha[:12]}: {name}")
+              print("uploaded", f"bin/{sha}/{name}")
+          EOF
+          echo "Binary sha for the bench workflows / Kaggle kernel: $GIT_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the tarballs as a workflow artifact too
+        uses: actions/upload-artifact@v4
+        with:
+          name: ocr-bench-build-${{ env.GIT_SHA }}
+          path: |
+            repos/dist/*.sha256
+            repos/dist/*.build-info.json
+            repos/dist/cuda-archs.txt
+          retention-days: 14

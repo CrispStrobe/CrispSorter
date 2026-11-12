@@ -1,0 +1,152 @@
+name: OCR bench (CPU)
+
+# CPU arm of the OCR benchmark (bench/ocr/README.md). A plan job turns engines.json into a
+# matrix (shared jobs for the fast engines, page shards for the heavy vision models); each
+# job downloads the CPU build from the HF dataset repo and runs bench/ocr/runner.py, which
+# streams one JSON per finished unit to results/<run_id>/ in that repo. Units already
+# stored are skipped, so re-dispatching with the SAME run_id resumes a run whose jobs hit
+# the time limit, crashed or were cancelled. Manual only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Run id (results/<run_id>/ in the HF repo). Reuse it to resume.'
+        type: string
+        required: true
+      binary_sha:
+        description: 'Full git sha of the build (bin/<sha>/cpu.tar.gz, printed by "OCR bench build")'
+        type: string
+        required: true
+      engines:
+        description: 'default | all | comma list of engine ids | group:<name> (bench/ocr/engines.json)'
+        type: string
+        default: default
+      corpus:
+        description: 'Frozen corpus'
+        type: choice
+        options: [gold-v1, real-scans-v2]
+        default: gold-v1
+      pages:
+        description: 'all | comma list of page ids'
+        type: string
+        default: all
+      max_parallel:
+        description: 'Concurrent jobs (each commits to the HF repo about every upload_interval seconds)'
+        type: string
+        default: '4'
+      budget_hours:
+        description: 'Per job: stop starting units that could end after this many hours (job limit is 6 h)'
+        type: string
+        default: '5.4'
+      upload_interval:
+        description: 'Seconds between HF commits per job (Hub commit rate limits apply per repo)'
+        type: string
+        default: '120'
+
+permissions:
+  contents: read
+
+# One dispatch per run id at a time; a second dispatch with the same id waits and then resumes.
+concurrency:
+  group: ocr-bench-cpu-${{ inputs.run_id }}
+  cancel-in-progress: false
+
+env:
+  HF_REPO: cstr/crispsorter-ocr-bench
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: bench/ocr
+      - id: plan
+        env:
+          ENGINES: ${{ inputs.engines }}
+          RUN_ID: ${{ inputs.run_id }}
+          BINARY_SHA: ${{ inputs.binary_sha }}
+        run: |
+          [[ "$RUN_ID" =~ ^[A-Za-z0-9._-]{1,128}$ ]] || { echo "::error::bad run_id"; exit 1; }
+          [[ "$BINARY_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::binary_sha must be a full 40-hex sha"; exit 1; }
+          m=$(python3 bench/ocr/runner.py plan --device cpu --engines "$ENGINES")
+          echo "$m" | python3 -m json.tool
+          echo "matrix=$m" >> "$GITHUB_OUTPUT"
+
+  bench:
+    needs: plan
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 355
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(inputs.max_parallel) }}
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - name: Free disk space (vision models are several GB each)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          df -h / && free -g && nproc
+
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: bench/ocr
+
+      - name: Install Python deps + System Tesseract language data
+        run: |
+          python3 -m pip install --quiet 'huggingface_hub>=0.25' 'rapidfuzz>=3' 'pyarrow>=14'
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq tesseract-ocr tesseract-ocr-eng tesseract-ocr-deu tesseract-ocr-fra tesseract-ocr-frk
+          tesseract --version | head -1; tesseract --list-langs
+
+      - name: Fetch the CPU build
+        id: build
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          BINARY_SHA: ${{ inputs.binary_sha }}
+        run: |
+          [ -n "$HF_TOKEN" ] || { echo "::error::repository secret HF_TOKEN is not set"; exit 1; }
+          out=$(python3 bench/ocr/fetch_build.py --repo "$HF_REPO" --sha "$BINARY_SHA" --variant cpu --dest "$RUNNER_TEMP/build" --apt)
+          echo "$out"
+          echo "binary=$(echo "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["binary"])')" >> "$GITHUB_OUTPUT"
+
+      - name: Run benchmark units (resumable)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          RUN_ID: ${{ inputs.run_id }}
+          CORPUS: ${{ inputs.corpus }}
+          PAGES: ${{ inputs.pages }}
+          ENGINES: ${{ matrix.engines }}
+          SHARD: ${{ matrix.shard }}
+          BUDGET_HOURS: ${{ inputs.budget_hours }}
+          UPLOAD_INTERVAL: ${{ inputs.upload_interval }}
+        run: |
+          budget=$(python3 -c 'import os; print(int(float(os.environ["BUDGET_HOURS"]) * 3600))')
+          python3 bench/ocr/runner.py run --binary "${{ steps.build.outputs.binary }}" --device cpu \
+            --run-id "$RUN_ID" --store "hf:$HF_REPO" --corpus "$CORPUS" --pages "$PAGES" \
+            --engines "$ENGINES" --shard "$SHARD" --budget-seconds "$budget" \
+            --upload-interval "$UPLOAD_INTERVAL" --work-dir "$RUNNER_TEMP/work" --purge-models
+
+      - name: Disk after run
+        if: always()
+        run: df -h /
+
+  summarize:
+    needs: [plan, bench]
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: bench/ocr
+      - env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          python3 -m pip install --quiet 'huggingface_hub>=0.25'
+          python3 bench/ocr/summarize.py --run-id "$RUN_ID" --store "hf:$HF_REPO" --out "$RUNNER_TEMP/summary" | tee -a "$GITHUB_STEP_SUMMARY"
