@@ -20,9 +20,9 @@ on:
         options: [standard, ocr]
         default: standard
       platform:
-        description: 'Build all platforms, retry one desktop, or prepare one signed OCR draft as an unqualified workflow artifact. OCR draft selectors require publish=false and mac_appstore=false; they never upload to ASC or a release.'
+        description: 'Build all platforms, retry one desktop, upload a current-source IPA without rebuilding, or prepare an unpublished OCR artifact. Upload-only and OCR draft selectors require publish=false and mac_appstore=false.'
         type: choice
-        options: [all, windows, macos, testflight, testflight_resume, certificate_audit, android_ocr_draft, ios_ocr_draft]
+        options: [all, windows, macos, testflight, testflight_resume, testflight_current, certificate_audit, android_ocr_draft, ios_ocr_draft]
         default: all
 
 # ── Sibling-repo version pins (single source of truth) ──────────────
@@ -107,14 +107,14 @@ jobs:
           fi
 
   testflight-existing:
-    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.platform == 'testflight' || inputs.platform == 'testflight_resume') && !inputs.publish && !inputs.mac_appstore }}
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.platform == 'testflight_current' || ((inputs.platform == 'testflight' || inputs.platform == 'testflight_resume') && !inputs.publish && !inputs.mac_appstore)) }}
     permissions:
       contents: write # Draft releases require write access; this job never publishes.
     runs-on: macos-15
     timeout-minutes: 60
     env:
-      # The one qualified IPA this job may upload: built once by a publish=false
-      # release run, downloaded from its draft release and hash-pinned here.
+      # Legacy upload/resume modes retain their qualified IPA pin. The current
+      # selector replaces these values only after exact draft/receipt validation.
       IPA_VERSION: '0.15.0'
       IPA_SHA256: '36856e33752836d0e51d327b09431afd34c4bc18da1f9f1e19bc60265ef017fa'
       IPA_FILE: CrispSorter_0.15.0_ios-arm64.ipa
@@ -125,12 +125,25 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Select the exact current-source draft IPA
+        if: inputs.platform == 'testflight_current'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 scripts/prepare_testflight_current.py \
+            --repo "$GITHUB_REPOSITORY" --source "$(git rev-parse HEAD)" \
+            --output "$RUNNER_TEMP/testflight-current" \
+            --publish '${{ inputs.publish }}' --mac-appstore '${{ inputs.mac_appstore }}' \
+            --github-env "$GITHUB_ENV"
       - name: Download and verify the qualified IPA
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          gh release download "v$IPA_VERSION" --repo "$GITHUB_REPOSITORY" --pattern "$IPA_FILE"
+          if [ '${{ inputs.platform }}' != testflight_current ]; then
+            gh release download "v$IPA_VERSION" --repo "$GITHUB_REPOSITORY" --pattern "$IPA_FILE"
+          fi
           echo "$IPA_SHA256  $IPA_FILE" | shasum -a 256 -c -
           python3 scripts/check_testflight_ipa.py --ipa "$IPA_FILE" --version "$IPA_VERSION" --sha256 "$IPA_SHA256"
           unzip -q "$IPA_FILE" -d "$RUNNER_TEMP/ipa"
@@ -142,7 +155,7 @@ jobs:
           BUILD=$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' "$APP/Info.plist")
           echo "BUILD_NUMBER=$BUILD" >> "$GITHUB_ENV"
       - name: Upload to App Store Connect
-        if: inputs.platform == 'testflight'
+        if: inputs.platform == 'testflight' || inputs.platform == 'testflight_current'
         env:
           ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
@@ -153,7 +166,7 @@ jobs:
           mkdir -p "$HOME/.appstoreconnect/private_keys"
           printf '%s' "$ASC_KEY_P8_BASE64" | base64 --decode > "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
           chmod 600 "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
-          echo "UPLOADED_AFTER=$(date -u -v-1M +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_ENV"
+          echo "UPLOADED_AFTER=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_ENV"
           xcrun altool --upload-package "$IPA_FILE" --type ios \
             --apple-id "$ASC_APP_ID" --bundle-id com.crispstrobe.crispsorter \
             --bundle-version "$BUILD_NUMBER" --bundle-short-version-string "$IPA_VERSION" \
@@ -1807,8 +1820,8 @@ jobs:
     # skipped it entirely, so a tagged release produced no App Store build
     # and therefore nothing for the macOS TestFlight step to distribute —
     # silently, since a skipped job is not a failed one.
-    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mac_appstore && inputs.platform != 'android_ocr_draft' && inputs.platform != 'ios_ocr_draft')
-            || startsWith(github.ref, 'refs/tags/v') }}
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mac_appstore && inputs.platform != 'testflight_current' && inputs.platform != 'android_ocr_draft' && inputs.platform != 'ios_ocr_draft')
+            || (github.event_name != 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v')) }}
     permissions:
       contents: write
     runs-on: macos-15

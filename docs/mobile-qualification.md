@@ -405,6 +405,26 @@ Connect. These archive checks supplement signing and source-bound receipts;
 they do not prove that an artifact was built from a given commit or executed on
 a device, and they introduce no approval requirement.
 
+The upload-only `testflight_current` selector consumes the existing standard IPA
+without rebuilding or publishing a release. Run it from the same source ref as
+the completed draft build:
+
+```sh
+gh workflow run release.yml --repo CrispStrobe/CrispSorter --ref <same-source-ref> \
+  -f platform=testflight_current -f mobile_profile=standard \
+  -f publish=false -f mac_appstore=false
+```
+
+It checks that the current version's unpublished draft resolves to the exact
+checkout SHA, then checks its standard iOS receipt's source/version/hash and the
+downloaded IPA's bytes and identity. macOS verifies the actual extracted code
+signature before upload. The actual IPA supplies the build number, and the UTC
+cutoff recorded before upload binds internal distribution to that fresh build.
+Public release and macOS App Store jobs cannot run under this selector; invalid
+publication flags fail before artifact selection. There is no new consent gate.
+If the source ref advances after the draft build, source matching rejects the
+old receipt. Legacy upload/resume selectors retain their separate old IPA pin.
+
 Current-source completion still requires new binaries for Linux, Windows, macOS,
 Android and iOS, their matching source/version/hash receipts and required signing
 evidence, and a newly uploaded iOS build selected by its exact build number and
