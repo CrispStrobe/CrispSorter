@@ -181,6 +181,13 @@ at the crisp-cloud-rs revision `src-tauri/Cargo.toml` pins (resolved by
 `scripts/crisp_cloud_rev.py`), so it tests exactly the Filen/Internxt crate
 sources Sorter builds against the retained Dart SDKs.
 
+Before the switch to upstream dependencies, a focused hosted CPU run at Sorter
+source `8b21ce57` with its then-vendored sources and upstream `121bfa66` passed
+131 cases and 363 cross-decryptions with zero failures and ten reviewed gaps
+([receipt](../tests/results/provider-conformance/remote-20261112.json)). The merged
+upstream pin has an identical source tree. This historical vendor result does
+not establish new Windows or macOS application behavior.
+
 The same independent fixtures run through real package APIs and compiled Dart
 CLI probes with software and native AES backends. Checks include password/key
 derivation, metadata, empty and boundary-sized chunks, CTR streaming and ranges,

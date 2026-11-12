@@ -1,0 +1,29 @@
+{
+  "schema": "crispsorter-ocr-bench-pins-v1",
+  "crispembed_repo": "CrispStrobe/CrispEmbed",
+  "crispembed_commit": "c364feb974b91e14cbf328c6949f3df36e89ce81",
+  "crispembed_commit_note": "Tag v0.17.19 = the CRISPEMBED_COMMIT pinned in .github/workflows/ci.yml and scripts/crispembed-runtime-lock.json.",
+  "vendored": {
+    "crispembed_score.py": {
+      "upstream_path": "tools/kaggle/ocr-real-scans/score.py",
+      "sha256": "9cc12f95544131cfe50e1ad7d91498e6c8560cd4ce2fce1fa63a25dd92edf7bc"
+    },
+    "to_text_manifest.py": {
+      "upstream_path": "tools/ocr-gold-corpus/to_text_manifest.py",
+      "sha256": "16ae35c1c8f3dd806fe38db67af19ba00bb9614259c81adf54ef700ca53dae00"
+    }
+  },
+  "manifests": {
+    "real-scans-v2": {
+      "upstream_path": "docs/ocr-real-scans-v2.json",
+      "sha256": "df8681e3835d7cc5905ee50c8ace18fcb4f97230b2219ce208d4a5dd325c70e3",
+      "pages": 20
+    },
+    "gold-v1": {
+      "upstream_path": "docs/ocr-gold-corpus-v1.json",
+      "sha256": "1da42d96eed25aac6215fce60c5bcd05c8a25bbaae710081f4963f4e37fd1ed5",
+      "pages": 57,
+      "derived_with": "to_text_manifest.py (needs real-scans-v2 for the frozen max_tokens caps)"
+    }
+  }
+}
