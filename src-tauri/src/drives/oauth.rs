@@ -277,8 +277,16 @@ pub fn start(drive_id: String, provider: Provider, client_id: String) -> Result<
         let Ok((mut stream, _)) = listener.accept() else {
             return;
         };
+        // Started only once the browser calls back, so an abandoned login
+        // never leaves a dangling receipt. Codes, tokens and URLs stay out.
+        let log = crate::operation_log::OperationLog::start("storage.drive.oauth_callback",
+            serde_json::json!({"backend": match provider {
+                Provider::Google => "google_drive",
+                Provider::Microsoft => "onedrive",
+            }}));
         let mut request = [0u8; 8192];
         let Ok(size) = stream.read(&mut request) else {
+            log.fail("oauth_callback_unreadable");
             return;
         };
         let line = String::from_utf8_lossy(&request[..size]);
@@ -288,27 +296,41 @@ pub fn start(drive_id: String, provider: Provider, client_id: String) -> Result<
             .and_then(|line| line.strip_prefix("GET "))
             .and_then(|line| line.split_whitespace().next())
         else {
+            log.fail("oauth_callback_malformed");
             return;
         };
         let query = target.split('?').nth(1).unwrap_or("");
         let message = match parse_callback_query(query)
             .and_then(|callback| validated_callback_code(&callback, &state).map(str::to_owned))
         {
-            Ok(code) => match exchange(
-                provider,
-                &client_id,
-                &callback_redirect_uri,
-                &verifier,
-                &code,
-                &drive_id,
-            ) {
-                Ok(()) => "Authentication completed. You can close this window.",
-                Err(_) => "Authentication failed. You can close this window.",
-            },
+            Ok(code) => {
+                log.step("token_exchange", serde_json::Value::Null);
+                match exchange(
+                    provider,
+                    &client_id,
+                    &callback_redirect_uri,
+                    &verifier,
+                    &code,
+                    &drive_id,
+                ) {
+                    Ok(()) => {
+                        log.succeed(serde_json::Value::Null);
+                        "Authentication completed. You can close this window."
+                    }
+                    Err(_) => {
+                        log.fail("oauth_exchange_failed");
+                        "Authentication failed. You can close this window."
+                    }
+                }
+            }
             Err(error) if error.to_string().contains("did not contain a code") => {
+                log.fail("oauth_code_missing");
                 "Authentication did not return a code. You can close this window."
             }
-            Err(_) => "Authentication was cancelled or rejected. You can close this window.",
+            Err(_) => {
+                log.cancel();
+                "Authentication was cancelled or rejected. You can close this window."
+            }
         };
         let body = format!("<html><body><p>{message}</p></body></html>");
         let response = format!("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);

@@ -72,7 +72,7 @@ pub fn safe_context(value: Value) -> Map<String, Value> {
         "language" => value.as_str().is_some_and(language),
         "format" => value.as_str().is_some_and(|s| ["text", "txt", "markdown", "md", "html", "json", "csv", "pdf", "pdfa", "hocr", "alto", "docx", "xlsx"].contains(&s)),
         "surface" => value.as_str().is_some_and(|s| ["gui", "cli", "background", "worker", "native", "browser"].contains(&s)),
-        "backend" | "protocol" => value.as_str().is_some_and(|s| ["native", "browser", "local", "remote", "smb", "webdav", "s3", "filen", "internxt", "google_drive", "onedrive", "cloud_backup", "memory"].contains(&s)),
+        "backend" | "protocol" => value.as_str().is_some_and(|s| ["native", "browser", "local", "remote", "smb", "webdav", "s3", "filen", "internxt", "google_drive", "onedrive", "cloud_backup", "memory", "sftp"].contains(&s)),
         "kind" => value.as_str().is_some_and(|s| ["image", "pdf", "archive", "mail", "presentation", "document", "table", "fields", "formula", "checkbox", "text", "copy", "move", "script"].contains(&s)),
         "mode" => value.as_str().is_some_and(mode),
         "model_kind" => value.as_str().is_some_and(|s| ["registry", "custom", "default"].contains(&s)),
