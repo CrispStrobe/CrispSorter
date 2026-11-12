@@ -871,7 +871,7 @@ async function main() {
           provenance: { syntheticNativeSmoke: true, automatedEdit: '2048 -> 2049; not human reviewed' },
         }],
       }, 90_000);
-      assert.equal(exported.saved_path, exportPath);
+      assert.equal(canonicalPrivateAlias(exported.saved_path), canonicalPrivateAlias(exportPath));
       assert.equal(exported.pages, 1);
       assert.equal(exported.format, 'pdf');
       const bytes = await privateBytes(exportPath);
@@ -999,7 +999,7 @@ async function main() {
         await fs.writeFile(artifactPath, bytes, { flag: 'wx' });
         artifactCaptured = true;
         receipt.word.artifact = { file: path.basename(artifactPath), sha256: digest(bytes), bytes: bytes.length };
-        assert.equal(exported.saved_path, exportPath);
+        assert.equal(canonicalPrivateAlias(exported.saved_path), canonicalPrivateAlias(exportPath));
         assert.equal(exported.pages, 1);
         assert.equal(exported.format, 'docx');
         assert.equal(exported.bytes, bytes.length);

@@ -188,3 +188,12 @@ complete text, raw regions, CER/WER and latency on identical frozen inputs
 before any default promotion. Keep this app gate off when qualifying a native
 gutter change so the native engine still receives the unchanged whole page;
 an app-crop arm changes recognition inputs and must be reported separately.
+
+The subsequent rebuilt emulator run used the earlier experimental-crop
+revision. It passed the named English two-column threshold and reached repeated
+recognition, then failed a PDF export path comparison: the saved path and
+requested path used different device-verified aliases of the same sandbox.
+The harness now compares their verified canonical identities and still checks
+the exported file itself. Rerun the retained experimental APK to continue
+export and recovery qualification. This is evidence for that opt-in candidate,
+not proof of complete text coverage or of current default-off behavior.
