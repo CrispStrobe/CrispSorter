@@ -3300,11 +3300,23 @@ a transfer without leaving the search/catalog workflow.
     contract/native adapters/UI 2026-08-02. Native Filen/Internxt path-only
     restore was subsequently disabled: path-only audit records cannot prove
     trash identity, so these adapters advertise `reversible_trash = false` and
-    duplicate deletion is blocked. Durable provider/account/UUID/kind/original-
+    path-only duplicate deletion is blocked. Durable provider/account/UUID/kind/original-
     destination delete receipts and identity-validated restore remain required;
     see `docs/cloud-provider-parity.md`. The duplicate workflow now also blocks
     Google trash and restore from historical path-only records until such
     receipts exist; explicit provider path-based operations remain separate.
+    Internxt now has a separately capability-gated durable object-receipt slice:
+    private pre-delete persistence, endpoint/account/root/UUID/type/name/parent
+    binding, single-use restore claims and read-only reconciliation of uncertain
+    outcomes. The app pins merged upstream `9b57beee7ac2e6ae9aaa15a1332a92bcfb5e1460`,
+    including the required filename and one-shot transport corrections. Receipt
+    mutations call `trash_once`/`restore_from_trash_once`, bypassing legacy retry
+    behavior; the merged SDK tree passed 11 real HTTP and four configuration
+    regressions. Both actual native app adapters compile against that SDK; locked native-feature metadata, the
+    source-bound receipt harness and focused frontend regressions pass. Legacy
+    path-only records and other providers remain blocked. Full Tauri, live
+    accounts, physical-crash and Windows/mobile durability qualification remain
+    outstanding; see `docs/cloud-provider-parity.md` for the exact scope.
     Restore actions are retained as
     explicit mutation-audit events instead of erasing the original trash
     record.

@@ -34,7 +34,7 @@ fn main() {
     for name in names.into_iter().chain(functions) {
         assert!(selected.iter().any(|selected| selected == name), "production storage item missing: {name}");
     }
-    for module in ["materialize", "mounted_read", "read_cache"] {
+    for module in ["materialize", "mounted_read", "read_cache", "trash_receipts"] {
         let path = root.join(format!("drives/{module}.rs")).canonicalize().unwrap();
         println!("cargo:rerun-if-changed={}", path.display());
         generated.push_str(&format!("#[path={:?}] pub(crate) mod {module};", path));

@@ -24,6 +24,7 @@ export type DriveCapabilities = {
     share_links?: boolean;
     versions?: boolean;
     reversible_trash?: boolean;
+    trash_receipts?: boolean;
 };
 
 export type DriveBrowserAction = 'create_dir' | 'rename' | 'move' | 'copy' | 'delete';

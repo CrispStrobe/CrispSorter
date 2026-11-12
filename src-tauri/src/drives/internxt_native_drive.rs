@@ -353,6 +353,12 @@ impl CloudDrive for NativeInternxtDrive {
         Err(anyhow!("Native trash restore requires a durable object-ID receipt; restore using the provider client"))
     }
 
+    fn receipt_trash(&self) -> Option<&dyn super::trash_receipts::ReceiptTrash> {
+        // The pinned SDK provides the tested one-shot receipt transport.
+        // Legacy path-based restore remains separately disabled.
+        Some(self)
+    }
+
     fn capabilities(&self) -> DriveCapabilities {
         DriveCapabilities {
             create_dir: true,
@@ -365,6 +371,7 @@ impl CloudDrive for NativeInternxtDrive {
             // The provider has a UUID restore API, but the app's path-only
             // delete/restore contract cannot safely identify its trash item.
             reversible_trash: false,
+            trash_receipts: true,
             ..DriveCapabilities::basic()
         }
     }
@@ -490,6 +497,103 @@ impl CloudDrive for NativeInternxtDrive {
 
     fn write_file_from_reader(&self, path: &Path, reader: &mut dyn Read, size: u64) -> Result<()> {
         self.write_with(path, size, reader)
+    }
+}
+
+fn receipt_account(session: &InternxtSession) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    anyhow::ensure!(!session.user_id.is_empty() && !session.root_folder_id.is_empty()
+        && !session.drive_api_url.is_empty(), "stable provider account identity is unavailable");
+    let identity = serde_json::to_vec(&("internxt", session.drive_api_url.trim_end_matches('/'),
+        &session.user_id, &session.root_folder_id))?;
+    Ok(format!("{:x}", Sha256::digest(identity)))
+}
+
+/// Resolve every folder freshly and reject path ambiguity before binding UUIDs.
+fn receipt_folder(client: &InternxtNativeClient, session: &InternxtSession, path: &Path) -> Result<String> {
+    let mut parent = session.root_folder_id.clone();
+    for component in path.components() {
+        let name = match component {
+            std::path::Component::RootDir => continue,
+            std::path::Component::Normal(name) => name.to_string_lossy(),
+            _ => return Err(anyhow!("receipt paths require normal provider path segments")),
+        };
+        let items = client.list_folder(&parent)?;
+        let mut candidates = items.iter().filter(|item| item.name == name);
+        let folder = candidates.next().ok_or_else(|| anyhow!("original folder is missing"))?;
+        anyhow::ensure!(candidates.next().is_none() && folder.is_dir && !folder.uuid.is_empty(),
+            "original folder identity is ambiguous");
+        parent = folder.uuid.clone();
+    }
+    Ok(parent)
+}
+
+fn receipt_check(session: &InternxtSession, identity: &super::trash_receipts::TrashIdentity) -> Result<()> {
+    anyhow::ensure!(identity.provider == "internxt" && identity.account == receipt_account(session)?,
+        "trash receipt belongs to another provider or account");
+    Ok(())
+}
+
+impl super::trash_receipts::ReceiptTrash for NativeInternxtDrive {
+    fn prepare(&self, path: &Path) -> Result<super::trash_receipts::TrashIdentity> {
+        self.with_client(None, |session, client| {
+            let account = receipt_account(session)?;
+            let parent = path.parent().ok_or_else(|| anyhow!("original parent is required"))?;
+            let name = path.file_name().ok_or_else(|| anyhow!("original filename is required"))?.to_string_lossy();
+            let parent_id = receipt_folder(client, session, parent)?;
+            let items = client.list_folder(&parent_id)?;
+            let mut candidates = items.iter().filter(|item| item.name == name);
+            let item = candidates.next().ok_or_else(|| anyhow!("trash source is missing"))?;
+            anyhow::ensure!(candidates.next().is_none() && !item.uuid.is_empty(), "trash source identity is ambiguous");
+            Ok(super::trash_receipts::TrashIdentity { provider: "internxt".into(), account,
+                object_id: item.uuid.clone(), is_dir: item.is_dir, name: item.name.clone(),
+                original_path: path.to_string_lossy().into_owned(), parent_id })
+        })
+    }
+
+    fn delete_exact(&self, identity: &super::trash_receipts::TrashIdentity) -> Result<()> {
+        self.with_client(None, |session, client| {
+            receipt_check(session, identity)?;
+            let path = Path::new(&identity.original_path);
+            let parent = receipt_folder(client, session, path.parent().ok_or_else(|| anyhow!("missing parent"))?)?;
+            anyhow::ensure!(parent == identity.parent_id, "original destination identity changed");
+            let items = client.list_folder(&parent)?;
+            super::trash_receipts::exact_candidate(identity, &items, |item| (&item.uuid, item.is_dir, &item.name))?;
+            client.trash_once(&identity.object_id, if identity.is_dir { "folder" } else { "file" })
+        })
+    }
+
+    fn observe(&self, identity: &super::trash_receipts::TrashIdentity) -> Result<super::trash_receipts::Observation> {
+        self.with_client(None, |session, client| {
+            receipt_check(session, identity)?;
+            let parent = receipt_folder(client, session, Path::new(&identity.original_path).parent().ok_or_else(|| anyhow!("missing parent"))?)?;
+            anyhow::ensure!(parent == identity.parent_id, "original destination identity changed");
+            let live = client.list_folder(&parent)?;
+            let trash = client.list_trash(None, 50)?;
+            let in_live = live.iter().any(|item| item.uuid == identity.object_id);
+            let in_trash = trash.iter().any(|item| item.uuid == identity.object_id);
+            anyhow::ensure!(!(in_live && in_trash), "provider object state is ambiguous");
+            if in_live {
+                super::trash_receipts::exact_candidate(identity, &live, |item| (&item.uuid, item.is_dir, &item.name))?;
+                return Ok(super::trash_receipts::Observation::Original);
+            }
+            if in_trash {
+                super::trash_receipts::exact_candidate(identity, &trash, |item| (&item.uuid, item.is_dir, &item.name))?;
+                // Do not restore beside a replacement sharing the original name.
+                anyhow::ensure!(!live.iter().any(|item| item.name == identity.name), "original destination now contains another object");
+                return Ok(super::trash_receipts::Observation::Trashed);
+            }
+            Ok(super::trash_receipts::Observation::Unknown)
+        })
+    }
+
+    fn restore_exact(&self, identity: &super::trash_receipts::TrashIdentity) -> Result<()> {
+        use super::trash_receipts::Observation;
+        anyhow::ensure!(self.observe(identity)? == Observation::Trashed, "exact deleted object is not in trash");
+        self.with_client(None, |session, client| {
+            receipt_check(session, identity)?;
+            client.restore_from_trash_once(&identity.object_id, if identity.is_dir { "folders" } else { "files" }, &identity.parent_id)
+        })
     }
 }
 

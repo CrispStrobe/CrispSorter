@@ -54,6 +54,9 @@ pub struct DriveCapabilities {
     /// This is separate from `delete`: WebDAV DELETE and local filesystem
     /// removal are not recoverable operations.
     pub reversible_trash: bool,
+    /// Durable object-bound duplicate trash, separate from path-based restore.
+    #[serde(default)]
+    pub trash_receipts: bool,
 }
 
 impl DriveCapabilities {
@@ -74,6 +77,7 @@ impl DriveCapabilities {
             share_links: false,
             versions: false,
             reversible_trash: false,
+            trash_receipts: false,
         }
     }
 }
@@ -171,6 +175,9 @@ pub trait CloudDrive: Send + Sync {
             self.drive_type().label()
         ))
     }
+
+    /// Optional exact-object trash contract; legacy path-only backends stay disabled.
+    fn receipt_trash(&self) -> Option<&dyn crate::drives::trash_receipts::ReceiptTrash> { None }
 
     /// File/directory metadata.
     fn stat(&self, path: &Path) -> Result<FileStat>;

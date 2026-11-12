@@ -24,6 +24,7 @@
     import { completeDuplicateMove } from '$lib/drives/duplicateMove';
     import { cloudDrivePanel, type ContextPanel, type DuplicateDecision } from '$lib/drives/panels';
     import { requestBrowserContext, subscribeBrowserContext } from '$lib/drives/browserContext';
+    import { loadTrashContext, trashWithReceipt, restoreTrashReceipt, recheckTrashReceipt, type TrashReceipt } from '$lib/drives/trashReceipts';
     import { createVersionSelection, emptyVersionState, type VersionState, type VersionTarget } from '$lib/drives/versionSelection';
 
     type Drive = { id: string; label: string; kind: string };
@@ -41,6 +42,10 @@
     let selected = $state<string | null>(null);
     // Preserve published row identity; the controller replaces whole snapshots.
     let versionState = $state.raw<VersionState<FileStat, CloudVersion, LocalVersion>>(emptyVersionState());
+    let trashReceipts = $state<TrashReceipt[]>([]);
+    let receiptCapabilities = $state<Record<string, boolean>>({});
+    let trashContextGeneration = 0;
+
     let duplicateMutationBusy = $state<string | null>(null);
     let driveSearchQuery = $state('');
     let driveSearchContent = $state(false);
@@ -224,6 +229,56 @@
             saveDuplicateMutationAudit(duplicateMutationAudit);
         },
     };
+    async function loadDuplicateTrash(groupId: string, items: { path: string }[]) {
+        const generation = ++trashContextGeneration;
+        const driveIds = items.flatMap((item) => { const parts = duplicateDriveParts(item.path); return parts ? [parts.driveId] : []; });
+        try {
+            const context = await loadTrashContext(groupId, driveIds);
+            if (generation !== trashContextGeneration || rightPanel?.source.kind !== 'DuplicateGroup' || rightPanel.source.groupId !== groupId) return;
+            trashReceipts = context.receipts;
+            receiptCapabilities = context.capabilities;
+        } catch (e) {
+            if (generation === trashContextGeneration) { receiptCapabilities = {}; error = `Could not load durable trash receipts: ${String(e)}`; }
+        }
+    }
+
+    async function trashCloudDuplicate(itemPath: string) {
+        const parts = duplicateDriveParts(itemPath);
+        const panel = rightPanel?.source.kind === 'DuplicateGroup' ? rightPanel.source : null;
+        if (!parts || !panel || duplicateMutationBusy || receiptCapabilities[parts.driveId] !== true) return;
+        const groupId = panel.groupId;
+        if (!window.confirm('Move this duplicate to provider trash with a durable object receipt?')) return;
+        duplicateMutationBusy = itemPath;
+        try {
+            const receipt = await trashWithReceipt(parts.driveId, groupId, parts.path);
+            if (rightPanel?.source.kind === 'DuplicateGroup' && rightPanel.source.groupId === groupId) {
+                rightPanel = { ...rightPanel, source: { ...rightPanel.source, items: rightPanel.source.items.filter((item) => item.path !== itemPath) } };
+            }
+            duplicateMutationAudit = [...duplicateMutationAudit, { groupId, driveId: parts.driveId,
+                operation: 'delete' as const, from: receipt.path, to: null, at: Date.now() }].slice(-200);
+            saveDuplicateMutationAudit(duplicateMutationAudit);
+        } catch (e) { error = `Could not confirm duplicate trash: ${String(e)}`; }
+        finally {
+            duplicateMutationBusy = null;
+            if (rightPanel?.source.kind === 'DuplicateGroup' && rightPanel.source.groupId === groupId) await loadDuplicateTrash(groupId, rightPanel.source.items);
+        }
+    }
+
+    async function updateTrashReceipt(receipt: TrashReceipt, restore: boolean) {
+        if (duplicateMutationBusy) return;
+        if (restore && !window.confirm(`Restore “${receipt.path}” to its recorded provider folder?`)) return;
+        duplicateMutationBusy = receipt.id;
+        try {
+            const updated = restore ? await restoreTrashReceipt(receipt) : await recheckTrashReceipt(receipt);
+            if (rightPanel?.source.kind === 'DuplicateGroup' && rightPanel.source.groupId === receipt.group_id) {
+                trashReceipts = trashReceipts.map((item) => item.id === updated.id ? updated : item);
+            }
+        } catch (e) { error = `Could not ${restore ? 'restore' : 'recheck'} receipt: ${String(e)}`; }
+        finally {
+            duplicateMutationBusy = null;
+            if (rightPanel?.source.kind === 'DuplicateGroup' && rightPanel.source.groupId === receipt.group_id) await loadDuplicateTrash(receipt.group_id, rightPanel.source.items);
+        }
+    }
 
     async function moveCloudDuplicate(itemPath: string): Promise<void> {
         const parts = duplicateDriveParts(itemPath);
@@ -299,7 +354,11 @@
         duplicateMutationAudit = loadDuplicateMutationAudit();
         const unsubscribe = subscribeBrowserContext((panel) => {
             clearSelection();
+            trashReceipts = [];
+            receiptCapabilities = {};
+            trashContextGeneration += 1;
             if (panel.source.kind === 'DuplicateGroup') {
+                void loadDuplicateTrash(panel.source.groupId, panel.source.items);
                 const restored = latestDuplicateDecision(duplicateAudit, panel.source.groupId);
                 rightPanel = restored
                     ? { ...panel, source: { ...panel.source, decision: restored } }
@@ -432,6 +491,25 @@
                         </details>
                     {/if}
                 </div>
+                {#if trashReceipts.length > 0}
+                    <details class="duplicate-audit" open>
+                        <summary>Durable trash receipts ({trashReceipts.length})</summary>
+                        {#each trashReceipts as receipt}
+                            <div class="audit-entry">
+                                <span>{receipt.path} — {receipt.state.replaceAll('_', ' ')}</span>
+                                {#if receipt.state === 'deleted'}
+                                    <button onclick={() => updateTrashReceipt(receipt, true)} disabled={duplicateMutationBusy !== null || receiptCapabilities[receipt.drive_id] !== true}>Restore exact item</button>
+                                {/if}
+                                {#if receipt.state === 'delete_uncertain' || receipt.state === 'restore_uncertain' || receipt.state === 'deleted'}
+                                    <button onclick={() => updateTrashReceipt(receipt, false)} disabled={duplicateMutationBusy !== null}>Recheck without retry</button>
+                                {/if}
+                            </div>
+                            {#if receipt.state === 'restore_uncertain'}
+                                <p class="muted">The restore may have completed. Recheck its state; if it remains uncertain, use the provider app. This action will not be replayed.</p>
+                            {/if}
+                        {/each}
+                    </details>
+                {/if}
                 <ul class="duplicate-context-list">
                     {#each dupSource.items as item}
                         <li>
@@ -452,8 +530,9 @@
                                     </button>
                                     <button
                                         class="danger"
-                                        disabled
-                                        title="Trash is unavailable until this workflow can reliably restore the same item. Use the provider app.">
+                                        onclick={() => trashCloudDuplicate(item.path)}
+                                        disabled={duplicateMutationBusy !== null || receiptCapabilities[duplicateDriveParts(item.path)?.driveId ?? ''] !== true}
+                                        title="Trash requires a durable object receipt supported by this provider.">
                                         Trash
                                     </button>
                                 {/if}
