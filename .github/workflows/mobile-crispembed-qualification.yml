@@ -4,6 +4,11 @@ name: Qualify source-pinned mobile CrispEmbed builds
 # and this workflow does not establish app, simulator, or OCR qualification.
 on:
   workflow_dispatch:
+    inputs:
+      runtime_lock:
+        description: 'Committed source lock for this qualification; default preserves the release pin'
+        type: string
+        default: scripts/crispembed-runtime-lock.json
 
 permissions:
   contents: read
@@ -26,14 +31,25 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: sorter
+      - name: Read immutable runtime source lock
+        id: runtime
+        working-directory: sorter
+        shell: bash
+        env:
+          RUNTIME_LOCK: ${{ inputs.runtime_lock || 'scripts/crispembed-runtime-lock.json' }}
+        run: |
+          set -euo pipefail
+          python3 scripts/mobile_qualification_lock.py "$RUNTIME_LOCK" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
           repository: CrispStrobe/CrispEmbed
-          ref: 78493a31fc3043f3af4ab6fd2f197a32da6f07f0
+          ref: ${{ steps.runtime.outputs.source }}
           path: crispembed
           submodules: recursive
       - name: Build pinned runtime and check dependency closure
         shell: bash
+        env:
+          RUNTIME_LOCK: ${{ steps.runtime.outputs.lock }}
         run: |
           set -euo pipefail
           cd sorter
@@ -42,6 +58,7 @@ jobs:
           fi
           python3 scripts/build_mobile_crispembed.py \
             --source ../crispembed --output "$RUNNER_TEMP/crispembed-mobile" \
+            --lock "$RUNTIME_LOCK" \
             --target '${{ matrix.target }}' --jobs 4
       - name: Link OCR C API probe
         shell: bash
