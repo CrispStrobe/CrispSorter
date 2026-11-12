@@ -125,11 +125,14 @@ live provider tests, platform durability and concurrent-client behavior have
 not been qualified. The commits precede later integration changes and must be
 rebased and reviewed before use. The pinned upstream SDK drops file extensions
 from trash listings; [crisp-cloud-rs PR #5](https://github.com/CrispStrobe/crisp-cloud-rs/pull/5)
-proposes the correction. Complete its SDK endpoint test, make the corrected
-revision available, update and validate both app dependency pins and Cargo.lock,
-then verify the full receipt path before enabling its capability. Legacy
-path-only records and other providers remain disabled until their own durable
-identity adapters are implemented and verified.
+merged the correction; its three targeted HTTP endpoint tests, 47 Internxt
+library tests and 51 Filen library tests passed. The app remains on the older
+pin. Before enabling receipts, update and validate both pins and Cargo.lock,
+then provide one-shot SDK trash and restore operations: the current SDK retries
+mutating requests after gateway errors, which can repeat a remotely committed
+operation. Verify the receipt path, including lost-response and concurrent-client
+cases, without automatic mutation replay. Legacy path-only records and other
+providers remain disabled until their own identity adapters are verified.
 
 Sync-pair comparison is metadata-only until the user explicitly applies a
 policy. Confirmed one-click `local_wins` and `remote_wins` use the existing
