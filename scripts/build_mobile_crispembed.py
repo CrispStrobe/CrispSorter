@@ -18,7 +18,8 @@ from validate_android_native_libs import closure
 from mobile_native_provenance import collect as collect_native_provenance
 
 LOCK = Path(__file__).with_name('crispembed-runtime-lock.json')
-ANDROID_TARGETS = {'android-arm64': 'arm64-v8a', 'android-x86_64': 'x86_64'}
+ANDROID_TARGETS = {'android-arm64': 'arm64-v8a', 'android-x86_64': 'x86_64',
+                   'android-armv7': 'armeabi-v7a'}
 TARGETS = (*ANDROID_TARGETS, 'ios-arm64', 'ios-sim-arm64')
 
 

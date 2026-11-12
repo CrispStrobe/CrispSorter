@@ -9,6 +9,11 @@ on:
         description: 'Committed source lock for this qualification; default preserves the release pin'
         type: string
         default: scripts/crispembed-runtime-lock.json
+      target:
+        description: 'Original three targets, or only the separate 32-bit Android candidate'
+        type: choice
+        options: [all, android-armv7]
+        default: all
 
 permissions:
   contents: read
@@ -18,13 +23,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - runner: ubuntu-24.04
-            target: android-arm64
-          - runner: macos-15
-            target: ios-arm64
-          - runner: macos-15
-            target: ios-sim-arm64
+        include: >-
+          ${{ fromJSON(inputs.target == 'android-armv7'
+            && '[{"runner":"ubuntu-24.04","target":"android-armv7"}]'
+            || '[{"runner":"ubuntu-24.04","target":"android-arm64"},{"runner":"macos-15","target":"ios-arm64"},{"runner":"macos-15","target":"ios-sim-arm64"}]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     steps:
@@ -60,15 +62,22 @@ jobs:
             --source ../crispembed --output "$RUNNER_TEMP/crispembed-mobile" \
             --lock "$RUNTIME_LOCK" \
             --target '${{ matrix.target }}' --jobs 4
+          cp "$RUNTIME_LOCK" "$RUNNER_TEMP/crispembed-mobile/source-lock.json"
       - name: Link OCR C API probe
         shell: bash
         run: |
           set -euo pipefail
           runtime="$RUNNER_TEMP/crispembed-mobile/lib"
           if [[ '${{ matrix.target }}' == android-* ]]; then
-            cc="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang"
+            case '${{ matrix.target }}' in
+              android-arm64) compiler=aarch64-linux-android24-clang ;;
+              android-armv7) compiler=armv7a-linux-androideabi24-clang ;;
+              *) echo 'Unsupported Android qualification compiler' >&2; exit 1 ;;
+            esac
+            cc="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/$compiler"
             "$cc" -I crispembed/src sorter/scripts/mobile_crispembed_link_probe.c \
               -L "$runtime" -lcrispembed -Wl,--no-undefined -o "$RUNNER_TEMP/ocr-link-probe"
+            readelf -h -l "$RUNNER_TEMP/ocr-link-probe" > "$RUNNER_TEMP/crispembed-mobile/link-probe-elf.txt"
           else
             if [[ '${{ matrix.target }}' == ios-sim-arm64 ]]; then
               sdk=iphonesimulator
@@ -91,5 +100,8 @@ jobs:
             ${{ runner.temp }}/crispembed-mobile/lib/
             ${{ runner.temp }}/crispembed-mobile/notices/
             ${{ runner.temp }}/crispembed-mobile/runtime-build.json
+            ${{ runner.temp }}/crispembed-mobile/source-lock.json
+            ${{ runner.temp }}/crispembed-mobile/link-probe-elf.txt
+            ${{ runner.temp }}/ocr-link-probe
           if-no-files-found: error
           retention-days: 14
