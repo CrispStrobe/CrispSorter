@@ -996,7 +996,8 @@ fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipel
         (prepared.page, recognition_path, (0, 0))
     };
     let mut column_layout = None;
-    let column_result = if !cpu_budget && zone.is_none() && config.enabled && config.layout
+    let column_result = if config.experimental_cc_column_crops
+        && !cpu_budget && zone.is_none() && config.enabled && config.layout
         && config.layout_engine == "cc" && config.engine.as_deref() == Some("tesseract")
         && !config.router && config.stages.len() <= 1
         && config.stages.first().is_none_or(|stage| stage.engine == "tesseract") {

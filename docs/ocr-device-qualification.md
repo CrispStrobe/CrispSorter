@@ -169,8 +169,22 @@ and hashed models, imported an image, exercised native recognition and document
 formats, and passed the German quality case. It then failed the English
 column-order case (CER 0.503 versus the unchanged 0.25 threshold): native
 text detection had merged adjacent columns into page-wide lines. The current
-source adds bounded CC-layout recognition crops for unambiguous supported
-layouts, with a whole-page fallback for empty crops. Geometry and source-bound
+source adds bounded experimental CC-layout recognition crops for supported
+layouts, with a whole-page fallback for empty crops. This path defaults off;
+an explicit request/profile `experimental_cc_column_crops: true` enables it
+only alongside the existing supported CC/Tesseract profile. Ordinary CC layout
+continues to annotate whole-page recognition. Geometry and source-bound
 contract tests pass; the retained APK predates this change. Rebuild the Android
 x86_64 application and rerun the full flow before reporting the fix or later
 export and recovery steps as passed.
+
+CC box geometry does not prove complete page-text coverage. Text missed by
+thresholding, morphology or component filtering outside the padded crops is
+never presented to the recognizer; nonempty crop results do not trigger the
+whole-page fallback. The experimental path therefore has an unresolved
+missing-text risk. Its 64-crop and source-pixel-area bounds also do not bound
+resized detector work or elapsed time. Retain full-page baselines and measure
+complete text, raw regions, CER/WER and latency on identical frozen inputs
+before any default promotion. Keep this app gate off when qualifying a native
+gutter change so the native engine still receives the unchanged whole page;
+an app-crop arm changes recognition inputs and must be reported separately.

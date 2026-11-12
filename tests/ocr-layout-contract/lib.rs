@@ -163,7 +163,8 @@ mod native_fixture {
                 vec![region()]
             },
             warnings: vec![],
-            diagnostics: json!({"native_review":{"engine":"tesseract","recognition_text":"word","raw_marker":index}}),
+            diagnostics: json!({"native_review":{"engine":"tesseract","recognition_text":"word","raw_marker":index,
+                "input_width":width,"input_height":height}}),
         })
     }
 }
@@ -174,7 +175,7 @@ mod layout_contract_tests {
     use std::sync::{atomic::Ordering, Mutex};
     static SERIAL: Mutex<()> = Mutex::new(());
     fn config() -> extractors::OcrPipelineConfig {
-        serde_json::from_value(json!({"enabled":true,"engine":"tesseract","language":"eng","router":false,"layout":true,"layout_engine":"cc","cleanup_enabled":false,"stages":[{"engine":"tesseract","rec_model":"tesseract-eng","cleanup":{"enabled":false}}]})).unwrap()
+        serde_json::from_value(json!({"enabled":true,"engine":"tesseract","language":"eng","router":false,"layout":true,"layout_engine":"cc","experimental_cc_column_crops":true,"cleanup_enabled":false,"stages":[{"engine":"tesseract","rec_model":"tesseract-eng","cleanup":{"enabled":false}}]})).unwrap()
     }
     fn page() -> (tempfile::TempDir, PathBuf) {
         let root = tempfile::tempdir().unwrap();
@@ -183,6 +184,47 @@ mod layout_contract_tests {
             .save(&p)
             .unwrap();
         (root, p)
+    }
+    #[test]
+    fn layout_contract_ordinary_cc_profile_keeps_whole_page_recognition() {
+        let _lock = SERIAL.lock().unwrap();
+        for explicit_false in [false, true] {
+            native_fixture::reset(usize::MAX);
+            let (root, path) = page();
+            let mut requested = serde_json::to_value(config()).unwrap();
+            requested
+                .as_object_mut()
+                .unwrap()
+                .remove("experimental_cc_column_crops");
+            if explicit_false {
+                requested["experimental_cc_column_crops"] = json!(false);
+            }
+            let cfg: extractors::OcrPipelineConfig = serde_json::from_value(requested).unwrap();
+            assert!(!cfg.experimental_cc_column_crops);
+            let result = recognize_page(
+                root.path(),
+                &path,
+                &cfg,
+                None,
+                vec![],
+                None,
+                false,
+                extractors::OcrRecLang::Auto,
+            )
+            .unwrap();
+            assert_eq!(native_fixture::INFERENCES.load(Ordering::SeqCst), 1);
+            assert_eq!(native_fixture::LISTINGS.load(Ordering::SeqCst), 1);
+            assert_eq!(result.regions.len(), 1);
+            assert_eq!((result.regions[0].x, result.regions[0].y), (2., 3.));
+            assert_eq!(result.diagnostics["native_review"]["raw_marker"], 0);
+            assert_eq!(result.diagnostics["native_review"]["input_width"], 1800);
+            assert_eq!(result.diagnostics["native_review"]["input_height"], 1000);
+            assert!(result.diagnostics.get("layout_recognition").is_none());
+            assert_eq!(
+                result.diagnostics["requested_config"]["experimental_cc_column_crops"],
+                false
+            );
+        }
     }
     #[test]
     fn layout_contract_workspace_preserves_request_raw_diagnostics_and_detects_layout_once() {

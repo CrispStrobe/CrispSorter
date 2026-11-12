@@ -1,5 +1,21 @@
 # CrispSorter — Development Plan
 
+## Experimental CC recognition crops — 12 November 2026
+
+Source `87f5181f` changed supported CC/Tesseract review profiles from whole-page
+recognition to line-crop recognition after retained Android run
+[43275466921](https://github.com/CrispStrobe/CrispSorter/actions/runs/43275466921)
+failed the unchanged English two-column CER threshold (0.503 versus 0.25).
+CC geometry does not establish complete text coverage, and nonempty crops can
+silently omit text outside their boxes. The follow-up requires explicit
+`experimental_cc_column_crops: true`; omitted or false retains whole-page
+recognition with layout annotation. Existing profiles and quality thresholds
+retain their values. The source-bound contract now checks omitted/false inputs
+use one full-page inference and explicit true uses nine fixture crops. These
+new native controls await hosted execution; fixture recognition is not OCR
+quality evidence. Independent native-gutter A/B must keep the app crop gate off.
+See [coverage, latency and device limits](docs/ocr-device-qualification.md).
+
 ## Android smoke sandbox paths — 12 November 2026
 
 [Mobile OCR run 43255928129](https://github.com/CrispStrobe/CrispSorter/actions/runs/43255928129)
