@@ -2,6 +2,12 @@
 
 ## Non-Unix receipt durability admission — 12 November 2026
 
+[Receipt run 43303387822](https://github.com/CrispStrobe/CrispSorter/actions/runs/43303387822)
+stopped on Windows before executing tests because checkout converted LF source
+blobs to CRLF. Disable Git automatic line-ending conversion before checkout;
+retain the exact working-byte versus committed-blob equality check. This is a
+source-admission correction, not a Windows receipt test result.
+
 At source `26cfd7ca`, Internxt advertised durable trash receipts on every
 platform while journal directory-entry fsync was implemented only on Unix.
 The follow-up refuses journal opening and receipt adapter/capability exposure

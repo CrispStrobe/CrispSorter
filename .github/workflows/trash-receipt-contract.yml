@@ -24,6 +24,9 @@ jobs:
     env:
       CARGO_BUILD_JOBS: 2
     steps:
+      - name: Preserve committed source bytes during checkout
+        shell: bash
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Seal source identity
