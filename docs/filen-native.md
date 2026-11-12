@@ -1,7 +1,10 @@
 # Native Filen client
 
 `crisp-filen` is the unofficial Rust Filen implementation used by Tauri when the
-`drive-filen-native` feature is enabled. Its protocol and crypto behavior are
+`drive-filen-native` feature is enabled. It lives in
+[crisp-cloud-rs](https://github.com/CrispStrobe/crisp-cloud-rs) and is a git
+dependency pinned by `rev` in `src-tauri/Cargo.toml`; the test commands below
+run in a crisp-cloud-rs checkout at that rev. Its protocol and crypto behavior are
 derived from Filen's MIT Go SDK, with the Python and Dart clients used for
 cross-checks.
 

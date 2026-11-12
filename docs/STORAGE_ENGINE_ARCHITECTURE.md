@@ -32,15 +32,20 @@ Current reusable libraries and application adapters are separate:
 
 | Library | App integration |
 | --- | --- |
-| [`crisp-filen`](../crates/crisp-filen-native/README.md) | [`filen_native_drive.rs`](../src-tauri/src/drives/filen_native_drive.rs) |
-| [`crisp-internxt`](../crates/crisp-internxt-native/README.md) | [`internxt_native_drive.rs`](../src-tauri/src/drives/internxt_native_drive.rs) and compatibility re-exports |
+| [`crisp-filen`](https://github.com/CrispStrobe/crisp-cloud-rs/tree/main/crates/crisp-filen) (crisp-cloud-rs) | [`filen_native_drive.rs`](../src-tauri/src/drives/filen_native_drive.rs) |
+| [`crisp-internxt`](https://github.com/CrispStrobe/crisp-cloud-rs/tree/main/crates/crisp-internxt) (crisp-cloud-rs) | [`internxt_native_drive.rs`](../src-tauri/src/drives/internxt_native_drive.rs) and compatibility re-exports |
 | [`crisp-smb-source`](../crates/crisp-smb-source/README.md), consuming shared `crisp_smb` | [`smb.rs`](../src-tauri/src/drives/smb.rs) |
 
 The SMB core is pinned to CrispCloud commit
 `13ca681f0c706cf24e65c7906f8a98e20421c590`. The Rust Filen/Internxt clients are
-currently local path dependencies; their reuse by other applications still
-needs versioned source packaging and adapters. `crates/internxt-core` is an
-independent MIT test reference, not the production Internxt provider.
+git dependencies on [crisp-cloud-rs](https://github.com/CrispStrobe/crisp-cloud-rs),
+pinned by `rev` in `src-tauri/Cargo.toml`; there are no app-local copies. A
+change the app needs goes into crisp-cloud-rs first (PR there, then advance the
+rev). `scripts/crisp_cloud_rev.py` reads that rev, fails if the two manifest
+entries or `Cargo.lock` disagree, and CI uses it to check out and test exactly
+that commit. The independent MIT `internxt-core` crate is a crisp-cloud-rs
+dev-dependency that cross-checks key derivation; it is not the production
+Internxt provider.
 
 ## Target across the three apps
 
@@ -117,7 +122,8 @@ bundling, sandbox checks and real devices.
 Filen/Internxt clients. MPL is file-level copyleft, not an MIT/Apache/BSD-style
 permissive grant; see the [Mozilla FAQ](https://www.mozilla.org/en-US/MPL/2.0/FAQ/).
 `crisp-smb-source` and the independent shared SMB core declare MIT OR Apache-2.0;
-their dependencies retain their own grants. `internxt-core` is MIT/test-only.
+their dependencies retain their own grants. `internxt-core` (a crisp-cloud-rs
+dev-dependency) is MIT/test-only.
 
 Changing language or adding a bridge does not relicense a component. Preserve
 notices and review exact source/dependency/build/artifact evidence when sharing
@@ -169,14 +175,18 @@ not an assumed outcome of sharing the Rust sources.
 
 ## Executable Dart / Rust package conformance
 
-`.github/workflows/provider-conformance.yml` runs the shared, pinned
-[provider conformance harness](https://github.com/CrispStrobe/crisp-cloud-rs/tree/33bdc33f64d0a2f1144dceec8ed372d18c12b551/conformance).
-It tests this repository’s actual native Filen/Internxt crate sources against
-the retained Dart SDKs, without replacing the Sorter crates. A focused hosted CPU run
-at Sorter source `8b21ce57` and upstream `121bfa66` passed 131 cases and 363
-cross-decryptions with zero failures and ten reviewed gaps ([receipt](../tests/results/provider-conformance/remote-20261112.json)).
-The merged upstream pin `33bdc33f` has an identical source tree; no new Windows
-or macOS application result is inferred from the CPU run.
+`.github/workflows/provider-conformance.yml` runs the shared
+[provider conformance harness](https://github.com/CrispStrobe/crisp-cloud-rs/tree/main/conformance)
+at the crisp-cloud-rs revision `src-tauri/Cargo.toml` pins (resolved by
+`scripts/crisp_cloud_rev.py`), so it tests exactly the Filen/Internxt crate
+sources Sorter builds against the retained Dart SDKs.
+
+Before the switch to upstream dependencies, a focused hosted CPU run at Sorter
+source `8b21ce57` with its then-vendored sources and upstream `121bfa66` passed
+131 cases and 363 cross-decryptions with zero failures and ten reviewed gaps
+([receipt](../tests/results/provider-conformance/remote-20261112.json)). The merged
+upstream pin has an identical source tree. This historical vendor result does
+not establish new Windows or macOS application behavior.
 
 The same independent fixtures run through real package APIs and compiled Dart
 CLI probes with software and native AES backends. Checks include password/key
@@ -198,17 +208,17 @@ parse bug. `--strict` fails on those gaps too. A green regression baseline is
 not permission to switch defaults. Legacy text-secret encoding requires a
 compatibility decision before any format change.
 
-Reproduce from a checkout of the pinned harness, with Python 3.12+, stable Rust
-and Dart 3.13.7. From this app repository’s root:
+Reproduce from a crisp-cloud-rs checkout at the pinned revision, with Python
+3.12+, stable Rust and Dart 3.13.7. From this app repository’s root:
 
 ```sh
+git -C ../crisp-cloud-rs checkout "$(python3 scripts/crisp_cloud_rev.py)"
 python -m pip install cryptography==50.0.0
-python ../crisp-cloud-rs/conformance/run.py --pointycastle 4.0.0 --dart-pg 2.1.0 --rust-filen crates/crisp-filen-native --rust-internxt crates/crisp-internxt-native
+python ../crisp-cloud-rs/conformance/run.py --pointycastle 4.0.0 --dart-pg 2.1.0
 # Add --strict for the default-promotion gate.
 ```
 
-Keep this harness commit pinned and advance it deliberately with the compatibility
-report. Retain both language implementations and explicit engine choices.
+Advance the rev deliberately, together with the compatibility report. Retain both language implementations and explicit engine choices.
 
 
 The first completed shared run exercised 131 cases and 363 cross-decryptions

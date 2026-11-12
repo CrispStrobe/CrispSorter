@@ -36,8 +36,12 @@ crisp-index-protocol = { path = "../crisp-index-protocol" }
 # identification service — see docs/ai-act.md and PLAN.md P35.
 crisplens-protocol   = { path = "../crates/crisplens-protocol", optional = true }
 crispcat             = { path = "../crates/crispcat", features = ["lance"] }
-crisp-internxt = { path = "../crates/crisp-internxt-native", optional = true }
-crisp-filen = { package = "crisp-filen", path = "../crates/crisp-filen-native", optional = true }
+# Native Filen / Internxt clients come from our upstream repo
+# https://github.com/CrispStrobe/crisp-cloud-rs (no vendored copies).
+# Both lines must name the same rev: provider-conformance.yml and the
+# crisp-cloud-rs job in ci.yml read it from here and verify that commit.
+crisp-internxt = { git = "https://github.com/CrispStrobe/crisp-cloud-rs", rev = "33bdc33f64d0a2f1144dceec8ed372d18c12b551", optional = true }
+crisp-filen = { git = "https://github.com/CrispStrobe/crisp-cloud-rs", rev = "33bdc33f64d0a2f1144dceec8ed372d18c12b551", optional = true }
 
 # Document translation pipeline. The `crisp-docx` workspace is a
 # sibling checkout (../../crisp-docx). These path deps are
