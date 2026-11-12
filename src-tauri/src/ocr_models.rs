@@ -511,8 +511,8 @@ fn download_artifact_logged(
 /// Move a verified `.part` into place. Same directory, so the rename is atomic.
 fn commit_artifact(dir: &Path, file: &Artifact) -> Result<PathBuf, String> {
     let destination = dir.join(&file.filename);
-    #[cfg(windows)]
-    if destination.exists() { std::fs::remove_file(&destination).map_err(|e| format!("Replace model: {e}"))?; }
+    // Rename replaces an existing file on supported platforms. Do not unlink
+    // it first: a failed commit must leave the previously installed model usable.
     std::fs::rename(part_path(dir, file), &destination).map_err(|e| format!("Install model: {e}"))?;
     #[cfg(unix)]
     { let _ = std::fs::File::open(dir).and_then(|d| d.sync_all()); }
@@ -1274,6 +1274,20 @@ mod tests {
         commit_artifact(dir.path(), &file).unwrap();
         assert_eq!(std::fs::read(dir.path().join("ocr-test.gguf")).unwrap(), bytes);
         assert!(!part_path(dir.path(), &file).exists());
+    }
+
+    #[test]
+    fn failed_publication_keeps_the_installed_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = artifact(&payload());
+        let destination = dir.path().join(&file.filename);
+        std::fs::write(&destination, b"previous model").unwrap();
+        // With no staged file, publication must fail without unlinking the old model.
+        assert!(commit_artifact(dir.path(), &file).is_err());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"previous model");
+        std::fs::write(part_path(dir.path(), &file), b"new model").unwrap();
+        commit_artifact(dir.path(), &file).unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), b"new model");
     }
 
     #[test]
