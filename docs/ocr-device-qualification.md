@@ -206,3 +206,38 @@ synthetic inputs, no physical camera/device qualification, no system save
 picker, and no representative corpus quality qualification. The APK predates
 the current default-off gate; this result does not establish current-default
 behavior or justify promoting the experimental option.
+
+
+## Current gated-source Android delta
+
+[Run 43298111978](https://github.com/CrispStrobe/CrispSorter/actions/runs/43298111978)
+completed successfully with all 11 checks at app candidate
+`0dbb1e69797f01dab819dfe59487564b5634c9db`, using the immutable v0.17.19 runtime.
+The [source-bound receipt](../tests/results/ocr-mobile-ui/android-cc-crop-gate-20261112.json)
+seals the exact APK, build/runtime receipts, fixture and raw-response hashes.
+The same-run build passed clean application-source, installed-APK and native
+mapped-section checks; its sole generated tracked exception is the regenerated
+license inventory. The APK remains in the workflow artifact.
+
+The omitted-gate single-column control retains its three expected lines. With
+otherwise identical settings, omitted-gate two-column recognition remains at
+CER **0.502857** with five regions; explicit `experimental_cc_column_crops: true`
+uses nine real crops and reaches **0.022857**, passing the unchanged 0.25 ceiling,
+required tokens and four-left/four-right column order. The opt-in still returns
+`cond floor ready.` for `Second floor ready.`. A passing aggregate CER therefore
+does not prove complete text capture. Native elapsed time is 20,734 ms for the
+default column arm and 34,296 ms for opt-in; this is not a speed improvement.
+
+Save/reload preserves opt-in result provenance without changing project defaults;
+both original managed assets and the application process remain intact. The
+observed kernel high-water RSS is 921,276 KiB; discrete samples and this short
+run do not qualify sustained memory use. Export, repeated-page, picker and
+recovery checks were not repeated: retain their earlier 33-step pre-gate source
+attribution above. No physical camera/device or representative corpus was tested.
+
+The receipt maps tested production OCR blobs to merged main `87cf0b44`, while
+identifying different dedicated harness/workflow and unrelated main application
+changes. It is evidence for the tested candidate and those identical OCR blobs,
+not a device qualification of a full main APK. Keep the app crop gate off by
+default, retain the immutable runtime pin and unchanged quality thresholds, and
+keep native gutter qualification separate.
