@@ -344,6 +344,32 @@ runtime receipts, including the lock hash, source/submodule identities and
 runtime receipt hash. Local invocations without these variables use the
 production OCR lock and reject candidate receipts.
 
+The candidate app-command lane additionally defines a bounded error/empty check
+through the real WebView IPC, rebuilt Rust wrapper, and native pipeline. After
+the normal baseline installation, it deliberately configures the installed,
+hash-verified `dbnet-det` detector as an incompatible `unified` recognizer with
+permissive numeric acceptance gates. Passing requires the exact Rust
+pipeline-run failure message produced by the native NULL-full-text sentinel;
+an earlier model/configuration rejection, timeout, or successful empty response
+fails the gate. It retains the raw response/rejection before asserting.
+It then imports a generated white 512×256 PNG through the app and recognizes it
+using the existing DBNet/Tesseract English baseline, requiring zero regions,
+the native empty text string, and a native review snapshot. The PNG and complete
+returned diagnostics are retained. This adds no model download and only runs
+when the validated app receipt contains candidate reuse provenance.
+
+A passed candidate run would establish that this native initialization failure
+reaches the rebuilt application's error boundary and that this Tesseract blank
+remains a valid empty response. The white raster is not positive decoded OCR;
+the existing text fixtures establish their own Tesseract recognition behavior.
+These controls do not exercise Ovis/Qwen3.5 decoded output or its image patch
+bound, failure after successful VLM initialization, EOS-only VLM text, recovery
+in the same native context, prior-result clearing, or multi-stage success/blank fallback.
+Those cases need separate native/model-specific and rebuilt-consumer execution.
+Malformed PDF, missing-file/model, and policy errors elsewhere in the lane do
+not establish that they crossed the native recognition boundary. This route is
+prepared; no candidate app or boundary execution result is claimed here.
+
 The [build/link qualification](https://github.com/CrispStrobe/CrispSorter/actions/runs/40875226935)
 completed successfully for Android ARM64, iOS ARM64, and iOS ARM64 simulator.
 That older run built native libraries and linked probes; it did not execute
