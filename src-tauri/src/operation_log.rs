@@ -61,7 +61,8 @@ pub fn safe_context(value: Value) -> Map<String, Value> {
         "page" | "pages" | "page_index" | "page_count" | "bytes" | "input_bytes" | "output_bytes"
         | "characters" | "regions" | "warnings" | "results" | "completed" | "failed" | "pending"
         | "count" | "total" | "items" | "files" | "stages" | "models" | "rows" | "cols"
-        | "width" | "height" | "revision" | "diagnostic_lines" | "event_count" | "attempt" | "job_id" => value.as_u64().is_some(),
+        | "width" | "height" | "revision" | "diagnostic_lines" | "event_count" | "attempt" | "job_id"
+        | "skipped" => value.as_u64().is_some(),
         "cpu_budget" | "cpuBudget" | "forced" | "partial" | "saved" | "reused" | "pipeline"
         | "cache_hit" | "nativeContinues" | "cleanup" | "denoise" | "dewarp" | "restore"
         | "upscale" | "layout" | "overwrite" | "accepted" => value.is_boolean(),
@@ -72,10 +73,12 @@ pub fn safe_context(value: Value) -> Map<String, Value> {
         "language" => value.as_str().is_some_and(language),
         "format" => value.as_str().is_some_and(|s| ["text", "txt", "markdown", "md", "html", "json", "csv", "pdf", "pdfa", "hocr", "alto", "docx", "xlsx"].contains(&s)),
         "surface" => value.as_str().is_some_and(|s| ["gui", "cli", "background", "worker", "native", "browser"].contains(&s)),
-        "backend" | "protocol" => value.as_str().is_some_and(|s| ["native", "browser", "local", "remote", "smb", "webdav", "s3", "filen", "internxt", "google_drive", "onedrive", "cloud_backup", "memory"].contains(&s)),
+        "backend" | "protocol" => value.as_str().is_some_and(|s| ["native", "browser", "local", "remote", "smb", "webdav", "s3", "filen", "internxt", "google_drive", "onedrive", "cloud_backup", "memory", "sftp"].contains(&s)),
         "kind" => value.as_str().is_some_and(|s| ["image", "pdf", "archive", "mail", "presentation", "document", "table", "fields", "formula", "checkbox", "text", "copy", "move", "script"].contains(&s)),
         "mode" => value.as_str().is_some_and(mode),
         "model_kind" => value.as_str().is_some_and(|s| ["registry", "custom", "default"].contains(&s)),
+        "status" => value.as_str().is_some_and(|s| ["pending", "running", "paused", "done", "error", "in_progress", "skipped"].contains(&s)),
+        "store" => value.as_str().is_some_and(|s| ["os_default", "mac_keychain", "file", "session", "unknown"].contains(&s)),
         _ => false,
     }).collect()
 }

@@ -120,4 +120,18 @@ describe('document action ownership and receipts', () => {
         expect(onError).not.toHaveBeenCalled();
         expect(terminals()[0]).toContain('phase=cancelled');
     });
+
+    it('adds receipt counts to the completion and survives a throwing receipt', async () => {
+        const actions = createDocumentActions(() => {});
+        const result = await actions.run({ operation: 'docx.footnotes', writesOutput: true,
+            receipt: (n: number) => ({ count: n, total: 3 }) }, async () => 2);
+        expect(result).toBe(2);
+        expect(terminals()[0]).toContain('phase=completed');
+        expect(terminals()[0]).toContain('count=2 total=3 saved=true');
+        const kept = await actions.run({ operation: 'docx.check',
+            receipt: () => { throw new Error('private detail'); } }, async () => 'ok');
+        expect(kept).toBe('ok');
+        expect(terminals()[1]).toContain('phase=completed');
+        expect(messages().join('\n')).not.toContain('private detail');
+    });
 });

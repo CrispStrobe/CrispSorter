@@ -252,11 +252,15 @@ pub mod tauri_commands {
 
     // Annotations
     #[tauri::command]
-    pub async fn annotation_add(
-        state: State<'_, AppState>,
+    pub async fn annotation_add(state: State<'_, AppState>, doc_id: String, page: i32, x: f64, y: f64, w: f64, h: f64, ann_type: String, text: String, color: String) -> Result<i64, String> {
+        let log = crate::operation_log::OperationLog::start("index.annotation_add", serde_json::json!({"page":page.max(0)}));
+        let result = annotation_add_inner(state, doc_id, page, x, y, w, h, ann_type, text, color).await;
+        crate::index::finish_logged(log, result, "annotation_failed", |_| serde_json::Value::Null)
+    }
+
+    async fn annotation_add_inner(state: State<'_, AppState>,
         doc_id: String, page: i32, x: f64, y: f64, w: f64, h: f64,
-        ann_type: String, text: String, color: String,
-    ) -> Result<i64, String> {
+        ann_type: String, text: String, color: String) -> Result<i64, String> {
         let s = get_store(&state).await?;
         s.add_annotation(&doc_id, page, x, y, w, h, &ann_type, &text, &color).map_err(|e| e.to_string())
     }
@@ -269,12 +273,24 @@ pub mod tauri_commands {
 
     #[tauri::command]
     pub async fn annotation_update(state: State<'_, AppState>, id: i64, text: String, color: String) -> Result<(), String> {
+        let log = crate::operation_log::OperationLog::start("index.annotation_update", serde_json::json!({}));
+        let result = annotation_update_inner(state, id, text, color).await;
+        crate::index::finish_logged(log, result, "annotation_failed", |_| serde_json::Value::Null)
+    }
+
+    async fn annotation_update_inner(state: State<'_, AppState>, id: i64, text: String, color: String) -> Result<(), String> {
         let s = get_store(&state).await?;
         s.update_annotation(id, &text, &color).map_err(|e| e.to_string())
     }
 
     #[tauri::command]
     pub async fn annotation_delete(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+        let log = crate::operation_log::OperationLog::start("index.annotation_delete", serde_json::json!({}));
+        let result = annotation_delete_inner(state, id).await;
+        crate::index::finish_logged(log, result, "annotation_failed", |_| serde_json::Value::Null)
+    }
+
+    async fn annotation_delete_inner(state: State<'_, AppState>, id: i64) -> Result<(), String> {
         let s = get_store(&state).await?;
         s.delete_annotation(id).map_err(|e| e.to_string())
     }
@@ -287,12 +303,16 @@ pub mod tauri_commands {
 
     // Highlights / Reading Queue
     #[tauri::command]
-    pub async fn highlight_add(
-        state: State<'_, AppState>,
+    pub async fn highlight_add(state: State<'_, AppState>, doc_id: String, chunk_index: i32, start_offset: i32, end_offset: i32, text: String, note: String, color: String) -> Result<i64, String> {
+        let log = crate::operation_log::OperationLog::start("index.highlight_add", serde_json::json!({}));
+        let result = highlight_add_inner(state, doc_id, chunk_index, start_offset, end_offset, text, note, color).await;
+        crate::index::finish_logged(log, result, "highlight_failed", |_| serde_json::Value::Null)
+    }
+
+    async fn highlight_add_inner(state: State<'_, AppState>,
         doc_id: String, chunk_index: i32,
         start_offset: i32, end_offset: i32,
-        text: String, note: String, color: String,
-    ) -> Result<i64, String> {
+        text: String, note: String, color: String) -> Result<i64, String> {
         let s = get_store(&state).await?;
         s.add_highlight(&doc_id, chunk_index, start_offset, end_offset, &text, &note, &color).map_err(|e| e.to_string())
     }
@@ -311,12 +331,24 @@ pub mod tauri_commands {
 
     #[tauri::command]
     pub async fn highlight_update(state: State<'_, AppState>, id: i64, note: String, color: String) -> Result<(), String> {
+        let log = crate::operation_log::OperationLog::start("index.highlight_update", serde_json::json!({}));
+        let result = highlight_update_inner(state, id, note, color).await;
+        crate::index::finish_logged(log, result, "highlight_failed", |_| serde_json::Value::Null)
+    }
+
+    async fn highlight_update_inner(state: State<'_, AppState>, id: i64, note: String, color: String) -> Result<(), String> {
         let s = get_store(&state).await?;
         s.update_highlight(id, &note, &color).map_err(|e| e.to_string())
     }
 
     #[tauri::command]
     pub async fn highlight_delete(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+        let log = crate::operation_log::OperationLog::start("index.highlight_delete", serde_json::json!({}));
+        let result = highlight_delete_inner(state, id).await;
+        crate::index::finish_logged(log, result, "highlight_failed", |_| serde_json::Value::Null)
+    }
+
+    async fn highlight_delete_inner(state: State<'_, AppState>, id: i64) -> Result<(), String> {
         let s = get_store(&state).await?;
         s.delete_highlight(id).map_err(|e| e.to_string())
     }

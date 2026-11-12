@@ -814,6 +814,19 @@ pub fn import_into_store(
     doc_id: &str,
     annots: &[PdfAnnotation],
 ) -> Result<usize, String> {
+    crate::pdf_ops::with_operation_receipt(
+        "pdf.annotations.import",
+        serde_json::json!({"items": annots.len()}),
+        |_log| import_into_store_inner(store, doc_id, annots),
+        |inserted: &usize| serde_json::json!({"count": *inserted}),
+    )
+}
+
+fn import_into_store_inner(
+    store: &crate::index::annotations::AnnotationStore,
+    doc_id: &str,
+    annots: &[PdfAnnotation],
+) -> Result<usize, String> {
     let existing = store.get_annotations(doc_id).map_err(|e| e.to_string())?;
     let seen: std::collections::HashSet<String> = existing
         .iter()

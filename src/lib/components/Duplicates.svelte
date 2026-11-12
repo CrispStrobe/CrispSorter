@@ -11,6 +11,7 @@
      */
 
     import { invoke } from '@tauri-apps/api/core';
+    import { beginOperation } from '$lib/operationLog';
     import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
     import { writeTextFile } from '@tauri-apps/plugin-fs';
     import {
@@ -117,6 +118,7 @@
         matches = [];
         selected = new Set();
         generatedScript = '';
+        const operation = beginOperation('index.duplicates_scan', { total: dests.length });
         try {
             matches = await invoke<DuplicateMatch[]>('catalog_find_duplicates', {
                 source: source.trim(),
@@ -126,7 +128,9 @@
             // Default-select all destinations for the script (user can
             // unselect individual rows).
             selected = new Set(matches.flatMap((_, i) => [i]));
+            operation.complete({ results: matches.length });
         } catch (e: any) {
+            operation.fail(e);
             error = String(e);
         } finally {
             scanning = false;
@@ -162,7 +166,14 @@
             filters: [{ name: 'Script', extensions: [ext] }],
         });
         if (!out) return;
-        await writeTextFile(out, generatedScript);
+        const operation = beginOperation('index.deletion_script', { kind: 'script', bytes: generatedScript.length });
+        try {
+            await writeTextFile(out, generatedScript);
+            operation.complete({ saved: true });
+        } catch (e) {
+            operation.fail(e);
+            throw e;
+        }
     }
 
     function toggleSelect(idx: number) {

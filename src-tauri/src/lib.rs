@@ -138,18 +138,20 @@ async fn watch_start(
         Some("sort") => watcher::WatchMode::Sort,
         _ => watcher::WatchMode::Off,
     };
-    let data_dir = state
-        .data_dir
-        .lock()
-        .await
-        .clone()
-        .ok_or_else(|| "data_dir not initialised".to_string())?;
-    let automation = std::sync::Arc::new(
-        watcher::rules::AutomationEngine::load(&data_dir)
-            .map_err(|e| format!("load automation rules failed: {e:#}"))?,
-    );
+    let log = operation_log::OperationLog::start("watch.start", serde_json::json!({"mode": watch_mode.log_name()}));
+    let Some(data_dir) = state.data_dir.lock().await.clone() else {
+        log.fail("data_dir_unavailable");
+        return Err("data_dir not initialised".to_string());
+    };
+    let automation = match watcher::rules::AutomationEngine::load(&data_dir) {
+        Ok(engine) => std::sync::Arc::new(engine),
+        Err(e) => {
+            log.fail("rules_load_failed");
+            return Err(format!("load automation rules failed: {e:#}"));
+        }
+    };
     let mut guard = state.watcher.lock().await;
-    watcher::start(
+    let result = watcher::start(
         &mut guard,
         app,
         path,
@@ -157,7 +159,12 @@ async fn watch_start(
         initial_scan.unwrap_or(false),
         automation,
     )
-    .map_err(|e| format!("watch_start failed: {e:#}"))
+    .map_err(|e| format!("watch_start failed: {e:#}"));
+    match &result {
+        Ok(()) => log.succeed(serde_json::json!({"count": guard.list().len()})),
+        Err(_) => log.fail("watch_start_failed"),
+    }
+    result
 }
 
 #[cfg(feature = "desktop")]
@@ -168,7 +175,9 @@ async fn watch_start(
 async fn watch_stop_one(state: tauri::State<'_, AppState>, folder: String) -> Result<bool, String> {
     let path = std::path::PathBuf::from(folder);
     let mut guard = state.watcher.lock().await;
-    Ok(watcher::stop_one(&mut guard, &path))
+    let removed = watcher::stop_one(&mut guard, &path);
+    crate::app_log!("info", "watch: stop folder removed={} remaining={}", removed, guard.list().len());
+    Ok(removed)
 }
 
 #[cfg(feature = "desktop")]
@@ -176,7 +185,9 @@ async fn watch_stop_one(state: tauri::State<'_, AppState>, folder: String) -> Re
 #[tauri::command]
 async fn watch_stop_all(state: tauri::State<'_, AppState>) -> Result<(), String> {
     let mut guard = state.watcher.lock().await;
+    let count = guard.list().len();
     watcher::stop_all(&mut guard);
+    if count > 0 { crate::app_log!("info", "watch: stopped all watchers count={}", count); }
     Ok(())
 }
 
@@ -202,8 +213,11 @@ async fn watch_set_mode(
         "sort" => watcher::WatchMode::Sort,
         _ => watcher::WatchMode::Off,
     };
+    let log = operation_log::OperationLog::start("watch.mode", serde_json::json!({"mode": watch_mode.log_name()}));
     let mut guard = state.watcher.lock().await;
-    guard.set_mode(&path, watch_mode).map_err(|e| e.to_string())
+    let result = guard.set_mode(&path, watch_mode).map_err(|e| e.to_string());
+    match &result { Ok(()) => log.succeed(serde_json::Value::Null), Err(_) => log.fail("watch_mode_failed") }
+    result
 }
 
 #[cfg(feature = "desktop")]
@@ -252,22 +266,38 @@ async fn automation_save_rule(
     state: tauri::State<'_, AppState>,
     rule: watcher::rules::AutomationRule,
 ) -> Result<Vec<watcher::rules::AutomationRule>, String> {
+    let log = operation_log::OperationLog::start("automation.rule_save", serde_json::json!({
+        "items": rule.actions.len(), "count": rule.triggers.len(),
+    }));
     if rule.name.trim().is_empty() {
+        log.fail("rule_name_empty");
         return Err("automation rule name must not be empty".into());
     }
     if rule.actions.is_empty() || rule.triggers.is_empty() {
+        log.fail("rule_incomplete");
         return Err("automation rules require at least one trigger and action".into());
     }
-    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
-    let mut rules = watcher::rules::load_rules(&data_dir).map_err(|e| e.to_string())?;
-    if let Some(existing) = rules.iter_mut().find(|item| item.name == rule.name) {
-        *existing = rule;
-    } else {
-        rules.push(rule);
+    let result = async {
+        let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+        let mut rules = watcher::rules::load_rules(&data_dir).map_err(|e| e.to_string())?;
+        let replaced = if let Some(existing) = rules.iter_mut().find(|item| item.name == rule.name) {
+            *existing = rule;
+            true
+        } else {
+            rules.push(rule);
+            false
+        };
+        rules.sort_by_key(|item| item.priority);
+        watcher::rules::save_rules(&data_dir, &rules).map_err(|e| e.to_string())?;
+        Ok::<_, String>((rules, replaced))
+    }.await;
+    match result {
+        Ok((rules, replaced)) => {
+            log.succeed(serde_json::json!({"total": rules.len(), "overwrite": replaced}));
+            Ok(rules)
+        }
+        Err(error) => { log.fail("rules_save_failed"); Err(error) }
     }
-    rules.sort_by_key(|item| item.priority);
-    watcher::rules::save_rules(&data_dir, &rules).map_err(|e| e.to_string())?;
-    Ok(rules)
 }
 
 #[cfg(feature = "desktop")]
@@ -294,11 +324,23 @@ async fn automation_delete_rule(
     state: tauri::State<'_, AppState>,
     name: String,
 ) -> Result<Vec<watcher::rules::AutomationRule>, String> {
-    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
-    let mut rules = watcher::rules::load_rules(&data_dir).map_err(|e| e.to_string())?;
-    rules.retain(|item| item.name != name);
-    watcher::rules::save_rules(&data_dir, &rules).map_err(|e| e.to_string())?;
-    Ok(rules)
+    let log = operation_log::OperationLog::start("automation.rule_delete", serde_json::Value::Null);
+    let result = async {
+        let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+        let mut rules = watcher::rules::load_rules(&data_dir).map_err(|e| e.to_string())?;
+        let before = rules.len();
+        rules.retain(|item| item.name != name);
+        let removed = before - rules.len();
+        watcher::rules::save_rules(&data_dir, &rules).map_err(|e| e.to_string())?;
+        Ok::<_, String>((rules, removed))
+    }.await;
+    match result {
+        Ok((rules, removed)) => {
+            log.succeed(serde_json::json!({"count": removed, "total": rules.len()}));
+            Ok(rules)
+        }
+        Err(error) => { log.fail("rules_save_failed"); Err(error) }
+    }
 }
 
 #[cfg(feature = "desktop")]
@@ -308,13 +350,21 @@ async fn automation_set_enabled(
     name: String,
     enabled: bool,
 ) -> Result<Vec<watcher::rules::AutomationRule>, String> {
-    let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
-    let mut rules = watcher::rules::load_rules(&data_dir).map_err(|e| e.to_string())?;
-    let rule = rules.iter_mut().find(|item| item.name == name)
-        .ok_or_else(|| format!("automation rule '{name}' not found"))?;
-    rule.enabled = enabled;
-    watcher::rules::save_rules(&data_dir, &rules).map_err(|e| e.to_string())?;
-    Ok(rules)
+    let log = operation_log::OperationLog::start("automation.rule_toggle", serde_json::json!({"accepted": enabled}));
+    let result = async {
+        let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
+        let mut rules = watcher::rules::load_rules(&data_dir).map_err(|e| e.to_string())?;
+        let rule = rules.iter_mut().find(|item| item.name == name)
+            .ok_or_else(|| format!("automation rule '{name}' not found"))?;
+        rule.enabled = enabled;
+        watcher::rules::save_rules(&data_dir, &rules).map_err(|e| e.to_string())?;
+        Ok::<_, String>(rules)
+    }.await;
+    match &result {
+        Ok(rules) => log.succeed(serde_json::json!({"total": rules.len()})),
+        Err(_) => log.fail("rules_save_failed"),
+    }
+    result
 }
 
 #[cfg(feature = "desktop")]
@@ -350,6 +400,8 @@ async fn watch_report_failure(
 ) -> Result<(), String> {
     let guard = state.watcher.lock().await;
     guard.report_failure(&path, &folder, &error).await;
+    // The file and error text stay in the dead-letter list the UI shows.
+    crate::app_log!("warn", "watch: auto-process failure recorded as dead letter");
     Ok(())
 }
 
@@ -372,6 +424,7 @@ async fn watch_dismiss_dead_letter(
 ) -> Result<(), String> {
     let guard = state.watcher.lock().await;
     guard.dismiss_dead_letter(&path).await;
+    crate::app_log!("info", "watch: dead letter dismissed");
     Ok(())
 }
 
@@ -383,7 +436,9 @@ async fn watch_retry_dead_letter(
     path: String,
 ) -> Result<Option<watcher::DeadLetter>, String> {
     let guard = state.watcher.lock().await;
-    Ok(guard.retry_dead_letter(&path).await)
+    let entry = guard.retry_dead_letter(&path).await;
+    crate::app_log!("info", "watch: dead letter retry requested found={}", entry.is_some());
+    Ok(entry)
 }
 
 // ── Doctor diagnostic (CLI↔GUI parity) ─────────────────────────────────
@@ -1367,11 +1422,16 @@ async fn start_llamacpp_sidecar(
     }
 
     app_log!("info", "Starting llama-server sidecar, port={}", port);
-    app_log!("info", "Model path: {}", model_path);
+    // Lifecycle receipt: spawn, then ready / not ready from the health loop.
+    // The model path stays out of the log.
+    let log = operation_log::OperationLog::start("app.sidecar.llama_cpp", serde_json::json!({}));
 
     // Resolve the bin directory: in dev it's src-tauri/bin, in release it's next to the exe
     let bin_dir = if cfg!(debug_assertions) {
-        let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
+        let exe_path = std::env::current_exe().map_err(|e| {
+            log.fail("binary_missing");
+            e.to_string()
+        })?;
         // target/debug/tauri-app.exe  →  src-tauri/bin
         exe_path
             .parent()
@@ -1385,7 +1445,10 @@ async fn start_llamacpp_sidecar(
         let resource_dir = app_handle
             .path()
             .resource_dir()
-            .map_err(|e: tauri::Error| e.to_string())?;
+            .map_err(|e: tauri::Error| {
+                log.fail("binary_missing");
+                e.to_string()
+            })?;
         resource_dir.join("bin")
     };
 
@@ -1407,6 +1470,7 @@ async fn start_llamacpp_sidecar(
 
     let exe_path = bin_dir.join(exe_name);
     if !exe_path.exists() {
+        log.fail("binary_missing");
         return Err(format!(
             "llama-server binary not found at: {}",
             exe_path.display()
@@ -1451,10 +1515,12 @@ async fn start_llamacpp_sidecar(
         .spawn()
         .map_err(|e| {
             println!("[Sidecar] SPAWN ERROR: {}", e);
+            log.fail("spawn_failed");
             e.to_string()
         })?;
 
     println!("[Sidecar] Spawned PID: {:?}", child.id());
+    log.step("spawned", serde_json::json!({}));
 
     // Stream stdout
     if let Some(stdout) = child.stdout.take() {
@@ -1500,6 +1566,7 @@ async fn start_llamacpp_sidecar(
                 match reqwest::get(&health_url).await {
                     Ok(r) if r.status().is_success() => {
                         println!("[Sidecar] llama-server ready after {}s", attempt * 2);
+                        log.succeed(serde_json::json!({"attempt": attempt}));
                         let _ = app.emit("sidecar-ready", true);
                         return;
                     }
@@ -1509,6 +1576,7 @@ async fn start_llamacpp_sidecar(
                 }
             }
             println!("[Sidecar] llama-server did not become ready within 60s");
+            log.fail("not_ready");
             let _ = app.emit("sidecar-failed", "Server did not respond within 60s");
         });
     }
@@ -1524,6 +1592,8 @@ async fn stop_llamacpp_sidecar(state: tauri::State<'_, AppState>) -> Result<(), 
     if let Some(mut child) = sidecar_lock.take() {
         let _ = child.kill().await;
         println!("[Sidecar] Stopped.");
+        operation_log::OperationLog::start("app.sidecar.llama_cpp_stop", serde_json::json!({}))
+            .succeed(serde_json::json!({}));
     }
     Ok(())
 }
@@ -1567,10 +1637,9 @@ async fn start_mlx_server(
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "mlx_lm.server".to_string());
 
-    println!(
-        "[MLX] Resolved binary: '{}' — model: {}, port: {}",
-        resolved_bin, model_path, port
-    );
+    println!("[MLX] Starting server on port {}", port);
+    // Lifecycle receipt; the model id and binary path stay out of the log.
+    let log = operation_log::OperationLog::start("app.sidecar.mlx", serde_json::json!({}));
 
     let mut child = tokio::process::Command::new(&resolved_bin)
         .args([
@@ -1585,11 +1654,13 @@ async fn start_mlx_server(
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| {
+            log.fail("spawn_failed");
             format!(
                 "Failed to start '{}': {}. Install with: pip install mlx-lm",
                 resolved_bin, e
             )
         })?;
+    log.step("spawned", serde_json::json!({}));
 
     if let Some(stdout) = child.stdout.take() {
         let app = app_handle.clone();
@@ -1625,6 +1696,7 @@ async fn start_mlx_server(
                 match reqwest::get(&health_url).await {
                     Ok(r) if r.status().is_success() => {
                         println!("[MLX] Server ready after {}s", attempt * 2);
+                        log.succeed(serde_json::json!({"attempt": attempt}));
                         let _ = app.emit("mlx-ready", true);
                         return;
                     }
@@ -1634,6 +1706,7 @@ async fn start_mlx_server(
                 }
             }
             println!("[MLX] Server did not become ready within 120s");
+            log.fail("not_ready");
             let _ = app.emit(
                 "mlx-log",
                 "[MLX] Server did not respond within 120s — check logs",
@@ -1675,10 +1748,17 @@ fn check_mlx_models_cached(repo_ids: Vec<String>) -> Vec<bool> {
 async fn delete_mlx_model(repo_id: String) -> Result<String, String> {
     let dir_name = format!("models--{}", repo_id.replace('/', "--"));
     let cache_dir = std::path::PathBuf::from(get_mlx_cache_dir()).join(&dir_name);
+    // The repo id and cache path stay out of the log.
+    let log = operation_log::OperationLog::start("models.mlx_delete", serde_json::json!({"backend": "local"}));
     if cache_dir.exists() {
-        fs::remove_dir_all(&cache_dir).map_err(|e| e.to_string())?;
+        fs::remove_dir_all(&cache_dir).map_err(|e| {
+            log.fail("remove_failed");
+            e.to_string()
+        })?;
+        log.succeed(serde_json::json!({}));
         Ok(format!("Deleted: {}", cache_dir.display()))
     } else {
+        log.fail("not_found");
         Err(format!("Not found in cache: {}", cache_dir.display()))
     }
 }
@@ -1689,9 +1769,11 @@ async fn start_ollama(
     state: tauri::State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
+    let log = operation_log::OperationLog::start("app.sidecar.ollama", serde_json::json!({}));
     // Check if Ollama is already running externally
     if let Ok(r) = reqwest::get("http://localhost:11434/api/tags").await {
         if r.status().is_success() {
+            log.succeed(serde_json::json!({"reused": true}));
             let _ = app_handle.emit("ollama-ready", true);
             return Ok("Ollama already running".to_string());
         }
@@ -1727,7 +1809,11 @@ async fn start_ollama(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Failed to start ollama: {}. Is Ollama installed?", e))?;
+        .map_err(|e| {
+            log.fail("spawn_failed");
+            format!("Failed to start ollama: {}. Is Ollama installed?", e)
+        })?;
+    log.step("spawned", serde_json::json!({}));
 
     if let Some(stdout) = child.stdout.take() {
         let app = app_handle.clone();
@@ -1761,6 +1847,7 @@ async fn start_ollama(
                 match reqwest::get("http://localhost:11434/api/tags").await {
                     Ok(r) if r.status().is_success() => {
                         println!("[Ollama] Ready after {}s", attempt * 2);
+                        log.succeed(serde_json::json!({"attempt": attempt}));
                         let _ = app.emit("ollama-ready", true);
                         return;
                     }
@@ -1768,6 +1855,7 @@ async fn start_ollama(
                 }
             }
             println!("[Ollama] Did not become ready within 60s");
+            log.fail("not_ready");
             let _ = app.emit("ollama-failed", "Ollama did not respond within 60s");
         });
     }
@@ -1783,6 +1871,8 @@ async fn stop_ollama(state: tauri::State<'_, AppState>) -> Result<(), String> {
     if let Some(mut child) = ollama_lock.take() {
         let _ = child.kill().await;
         println!("[Ollama] Stopped.");
+        operation_log::OperationLog::start("app.sidecar.ollama_stop", serde_json::json!({}))
+            .succeed(serde_json::json!({}));
     }
     Ok(())
 }
@@ -1794,6 +1884,8 @@ async fn stop_mlx_server(state: tauri::State<'_, AppState>) -> Result<(), String
     if let Some(mut child) = mlx_lock.take() {
         let _ = child.kill().await;
         println!("[MLX] Server stopped");
+        operation_log::OperationLog::start("app.sidecar.mlx_stop", serde_json::json!({}))
+            .succeed(serde_json::json!({}));
     }
     Ok(())
 }
@@ -1897,13 +1989,17 @@ use no_sidecars::{
 
 #[tauri::command]
 async fn delete_files(paths: Vec<String>) -> Result<Vec<String>, String> {
+    let log = operation_log::OperationLog::start("files.delete", serde_json::json!({"items": paths.len()}));
     let mut results = Vec::new();
+    let (mut deleted, mut failed) = (0usize, 0usize);
     for path in paths {
         match fs::remove_file(&path) {
-            Ok(_) => results.push(format!("Deleted: {}", path)),
-            Err(e) => results.push(format!("Error deleting {}: {}", path, e)),
+            Ok(_) => { deleted += 1; results.push(format!("Deleted: {}", path)) }
+            Err(e) => { failed += 1; results.push(format!("Error deleting {}: {}", path, e)) }
         }
     }
+    // Per-path outcomes stay in the returned list; the log gets counts only.
+    log.succeed(serde_json::json!({"completed": deleted, "failed": failed, "partial": failed > 0}));
     Ok(results)
 }
 
@@ -2565,6 +2661,7 @@ mod pdf_metadata_tests {
 
 #[tauri::command]
 fn scan_folder(folder_path: String, extensions: Vec<String>) -> Result<Vec<FileEntry>, String> {
+    let log = operation_log::OperationLog::start("files.scan", serde_json::Value::Null);
     let mut entries = Vec::new();
     let path = Path::new(&folder_path);
     if path.is_file() {
@@ -2579,16 +2676,17 @@ fn scan_folder(folder_path: String, extensions: Vec<String>) -> Result<Vec<FileE
             }
         }
     } else if path.is_dir() {
-        scan_dir_recursive(path, &extensions, &mut entries).map_err(|e| e.to_string())?;
+        if let Err(e) = scan_dir_recursive(path, &extensions, &mut entries) {
+            log.fail("scan_failed");
+            return Err(e.to_string());
+        }
         entries.sort_by(|a, b| a.path.cmp(&b.path));
     } else {
+        log.fail("path_not_found");
         return Err(format!("Path does not exist: {}", folder_path));
     }
-    println!(
-        "[Rust] scan_folder: found {} files in/at {}",
-        entries.len(),
-        folder_path
-    );
+    let bytes: u64 = entries.iter().map(|entry| entry.size).sum();
+    log.succeed(serde_json::json!({"files": entries.len(), "bytes": bytes}));
     Ok(entries)
 }
 
@@ -2622,6 +2720,56 @@ fn scan_dir_recursive(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod file_operation_log_tests {
+    fn terminal(events: &[crate::operation_log::OperationEvent], operation: &str) -> crate::operation_log::OperationEvent {
+        let terminals: Vec<_> = events.iter()
+            .filter(|event| event.operation == operation && ["completed", "failed", "cancelled"].contains(&event.phase.as_str()))
+            .cloned().collect();
+        assert_eq!(terminals.len(), 1, "exactly one terminal receipt for {operation}");
+        terminals[0].clone()
+    }
+
+    #[test]
+    fn scan_folder_logs_counts_without_paths() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("private-name.pdf"), b"12345").unwrap();
+        let folder = directory.path().to_string_lossy().into_owned();
+        let (result, events) = crate::operation_log::capture(|| super::scan_folder(folder, vec!["pdf".into()]));
+        assert_eq!(result.unwrap().len(), 1);
+        let done = terminal(&events, "files.scan");
+        assert_eq!(done.phase, "completed");
+        assert_eq!(done.context.get("files").and_then(|v| v.as_u64()), Some(1));
+        assert_eq!(done.context.get("bytes").and_then(|v| v.as_u64()), Some(5));
+        assert!(!serde_json::to_string(&events).unwrap().contains("private-name"));
+
+        let missing = directory.path().join("private-missing").to_string_lossy().into_owned();
+        let (result, events) = crate::operation_log::capture(|| super::scan_folder(missing, vec!["pdf".into()]));
+        assert!(result.is_err());
+        let failed = terminal(&events, "files.scan");
+        assert_eq!((failed.phase.as_str(), failed.code.as_deref()), ("failed", Some("path_not_found")));
+        assert!(!serde_json::to_string(&events).unwrap().contains("private-"));
+    }
+
+    #[test]
+    fn delete_files_logs_partial_counts_without_paths() {
+        let directory = tempfile::tempdir().unwrap();
+        let present = directory.path().join("private-present.txt");
+        std::fs::write(&present, b"x").unwrap();
+        let paths = vec![present.to_string_lossy().into_owned(),
+            directory.path().join("private-absent.txt").to_string_lossy().into_owned()];
+        let (result, events) = crate::operation_log::capture(|| futures::executor::block_on(super::delete_files(paths)));
+        assert_eq!(result.unwrap().len(), 2);
+        assert!(!present.exists());
+        let done = terminal(&events, "files.delete");
+        assert_eq!(done.phase, "completed");
+        assert_eq!(done.context.get("completed").and_then(|v| v.as_u64()), Some(1));
+        assert_eq!(done.context.get("failed").and_then(|v| v.as_u64()), Some(1));
+        assert_eq!(done.context.get("partial"), Some(&serde_json::Value::Bool(true)));
+        assert!(!serde_json::to_string(&events).unwrap().contains("private-"));
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -2687,12 +2835,6 @@ async fn execute_batch(
     state: tauri::State<'_, AppState>,
     payload: BatchExecutionPayload,
 ) -> Result<std::collections::HashMap<String, BatchExecutionResult>, String> {
-    app_log!(
-        "info",
-        "execute_batch: {} items, mode={}",
-        payload.items.len(),
-        payload.mode
-    );
     // Intended-purpose gate. This is the choke point where AI-derived
     // suggestions stop being suggestions and start moving the user's files, so
     // it is the one place the notice has to be unavoidable. Acknowledging is a
@@ -2717,6 +2859,7 @@ async fn execute_batch(
     let is_windows = std::env::consts::OS == "windows";
     let script_name = if is_windows { "sort_files.ps1" } else { "sort_files.sh" };
     let mut script = batch_script::Script::new(is_windows);
+    let mut index_location_failures = 0usize;
 
     for item in &payload.items {
         let src = Path::new(&item.original_path);
@@ -2785,14 +2928,28 @@ async fn execute_batch(
                 if lock.config.enabled {
                     if let Some(backend) = lock.backend.clone() {
                         drop(lock);
-                        if let Err(e) = backend.update_location(doc_id, new_uri).await {
-                            println!("[index] update_location failed for {}: {}", doc_id, e);
+                        if backend.update_location(doc_id, new_uri).await.is_err() {
+                            index_location_failures += 1;
                         }
                     }
                 }
             }
         }
         results.insert(item.id.clone(), exec_result);
+    }
+
+    // One line per batch, not per item: which kind of destination refusal
+    // happened is the operational signal (sandbox vs folder permissions).
+    let (mut dirs_not_permitted, mut dirs_not_writable) = (0usize, 0usize);
+    for reason in parent_status.values().flatten() {
+        if reason.starts_with("NOT_PERMITTED") { dirs_not_permitted += 1 } else { dirs_not_writable += 1 }
+    }
+    if dirs_not_permitted + dirs_not_writable > 0 {
+        app_log!("warn", "execute_batch: destination folders could not be created not_permitted={} not_writable={}",
+            dirs_not_permitted, dirs_not_writable);
+    }
+    if index_location_failures > 0 {
+        app_log!("warn", "execute_batch: index location update failed for {} moved document(s)", index_location_failures);
     }
 
     if is_script_mode && !payload.items.is_empty() {
@@ -2804,8 +2961,10 @@ async fn execute_batch(
                 let script_path = parent.join(script_name);
                 if let Err(e) = fs::OpenOptions::new().write(true).create_new(true).open(&script_path)
                     .and_then(|mut file| file.write_all(script.finish().as_bytes())) {
+                    app_log!("error", "execute_batch: sort script could not be saved");
                     return Err(format!("Failed to save script to {:?}: {}", script_path, e));
                 }
+                app_log!("info", "execute_batch: sort script saved items={}", payload.items.len());
             }
         }
     }
@@ -2865,8 +3024,10 @@ async fn run_mistralrs_query(
     };
 
     if needs_load {
-        app_log!("info", "Loading LLM model: {}", model_path);
-
+        // Model paths / repo ids stay out of the log; the receipt has timing
+        // and a fixed failure code, the caller keeps the detailed error.
+        let log = operation_log::OperationLog::start("llm.local_load", serde_json::json!({"backend": "local"}));
+        let loaded: Result<_, String> = async {
         let device = best_device(false).map_err(|e| e.to_string())?;
         app_log!("info", "Target hardware device: {:?}", device);
 
@@ -2938,14 +3099,16 @@ async fn run_mistralrs_query(
                     .await
             }
         }
-        .map_err(|e| {
-            app_log!("error", "LLM load failed: {}", e);
-            e.to_string()
-        })?;
+        .map_err(|e| e.to_string())?;
+        Ok::<_, String>(model)
+        }.await;
+        let model = match loaded {
+            Ok(model) => { log.succeed(serde_json::Value::Null); model }
+            Err(error) => { log.fail("model_load_failed"); return Err(error); }
+        };
 
         *model_lock = Some(Arc::new(model));
         *current_path_lock = Some(model_path.clone());
-        app_log!("info", "LLM model loaded successfully");
     }
 
     // We can unwrap here because we ensured it's Some above
@@ -2972,8 +3135,10 @@ async fn run_mistralrs_query(
         thinking
     );
     let start_time = std::time::Instant::now();
+    // The frontend LLM client records timing for this call; Rust only adds
+    // a fixed line on failure, never the native error text.
     let response = model.send_chat_request(request).await.map_err(|e| {
-        app_log!("error", "LLM query failed: {}", e);
+        app_log!("error", "mistralrs: chat request failed");
         e.to_string()
     })?;
     let duration = start_time.elapsed();
@@ -3034,11 +3199,18 @@ pub fn run() {
                 *h = Some(app.handle().clone());
             }
             app_log!("info", "CrispSorter v{} starting", env!("CARGO_PKG_VERSION"));
+            // One receipt for the stateful part of startup: each subsystem
+            // that fails to come up is a warning code, never a path.
+            let startup = operation_log::OperationLog::start("app.startup", serde_json::json!({"surface": "gui"}));
+            if app.path().app_data_dir().is_err() {
+                startup.warn("data_dir_unavailable", serde_json::json!({}));
+            }
 
             // Initialise job queue + store data_dir now that it is known.
             if let Ok(data_dir) = app.path().app_data_dir() {
                 if let Err(error) = model_provisioning::initialize(&data_dir) {
                     app_log!("error", "OCR model store: {error}");
+                    startup.warn("model_store_unavailable", serde_json::json!({}));
                 }
                 // Settings downloads used to land here; keep them findable.
                 model_cache::add_legacy_dir(data_dir.join("models"));
@@ -3052,14 +3224,14 @@ pub fn run() {
                 // has no access to a previously-picked folder until its
                 // bookmark is resolved and started.
                 folder_access::set_data_dir(data_dir.clone());
-                for (path, why) in folder_access::restore_all() {
-                    app_log!("warn", "folder permission not restored for {}: {}", path.display(), why);
+                // Count only: the folder paths are private.
+                let not_restored = folder_access::restore_all().len();
+                if not_restored > 0 {
+                    startup.warn("folder_access_not_restored", serde_json::json!({"failed": not_restored}));
                 }
-                app_log!(
-                    "info",
-                    "secret store: {}",
-                    secrets::vault::status().choice.kind()
-                );
+                if secrets::vault::status().error.is_some() {
+                    startup.warn("secret_store_unavailable", serde_json::json!({}));
+                }
                 let state: tauri::State<'_, AppState> = app.state();
                 // Store data_dir for drive_* commands and similar.
                 // Use try_lock so we don't block the sync setup hook.
@@ -3124,7 +3296,7 @@ pub fn run() {
                         &idx_lock.config.audio_asr_backend,
                     );
                 }
-                app_log!("info", "Loaded persisted IndexConfig from {}", data_dir.display());
+                app_log!("info", "Loaded persisted IndexConfig");
 
                 // P13.7 Stage J — background drain task for the
                 // cb_manifest_push outbox.  Runs every 30s while
@@ -3326,6 +3498,7 @@ pub fn run() {
                 });
             }
 
+            startup.succeed(serde_json::json!({"store": secrets::active_store_log_kind()}));
             Ok(())
         })
         .manage(AppState {

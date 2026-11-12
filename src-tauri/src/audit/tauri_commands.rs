@@ -19,9 +19,15 @@ pub async fn audit_log_event(
     doc_id: Option<String>,
     detail: String,
 ) -> Result<(), String> {
-    let log = get_audit(&state).await?;
+    let log = get_audit(&state).await.inspect_err(|_| {
+        crate::app_log!("error", "audit: trail could not be opened; event not recorded");
+    })?;
+    // A lost audit entry is itself worth a line; action/detail stay out of it.
     log.log(&action, doc_id.as_deref(), &detail, "gui")
-        .map_err(|e| e.to_string())
+        .map_err(|e| {
+            crate::app_log!("error", "audit: event could not be recorded");
+            e.to_string()
+        })
 }
 
 #[tauri::command]

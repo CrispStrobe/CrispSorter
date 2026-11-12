@@ -295,11 +295,15 @@ fn catalog_hit_to_search_result(hit: crate::catalog::lance::CatalogHit) -> Searc
 /// Search by image similarity — encode an image via ViT + omni embeddings,
 /// ANN-search the `embedding_vit` / `embedding_omni` columns, RRF-merge.
 #[tauri::command]
-pub async fn index_search_by_image(
-    state: State<'_, AppState>,
+pub async fn index_search_by_image(state: State<'_, AppState>, image_path: String, limit: Option<usize>) -> Result<Vec<SearchResult>, String> {
+    let log = crate::operation_log::OperationLog::start("search.image", serde_json::json!({"surface":"gui"}));
+    let result = index_search_by_image_inner(state, image_path, limit).await;
+    crate::index::finish_logged(log, result, "search_failed", |hits| serde_json::json!({"results": hits.len()}))
+}
+
+async fn index_search_by_image_inner(state: State<'_, AppState>,
     image_path: String,
-    limit: Option<usize>,
-) -> Result<Vec<SearchResult>, String> {
+    limit: Option<usize>) -> Result<Vec<SearchResult>, String> {
     let _fg = crate::bg_ingest::ForegroundGuard::new(state.foreground_active.clone());
 
     let lock = state.index.lock().await;
@@ -630,20 +634,25 @@ async fn verify_remote_sources(sources: Vec<(std::path::PathBuf, String)>) -> Re
 /// `owner_id` defaults to nil-UUID when not supplied — single-user
 /// installs can ignore it; multi-user setups should always pass.
 #[tauri::command]
-pub async fn index_ingest_path(
-    state: State<'_, AppState>,
+pub async fn index_ingest_path(state: State<'_, AppState>, path: String, owner_id: Option<String>, title: Option<String>, author: Option<String>, year: Option<i32>, language: Option<String>) -> Result<IngestStats, String> {
+    let log = crate::operation_log::OperationLog::start("index.ingest_path", serde_json::json!({"surface":"gui","files":1}));
+    let result = index_ingest_path_inner(&log, state, path, owner_id, title, author, year, language).await;
+    crate::index::finish_logged(log, result, "ingest_failed", |stats| serde_json::json!({"count": stats.chunk_count}))
+}
+
+async fn index_ingest_path_inner(log: &crate::operation_log::OperationLog, state: State<'_, AppState>,
     path: String,
     owner_id: Option<String>,
     title: Option<String>,
     author: Option<String>,
     year: Option<i32>,
-    language: Option<String>,
-) -> Result<IngestStats, String> {
+    language: Option<String>) -> Result<IngestStats, String> {
     let p = std::path::PathBuf::from(&path);
     let owner = owner_id.unwrap_or_else(|| uuid::Uuid::nil().to_string());
 
     // Stream the fingerprint so a large source is not duplicated in memory.
     // The writer verifies it again after extraction and model work.
+    log.step("hashing", serde_json::Value::Null);
     let source_hash = tokio::task::spawn_blocking({
         let p = p.clone();
         move || super::ingest::hash_local_source(&p)
@@ -654,6 +663,7 @@ pub async fn index_ingest_path(
 
     // Run the dispatcher off the runtime — pdf_extract is sync and CPU-
     // heavy, the others are quick but still blocking I/O.
+    log.step("extracting", serde_json::Value::Null);
     let extract_opts = state.bg_ingest.lock().await.ocr_options();
     let extracted = tokio::task::spawn_blocking({
         let p = p.clone();
@@ -735,6 +745,7 @@ pub async fn index_ingest_path(
         .ok_or("No local ingest pipeline (remote backend?)")?;
     drop(lock);
 
+    log.step("writing", serde_json::Value::Null);
     pipeline
         .ingest_verified_document(raw, p)
         .await
@@ -771,11 +782,15 @@ pub async fn index_ingest_document(
 /// journal. The remote backend submits one durable `IngestBatch`, verifies
 /// original-file fingerprints before upload, and waits for its terminal state.
 #[tauri::command]
-pub async fn index_ingest_batch(
-    app: tauri::AppHandle,
+pub async fn index_ingest_batch(app: tauri::AppHandle, state: State<'_, AppState>, inputs: Vec<DocumentIngestInput>) -> Result<IngestStats, String> {
+    let log = crate::operation_log::OperationLog::start("index.ingest_batch", serde_json::json!({"surface":"gui","files":inputs.len()}));
+    let result = index_ingest_batch_inner(&log, app, state, inputs).await;
+    crate::index::finish_logged(log, result, "ingest_failed", |stats| serde_json::json!({"count": stats.chunk_count}))
+}
+
+async fn index_ingest_batch_inner(log: &crate::operation_log::OperationLog, app: tauri::AppHandle,
     state: State<'_, AppState>,
-    mut inputs: Vec<DocumentIngestInput>,
-) -> Result<IngestStats, String> {
+    mut inputs: Vec<DocumentIngestInput>) -> Result<IngestStats, String> {
     if inputs.is_empty() {
         return Ok(IngestStats { chunk_count: 0, embed_time_ms: 0, write_time_ms: 0, doc_ids: Vec::new() });
     }
@@ -853,6 +868,7 @@ pub async fn index_ingest_batch(
             };
         }
 
+        log.step("embedding", serde_json::json!({"backend": "local"}));
         emit_batch!("embedding", "Embedding & writing batch …");
 
         let result = pipeline
@@ -902,6 +918,7 @@ pub async fn index_ingest_batch(
             "Embedding remote batch …"
         }
     );
+    log.step("embedding", serde_json::json!({"backend": "remote"}));
     let embed_start = std::time::Instant::now();
     let mut chunks: Vec<RemoteIngestChunk> = Vec::new();
 
@@ -983,6 +1000,7 @@ pub async fn index_ingest_batch(
     }
     let embed_time_ms = embed_start.elapsed().as_millis() as u64;
 
+    log.step("uploading", serde_json::Value::Null);
     emit_batch_remote!("writing", "Queueing remote batch …");
     let write_start = std::time::Instant::now();
     let proxy = crate::sync::tauri_commands::proxy_config_for_app_state(&state).await?;
@@ -995,6 +1013,7 @@ pub async fn index_ingest_batch(
     let batch = RemoteIngestBatch { chunks,container_group_version:grouped_container_upload.then_some(crisp_index_protocol::CONTAINER_MEMBERS_VERSION) };
     verify_remote_sources(sources).await?;
     let accepted = remote.ingest_batch(&batch).await.map_err(|e| e.to_string())?;
+    log.step("remote_queued", serde_json::json!({"pending": accepted.queue_depth}));
     {
         let mut lock = state.index.lock().await;
         lock.remote_queue_depth = accepted.queue_depth;
@@ -1065,6 +1084,7 @@ pub async fn index_ingest_batch(
                 }
                 "done" => break status,
                 "failed" => {
+                    log.fail("remote_task_failed");
                     let mut lock = state.index.lock().await;
                     lock.remote_queue_depth = status.queue_depth;
                     return Err(status
@@ -1101,10 +1121,14 @@ pub async fn index_ingest_batch(
 /// No text extraction, no embedding. Use this to bootstrap a catalog
 /// before deciding which files to deep-index.
 #[tauri::command]
-pub async fn index_ingest_l1(
-    state: State<'_, AppState>,
-    files: Vec<L1FileEntry>,
-) -> Result<IngestStats, String> {
+pub async fn index_ingest_l1(state: State<'_, AppState>, files: Vec<L1FileEntry>) -> Result<IngestStats, String> {
+    let log = crate::operation_log::OperationLog::start("index.ingest_l1", serde_json::json!({"surface":"gui","files":files.len()}));
+    let result = index_ingest_l1_inner(state, files).await;
+    crate::index::finish_logged(log, result, "ingest_failed", |stats| serde_json::json!({"count": stats.chunk_count}))
+}
+
+async fn index_ingest_l1_inner(state: State<'_, AppState>,
+    files: Vec<L1FileEntry>) -> Result<IngestStats, String> {
     let lock = state.index.lock().await;
 
     if !lock.config.enabled {
@@ -1143,11 +1167,15 @@ pub struct L2PromoteResult {
 /// `doc_id`, write the discovered Title / Author / Year fields back to the
 /// row, and promote `metadata_json.level` to at least 2.
 #[tauri::command]
-pub async fn index_promote_l2(
-    state: State<'_, AppState>,
+pub async fn index_promote_l2(state: State<'_, AppState>, doc_ids: Vec<String>, source_paths: Option<Vec<String>>) -> Result<Vec<L2PromoteResult>, String> {
+    let log = crate::operation_log::OperationLog::start("index.promote_l2", serde_json::json!({"surface":"gui","items":doc_ids.len()}));
+    let result = index_promote_l2_inner(state, doc_ids, source_paths).await;
+    crate::index::finish_logged(log, result, "promote_failed", |rows| serde_json::json!({"completed": rows.iter().filter(|row| row.updated).count(), "failed": rows.iter().filter(|row| row.error.is_some()).count(), "partial": rows.iter().any(|row| row.error.is_some())}))
+}
+
+async fn index_promote_l2_inner(state: State<'_, AppState>,
     doc_ids: Vec<String>,
-    source_paths: Option<Vec<String>>,
-) -> Result<Vec<L2PromoteResult>, String> {
+    source_paths: Option<Vec<String>>) -> Result<Vec<L2PromoteResult>, String> {
     use super::l2_metadata;
 
     if source_paths.as_ref().is_some_and(|paths| paths.len() != doc_ids.len()) {
@@ -1313,10 +1341,14 @@ pub struct CafImportResult {
 /// in `location_uri` so promotion to L2 / L3 later still works when the
 /// drive is mounted.
 #[tauri::command]
-pub async fn index_import_caf(
-    state: State<'_, AppState>,
-    path: String,
-) -> Result<CafImportResult, String> {
+pub async fn index_import_caf(state: State<'_, AppState>, path: String) -> Result<CafImportResult, String> {
+    let log = crate::operation_log::OperationLog::start("index.import_caf", serde_json::json!({"surface":"gui"}));
+    let result = index_import_caf_inner(&log, state, path).await;
+    crate::index::finish_logged(log, result, "import_failed", |report| serde_json::json!({"completed": report.ingested, "failed": report.errors, "total": report.ingested + report.skipped + report.errors, "partial": report.errors > 0}))
+}
+
+async fn index_import_caf_inner(log: &crate::operation_log::OperationLog, state: State<'_, AppState>,
+    path: String) -> Result<CafImportResult, String> {
     use crate::catalog::caf;
     use std::path::PathBuf;
 
@@ -1331,16 +1363,10 @@ pub async fn index_import_caf(
     drop(lock);
 
     let caf_path = PathBuf::from(&path);
-    crate::app_log!("info", "CAF: reading {}", caf_path.display());
+    log.step("reading", serde_json::Value::Null);
     let idx = caf::read_file(&caf_path).map_err(|e| format!("read {}: {e}", caf_path.display()))?;
     let total = idx.all_files.len();
-    crate::app_log!(
-        "info",
-        "CAF: {} entries, label='{}', root='{}'",
-        total,
-        idx.header.label,
-        idx.root_path.display()
-    );
+    log.step("writing", serde_json::json!({"total": total}));
 
     let now_ms: i64 = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1352,9 +1378,6 @@ pub async fn index_import_caf(
     // cataloging an offline archive — callers must supply the UUID via the
     // stored `RegisteredCatalog.volumeId` if they want volume-filter to work.
     let caf_volume_id = crate::volume::volume_id_for_path(&idx.root_path);
-    if let Some(ref vid) = caf_volume_id {
-        crate::app_log!("info", "CAF: volume UUID = {vid}");
-    }
 
     // Convert each FileEntry into an L1 row. doc_id is sha256 of the
     // absolute path so subsequent imports of the same .caf are idempotent
@@ -1400,9 +1423,9 @@ pub async fn index_import_caf(
     for chunk in entries.chunks(500) {
         match pipeline.ingest_l1(chunk).await {
             Ok(stats) => ingested += stats.chunk_count,
-            Err(e) => {
+            Err(_) => {
                 errors += chunk.len();
-                crate::app_log!("error", "CAF: ingest_l1 batch failed: {e:#}");
+                log.warn("batch_failed", serde_json::json!({"files": chunk.len()}));
             }
         }
     }
@@ -1431,13 +1454,17 @@ pub async fn index_import_caf(
 ///
 /// Returns the number of rows exported.
 #[tauri::command]
-pub async fn index_export_cidx(
-    state: State<'_, AppState>,
+pub async fn index_export_cidx(state: State<'_, AppState>, dest_path: String, volume_id: Option<String>, include_embeddings: Option<bool>, include_fts: Option<bool>) -> Result<usize, String> {
+    let log = crate::operation_log::OperationLog::start("index.export_cidx", serde_json::json!({"surface":"gui"}));
+    let result = index_export_cidx_inner(state, dest_path, volume_id, include_embeddings, include_fts).await;
+    crate::index::finish_logged(log, result, "export_failed", |rows| serde_json::json!({"rows": rows}))
+}
+
+async fn index_export_cidx_inner(state: State<'_, AppState>,
     dest_path: String,
     volume_id: Option<String>,
     include_embeddings: Option<bool>,
-    include_fts: Option<bool>,
-) -> Result<usize, String> {
+    include_fts: Option<bool>) -> Result<usize, String> {
     let local = state.index.lock().await.local.clone()
         .ok_or("Local index not initialised")?;
     let dest = std::path::PathBuf::from(&dest_path);
@@ -1470,11 +1497,15 @@ pub async fn index_open_cidx(
 /// `doc_ids` (optional) limits the export to those ids; otherwise every
 /// row in the active catalog is written.
 #[tauri::command]
-pub async fn index_export_caf(
-    state: State<'_, AppState>,
+pub async fn index_export_caf(state: State<'_, AppState>, path: String, doc_ids: Option<Vec<String>>) -> Result<usize, String> {
+    let log = crate::operation_log::OperationLog::start("index.export_caf", serde_json::json!({"surface":"gui"}));
+    let result = index_export_caf_inner(state, path, doc_ids).await;
+    crate::index::finish_logged(log, result, "export_failed", |files| serde_json::json!({"files": files}))
+}
+
+async fn index_export_caf_inner(state: State<'_, AppState>,
     path: String,
-    doc_ids: Option<Vec<String>>,
-) -> Result<usize, String> {
+    doc_ids: Option<Vec<String>>) -> Result<usize, String> {
     use crate::catalog::caf;
     use crate::catalog::index::{FileEntry, FileIndex, VolumeHeader};
     use std::path::PathBuf;
@@ -1547,12 +1578,6 @@ pub async fn index_export_caf(
     }
 
     let out = PathBuf::from(&path);
-    crate::app_log!(
-        "info",
-        "CAF: writing {} entries to {}",
-        idx.all_files.len(),
-        out.display()
-    );
     caf::write_file(&out, &idx, idx.header.date)
         .map_err(|e| format!("write {}: {e}", out.display()))?;
     Ok(idx.all_files.len())
@@ -1630,11 +1655,15 @@ fn parse_l1_meta(meta_json: &Option<String>) -> (u64, u32) {
 /// - the file isn't actually present on disk;
 /// - the audio decoder rejects the file.
 #[tauri::command]
-pub async fn index_audio_promote_l3(
-    state: State<'_, AppState>,
+pub async fn index_audio_promote_l3(state: State<'_, AppState>, location_uri: String, owner_id: Option<String>) -> Result<IngestStats, String> {
+    let log = crate::operation_log::OperationLog::start("index.audio_promote_l3", serde_json::json!({"surface":"gui","files":1}));
+    let result = index_audio_promote_l3_inner(&log, state, location_uri, owner_id).await;
+    crate::index::finish_logged(log, result, "promote_failed", |stats| serde_json::json!({"count": stats.chunk_count}))
+}
+
+async fn index_audio_promote_l3_inner(log: &crate::operation_log::OperationLog, state: State<'_, AppState>,
     location_uri: String,
-    owner_id: Option<String>,
-) -> Result<IngestStats, String> {
+    owner_id: Option<String>) -> Result<IngestStats, String> {
     let owner_id = local_source_owner(&location_uri, owner_id)?;
     // Map URI → local path via the existing helper.  Reusing the
     // images-side helper keeps the URI grammar identical across
@@ -1654,6 +1683,7 @@ pub async fn index_audio_promote_l3(
         ));
     }
 
+    log.step("hashing", serde_json::Value::Null);
     let source_hash = fingerprint_local_source(&path).await?;
 
     // Run the audio extractor with explicit L3 — overrides the
@@ -1662,6 +1692,7 @@ pub async fn index_audio_promote_l3(
     // default-level setting.  audio_extraction_enabled is also
     // ignored: the user explicitly asked for this row, so the
     // master switch doesn't gate it.
+    log.step("extracting", serde_json::Value::Null);
     let extracted = {
         let p = path.clone();
         tokio::task::spawn_blocking(move || crate::extractors::audio::extract(&p))
@@ -1734,6 +1765,7 @@ pub async fn index_audio_promote_l3(
         embedding_vit: None,
     };
 
+    log.step("writing", serde_json::Value::Null);
     pipeline
         .ingest_verified_document(raw, path)
         .await
@@ -1752,11 +1784,15 @@ pub async fn index_audio_promote_l3(
 /// overrides the user's global Settings (master switch + ingest
 /// level) because the explicit click is unambiguous intent.
 #[tauri::command]
-pub async fn index_image_promote_l3(
-    state: State<'_, AppState>,
+pub async fn index_image_promote_l3(state: State<'_, AppState>, location_uri: String, owner_id: Option<String>) -> Result<IngestStats, String> {
+    let log = crate::operation_log::OperationLog::start("index.image_promote_l3", serde_json::json!({"surface":"gui","files":1,"kind":"image"}));
+    let result = index_image_promote_l3_inner(&log, state, location_uri, owner_id).await;
+    crate::index::finish_logged(log, result, "promote_failed", |stats| serde_json::json!({"count": stats.chunk_count}))
+}
+
+async fn index_image_promote_l3_inner(log: &crate::operation_log::OperationLog, state: State<'_, AppState>,
     location_uri: String,
-    owner_id: Option<String>,
-) -> Result<IngestStats, String> {
+    owner_id: Option<String>) -> Result<IngestStats, String> {
     let owner_id = local_source_owner(&location_uri, owner_id)?;
     let path = crate::images::tauri_commands::location_uri_to_local_path(&location_uri)
         .ok_or_else(|| {
@@ -1773,10 +1809,12 @@ pub async fn index_image_promote_l3(
         ));
     }
 
+    log.step("hashing", serde_json::Value::Null);
     let source_hash = fingerprint_local_source(&path).await?;
 
     // Force L3 + OCR for this explicit action, retaining the saved recognizer,
     // model stages, language and CPU profile.
+    log.step("extracting", serde_json::Value::Null);
     let extract_opts = state.bg_ingest.lock().await.requested_ocr_options();
     let extracted = {
         let p = path.clone();
@@ -1849,6 +1887,7 @@ pub async fn index_image_promote_l3(
         embedding_vit: None,
     };
 
+    log.step("writing", serde_json::Value::Null);
     pipeline
         .ingest_verified_document(raw, path)
         .await
@@ -1858,15 +1897,20 @@ pub async fn index_image_promote_l3(
 /// Delete a document completely: removes all chunks from LanceDB and the
 /// corresponding entry from the Tantivy FTS index.
 #[tauri::command]
-pub async fn index_delete_document(
-    state: State<'_, AppState>,
+pub async fn index_delete_document(state: State<'_, AppState>, doc_id: String, owner_id: Option<String>, location_uri: Option<String>) -> Result<(), String> {
+    let log = crate::operation_log::OperationLog::start("index.delete_document", serde_json::json!({"surface":"gui"}));
+    let result = index_delete_document_inner(&log, state, doc_id, owner_id, location_uri).await;
+    crate::index::finish_logged(log, result, "delete_failed", |_| serde_json::Value::Null)
+}
+
+async fn index_delete_document_inner(log: &crate::operation_log::OperationLog, state: State<'_, AppState>,
     doc_id: String,
     owner_id: Option<String>,
-    location_uri: Option<String>,
-) -> Result<(), String> {
+    location_uri: Option<String>) -> Result<(), String> {
     let lock = state.index.lock().await;
 
     if !lock.config.enabled {
+        log.warn("index_disabled", serde_json::Value::Null);
         return Ok(());
     }
 
@@ -1876,6 +1920,7 @@ pub async fn index_delete_document(
     drop(lock);
 
     if let Some(local) = local {
+        log.step("deleting", serde_json::json!({"backend": "local"}));
         let fts = fts.ok_or("FTS index not available for delete")?;
         match (owner_id.as_deref(), location_uri.as_deref()) {
             (Some(owner), Some(uri)) => local.delete_occurrence_with_fts(&doc_id, owner, uri, &fts).await,
@@ -1883,6 +1928,7 @@ pub async fn index_delete_document(
             _ => return Err("Select both the owner and location when deleting a source occurrence".into()),
         }.map_err(|e| e.to_string())?;
     } else if config.backend_type == super::BackendType::Remote {
+        log.step("deleting", serde_json::json!({"backend": "remote"}));
         let proxy = crate::sync::tauri_commands::proxy_config_for_app_state(&state).await?;
         let remote = super::remote_client::RemoteClient::new_with_proxy(
             config.remote_url.ok_or("Remote index URL is missing")?,
@@ -1908,11 +1954,15 @@ pub async fn index_delete_document(
 /// Set or clear the `doc_status` label for every chunk row belonging to
 /// `doc_id`.  Pass `null` / `None` to reset the field to NULL.
 #[tauri::command]
-pub async fn index_set_doc_status(
-    state: State<'_, AppState>,
+pub async fn index_set_doc_status(state: State<'_, AppState>, doc_id: String, status: Option<String>) -> Result<(), String> {
+    let log = crate::operation_log::OperationLog::start("index.set_doc_status", serde_json::json!({"surface":"gui"}));
+    let result = index_set_doc_status_inner(state, doc_id, status).await;
+    crate::index::finish_logged(log, result, "update_failed", |_| serde_json::Value::Null)
+}
+
+async fn index_set_doc_status_inner(state: State<'_, AppState>,
     doc_id: String,
-    status: Option<String>,
-) -> Result<(), String> {
+    status: Option<String>) -> Result<(), String> {
     let lock = state.index.lock().await;
     let local = lock
         .local
@@ -1933,10 +1983,14 @@ pub async fn index_set_doc_status(
 /// Returns the failure reason that was stored (to let the caller check
 /// retryability), or `null` when no failure was recorded.
 #[tauri::command]
-pub async fn index_retry_extraction(
-    state: State<'_, AppState>,
-    doc_id: String,
-) -> Result<Option<String>, String> {
+pub async fn index_retry_extraction(state: State<'_, AppState>, doc_id: String) -> Result<Option<String>, String> {
+    let log = crate::operation_log::OperationLog::start("index.retry_extraction", serde_json::json!({"surface":"gui"}));
+    let result = index_retry_extraction_inner(state, doc_id).await;
+    crate::index::finish_logged(log, result, "update_failed", |_| serde_json::Value::Null)
+}
+
+async fn index_retry_extraction_inner(state: State<'_, AppState>,
+    doc_id: String) -> Result<Option<String>, String> {
     let local = state.index.lock().await.local.clone();
     let local = local.ok_or("Local index not initialised")?;
     // Read the stored reason first.
@@ -1971,15 +2025,20 @@ pub async fn index_retry_extraction(
 // ── Location update ───────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub async fn index_update_location(
-    state: State<'_, AppState>,
+pub async fn index_update_location(state: State<'_, AppState>, doc_id: String, new_location_uri: String, owner_id: Option<String>) -> Result<(), String> {
+    let log = crate::operation_log::OperationLog::start("index.update_location", serde_json::json!({"surface":"gui"}));
+    let result = index_update_location_inner(&log, state, doc_id, new_location_uri, owner_id).await;
+    crate::index::finish_logged(log, result, "update_failed", |_| serde_json::Value::Null)
+}
+
+async fn index_update_location_inner(log: &crate::operation_log::OperationLog, state: State<'_, AppState>,
     doc_id: String,
     new_location_uri: String,
-    owner_id: Option<String>,
-) -> Result<(), String> {
+    owner_id: Option<String>) -> Result<(), String> {
     let lock = state.index.lock().await;
 
     if !lock.config.enabled {
+        log.warn("index_disabled", serde_json::Value::Null);
         return Ok(());
     }
 
@@ -1992,6 +2051,7 @@ pub async fn index_update_location(
     drop(lock);
 
     if config.backend_type == super::BackendType::Remote {
+        log.step("updating", serde_json::json!({"backend": "remote"}));
         let proxy = crate::sync::tauri_commands::proxy_config_for_app_state(&state).await?;
         let remote = super::remote_client::RemoteClient::new_with_proxy(
             config.remote_url.ok_or("Remote index URL is missing")?,
@@ -2000,6 +2060,7 @@ pub async fn index_update_location(
         return remote.update_location_scoped(&doc_id, &new_location_uri, owner_id.as_deref())
             .await.map_err(|e| e.to_string());
     }
+    log.step("updating", serde_json::json!({"backend": "local"}));
     backend
         .update_location(&doc_id, &new_location_uri)
         .await
@@ -2021,17 +2082,22 @@ fn validate_completed_local_move(old_path: &str, new_path: &str) -> Result<(), S
 }
 
 #[tauri::command]
-pub async fn index_update_location_by_path(
-    state: State<'_, AppState>,
+pub async fn index_update_location_by_path(state: State<'_, AppState>, old_path: String, new_path: String, require_update: Option<bool>) -> Result<(), String> {
+    let log = crate::operation_log::OperationLog::start("index.update_location_by_path", serde_json::json!({"surface":"gui"}));
+    let result = index_update_location_by_path_inner(&log, state, old_path, new_path, require_update).await;
+    crate::index::finish_logged(log, result, "update_failed", |_| serde_json::Value::Null)
+}
+
+async fn index_update_location_by_path_inner(log: &crate::operation_log::OperationLog, state: State<'_, AppState>,
     old_path: String,
     new_path: String,
-    require_update: Option<bool>,
-) -> Result<(), String> {
+    require_update: Option<bool>) -> Result<(), String> {
     let lock = state.index.lock().await;
     if !lock.config.enabled {
         if require_update.unwrap_or(false) {
             return Err("Enable and initialize the search index before retrying this pending location update".into());
         }
+        log.warn("index_disabled", serde_json::Value::Null);
         return Ok(());
     }
     let backend = lock
@@ -2048,6 +2114,7 @@ pub async fn index_update_location_by_path(
         .await.map_err(|e| format!("Checking source move: {e}"))??;
     if old_path == new_path { return Ok(()); }
     if let Some(local) = local {
+        log.step("updating", serde_json::json!({"backend": "local"}));
         let destination = std::path::PathBuf::from(&new_path);
         let volume_id = tokio::task::spawn_blocking(move || crate::volume::volume_id_for_path(&destination))
             .await.map_err(|e| format!("Resolving destination volume: {e}"))?;
@@ -2056,6 +2123,7 @@ pub async fn index_update_location_by_path(
     }
     // Ordinary remote foreground uploads retain the exact supplied local path.
     // The server resolves an unambiguous occurrence before changing its URI.
+    log.step("updating", serde_json::json!({"backend": "remote"}));
     backend
         .update_location_by_uri(&old_path, &new_path)
         .await
@@ -2066,6 +2134,12 @@ pub async fn index_update_location_by_path(
 
 #[tauri::command]
 pub async fn index_build_scalar_index(state: State<'_, AppState>) -> Result<(), String> {
+    let log = crate::operation_log::OperationLog::start("index.build_scalar_index", serde_json::json!({"backend":"local"}));
+    let result = index_build_scalar_index_inner(state).await;
+    crate::index::finish_logged(log, result, "build_failed", |_| serde_json::Value::Null)
+}
+
+async fn index_build_scalar_index_inner(state: State<'_, AppState>) -> Result<(), String> {
     let lock = state.index.lock().await;
 
     if !lock.config.enabled {
@@ -2084,14 +2158,18 @@ pub async fn index_build_scalar_index(state: State<'_, AppState>) -> Result<(), 
 }
 
 #[tauri::command]
+pub async fn index_build_ivf_pq(state: State<'_, AppState>, num_partitions: Option<u32>, sample_rate: Option<u32>) -> Result<(), String> {
+    let log = crate::operation_log::OperationLog::start("index.build_vector_index", serde_json::json!({"backend":"local"}));
+    let result = index_build_ivf_pq_inner(state, num_partitions, sample_rate).await;
+    crate::index::finish_logged(log, result, "build_failed", |_| serde_json::Value::Null)
+}
+
 /// `num_partitions` — Voronoi cell count. `null` = auto (`sqrt(row_count)`).
 /// `sample_rate`    — K-Means training sample = `sample_rate × num_partitions`.
 ///   Default 256; raise to 512-1024 for very large tables.
-pub async fn index_build_ivf_pq(
-    state: State<'_, AppState>,
+async fn index_build_ivf_pq_inner(state: State<'_, AppState>,
     num_partitions: Option<u32>,
-    sample_rate: Option<u32>,
-) -> Result<(), String> {
+    sample_rate: Option<u32>) -> Result<(), String> {
     let lock = state.index.lock().await;
 
     if !lock.config.enabled {
@@ -2121,21 +2199,22 @@ pub async fn index_build_ivf_pq(
 /// downloads + minutes of init time when the user just wants to scan
 /// a drive.
 #[tauri::command]
-pub async fn index_init(
-    app: tauri::AppHandle,
+pub async fn index_init(app: tauri::AppHandle, state: State<'_, AppState>, data_dir: String, with_embedder: Option<bool>) -> Result<(), String> {
+    let log = crate::operation_log::OperationLog::start("index.init", serde_json::json!({"surface":"gui"}));
+    let result = index_init_inner(&log, app, state, data_dir, with_embedder).await;
+    crate::index::finish_logged(log, result, "init_failed", |_| serde_json::Value::Null)
+}
+
+async fn index_init_inner(log: &crate::operation_log::OperationLog, app: tauri::AppHandle,
     state: State<'_, AppState>,
     data_dir: String,
-    with_embedder: Option<bool>,
-) -> Result<(), String> {
+    with_embedder: Option<bool>) -> Result<(), String> {
     // Reserve the init slot atomically. If another init is already
     // running, bail out instead of starting a second multi-GB download.
     let config = {
         let mut lock = state.index.lock().await;
         if lock.initializing {
-            crate::app_log!(
-                "info",
-                "Index init already running — ignoring duplicate request"
-            );
+            log.fail("already_running");
             return Err("Index initialisation is already in progress".to_owned());
         }
         lock.initializing = true;
@@ -2151,14 +2230,10 @@ pub async fn index_init(
         && config.backend_type == super::BackendType::Remote;
     let load_embedder = config.use_vector && with_embedder.unwrap_or(true) && !server_embeds;
 
-    crate::app_log!(
-        "info",
-        "Index init requested: data_dir={}, model={:?}, backend={:?}, with_embedder={}",
-        data_dir,
-        config.embedder_model,
-        config.backend_type,
-        load_embedder
-    );
+    log.step("loading", serde_json::json!({
+        "backend": if config.backend_type == super::BackendType::Remote { "remote" } else { "local" },
+        "mode": if load_embedder { "index.embedder" } else { "index.lexical" },
+    }));
 
     let path = std::path::PathBuf::from(&data_dir);
     let init_result = init_index(&path, config, Some(app), load_embedder).await;
@@ -2168,13 +2243,9 @@ pub async fn index_init(
     match init_result {
         Ok(new_state) => {
             *lock = new_state;
-            crate::app_log!("info", "Index init complete");
             Ok(())
         }
-        Err(e) => {
-            crate::app_log!("error", "Index init failed: {e:#}");
-            Err(format!("{e:#}"))
-        }
+        Err(e) => Err(format!("{e:#}")),
     }
 }
 
@@ -2470,21 +2541,25 @@ pub async fn embedder_download_registry_model(
     name: String,
     accept_license: Option<bool>,
 ) -> Result<String, String> {
+    // Every exit closes this receipt with a fixed code; the model name and
+    // cache path stay out of the log.
+    let log = crate::operation_log::OperationLog::start("index.model_download", serde_json::json!({"surface":"gui"}));
     // License-consent gate: record acceptance if the GUI confirmed, then refuse
     // the download when a restrictive (CC-BY-NC / Gemma) model lacks consent.
     if accept_license.unwrap_or(false) {
         crate::index::license_consent::accept(&name);
     }
-    crate::index::license_consent::ensure_for_registry_name(&name).map_err(|e| e.to_string())?;
+    crate::index::license_consent::ensure_for_registry_name(&name).map_err(|e| { log.fail("license_required"); e.to_string() })?;
     #[cfg(feature = "ocr-mobile")]
     {
         use tauri::Emitter;
         let _ = state;
-        return tokio::task::spawn_blocking(move || {
+        let result = tokio::task::spawn_blocking(move || {
             crate::model_provisioning::download(&name, |update| {
                 let _ = app.emit(crate::model_provisioning::PROGRESS_EVENT, update);
             })
-        }).await.map_err(|error| format!("Model installer: {error}"))?;
+        }).await.map_err(|error| { log.fail("worker_failed"); format!("Model installer: {error}") })?;
+        return crate::index::finish_logged(log, result, "download_failed", |_| serde_json::Value::Null);
     }
     #[cfg(all(feature = "crispembed", not(feature = "ocr-mobile")))]
     {
@@ -2499,16 +2574,17 @@ pub async fn embedder_download_registry_model(
                 .map_err(|e| format!("crispembed resolve_model failed: {e}"))
         })
         .await
-        .map_err(|e| format!("spawn_blocking join error: {e}"))??;
+        .map_err(|e| { log.fail("worker_failed"); format!("spawn_blocking join error: {e}") })?;
 
         // crispembed::CrispEmbed::resolve_model returns the cached
         // path as `String` (NOT `PathBuf`), so no to_string_lossy
         // conversion is needed.
-        Ok(path)
+        crate::index::finish_logged(log, path, "download_failed", |_| serde_json::Value::Null)
     }
     #[cfg(not(feature = "crispembed"))]
     {
         let _ = (app, state, name);
+        log.fail("unsupported");
         Err("crispembed feature not enabled".into())
     }
 }
@@ -2540,9 +2616,11 @@ pub fn embedder_model_license_info(name: String) -> crate::index::license_consen
 
 #[tauri::command]
 pub fn embedder_accept_model_license(keys: Vec<String>) {
+    let log = crate::operation_log::OperationLog::start("index.license_accept", serde_json::json!({"count": keys.len()}));
     for k in keys {
         crate::index::license_consent::accept(&k);
     }
+    log.succeed(serde_json::Value::Null);
 }
 
 // ── Queue depth ───────────────────────────────────────────────────────────────
@@ -2578,6 +2656,9 @@ pub async fn index_set_config(
     // so the disk write reflects exactly what the UI submitted —
     // not some stale clone we forgot to update.
     let to_persist = config.clone();
+    let log = crate::operation_log::OperationLog::start("index.set_config", serde_json::json!({
+        "backend": if config.backend_type == super::BackendType::Remote { "remote" } else { "local" },
+    }));
     let mut lock = state.index.lock().await;
     lock.config = config;
     lock.remote_queue_depth = 0;
@@ -2591,6 +2672,7 @@ pub async fn index_set_config(
     // the old settings panel.  Next call will retry.
     if let Some(dd) = state.data_dir.lock().await.as_ref() {
         if let Err(e) = crate::index::config_persist::save(dd, &to_persist) {
+            log.warn("persist_failed", serde_json::Value::Null);
             eprintln!(
                 "[index_set_config] persist failed (non-fatal): {e:#} — settings will \
                  reset to defaults on next restart unless saved again"
@@ -2600,11 +2682,14 @@ pub async fn index_set_config(
         // Setup hook hasn't run yet — shouldn't happen since
         // index_set_config is called from the UI long after setup
         // completes.  Log so we notice if the ordering ever breaks.
+        log.warn("data_dir_unset", serde_json::Value::Null);
         eprintln!(
             "[index_set_config] data_dir not yet set — settings stored in RAM only \
              until the next index_set_config call"
         );
     }
+    // The in-memory update is authoritative; persistence problems are warnings.
+    log.succeed(serde_json::Value::Null);
     Ok(())
 }
 
@@ -2969,10 +3054,14 @@ pub async fn index_lookup_cb_file(
 /// Mount a `.cidx` archive for offline browse. Stores the read-only
 /// `LocalIndex` in `IndexState.mounted_cidx`. Replaces any prior mount.
 #[tauri::command]
-pub async fn index_mount_cidx(
-    state: State<'_, AppState>,
-    path: String,
-) -> Result<serde_json::Value, String> {
+pub async fn index_mount_cidx(state: State<'_, AppState>, path: String) -> Result<serde_json::Value, String> {
+    let log = crate::operation_log::OperationLog::start("index.mount_cidx", serde_json::json!({"surface":"gui"}));
+    let result = index_mount_cidx_inner(state, path).await;
+    crate::index::finish_logged(log, result, "mount_failed", |report| serde_json::json!({"count": report["docs"].as_u64()}))
+}
+
+async fn index_mount_cidx_inner(state: State<'_, AppState>,
+    path: String) -> Result<serde_json::Value, String> {
     let cidx_path = std::path::PathBuf::from(&path);
     let idx = crate::index::LocalIndex::open_cidx(&cidx_path)
         .await
@@ -3005,6 +3094,9 @@ pub async fn index_unmount_cidx(state: State<'_, AppState>) -> Result<(), String
     lock.mounted_cidx      = None;
     lock.mounted_cidx_path = None;
     lock.mounted_cidx_fts  = None;
+    drop(lock);
+    crate::operation_log::OperationLog::start("index.unmount_cidx", serde_json::json!({"surface":"gui"}))
+        .succeed(serde_json::Value::Null);
     Ok(())
 }
 
@@ -3050,9 +3142,13 @@ pub async fn index_list_failed_extractions(
 
 /// Clear `extraction_failure` for all retryable rows (Timeout / Other).
 #[tauri::command]
-pub async fn index_retry_all_failed(
-    state: State<'_, AppState>,
-) -> Result<usize, String> {
+pub async fn index_retry_all_failed(state: State<'_, AppState>) -> Result<usize, String> {
+    let log = crate::operation_log::OperationLog::start("index.retry_all_failed", serde_json::json!({"surface":"gui"}));
+    let result = index_retry_all_failed_inner(state).await;
+    crate::index::finish_logged(log, result, "update_failed", |count| serde_json::json!({"count": count}))
+}
+
+async fn index_retry_all_failed_inner(state: State<'_, AppState>) -> Result<usize, String> {
     let local = state.index.lock().await.local.clone()
         .ok_or("Local index not initialised")?;
     local.retry_all_failed_extractions().await.map_err(|e| e.to_string())
@@ -3064,11 +3160,15 @@ pub async fn index_retry_all_failed(
 /// `max_size` is a human string like "2G" / "500M".
 /// When `dry_run` is true, no data is deleted — only the excess is reported.
 #[tauri::command]
-pub async fn index_purge(
-    state: State<'_, AppState>,
+pub async fn index_purge(state: State<'_, AppState>, max_size: String, dry_run: bool) -> Result<serde_json::Value, String> {
+    let log = crate::operation_log::OperationLog::start("index.purge", serde_json::json!({"mode": if dry_run { "index.purge_dry_run" } else { "index.purge" }}));
+    let result = index_purge_inner(state, max_size, dry_run).await;
+    crate::index::finish_logged(log, result, "purge_failed", |report| serde_json::json!({"count": report["deleted_rows"].as_u64(), "bytes": report["bytes_reclaimed"].as_u64()}))
+}
+
+async fn index_purge_inner(state: State<'_, AppState>,
     max_size: String,
-    dry_run: bool,
-) -> Result<serde_json::Value, String> {
+    dry_run: bool) -> Result<serde_json::Value, String> {
     let max_bytes = crate::cli::parse_size_str_pub(&max_size)?;
     let data_dir = state.data_dir.lock().await.clone()
         .ok_or("data_dir not set")?;
@@ -3105,9 +3205,13 @@ pub async fn index_purge(
 
 /// Persist an explicit user skip without discarding source/review metadata.
 #[tauri::command]
-pub async fn index_skip_all_failed(
-    state: State<'_, AppState>,
-) -> Result<usize, String> {
+pub async fn index_skip_all_failed(state: State<'_, AppState>) -> Result<usize, String> {
+    let log = crate::operation_log::OperationLog::start("index.skip_all_failed", serde_json::json!({"surface":"gui"}));
+    let result = index_skip_all_failed_inner(state).await;
+    crate::index::finish_logged(log, result, "update_failed", |count| serde_json::json!({"count": count}))
+}
+
+async fn index_skip_all_failed_inner(state: State<'_, AppState>) -> Result<usize, String> {
     let local = state.index.lock().await.local.clone()
         .ok_or("Local index not initialised")?;
     local.skip_failed_extractions().await.map_err(|e| e.to_string())
@@ -3116,11 +3220,15 @@ pub async fn index_skip_all_failed(
 /// Walk a local directory and write L1 (metadata-only) rows into the
 /// index.  Mirrors the CLI `index l1-only` command for the GUI.
 #[tauri::command]
-pub async fn index_l1_only_scan(
-    state: State<'_, AppState>,
+pub async fn index_l1_only_scan(state: State<'_, AppState>, path: String, owner_id: Option<String>) -> Result<serde_json::Value, String> {
+    let log = crate::operation_log::OperationLog::start("index.l1_scan", serde_json::json!({"surface":"gui"}));
+    let result = index_l1_only_scan_inner(state, path, owner_id).await;
+    crate::index::finish_logged(log, result, "scan_failed", |report| serde_json::json!({"files": report["scanned"].as_u64(), "completed": report["written"].as_u64()}))
+}
+
+async fn index_l1_only_scan_inner(state: State<'_, AppState>,
     path: String,
-    owner_id: Option<String>,
-) -> Result<serde_json::Value, String> {
+    owner_id: Option<String>) -> Result<serde_json::Value, String> {
     use sha2::{Digest, Sha256};
 
     let data_dir = state.data_dir.lock().await.clone()
@@ -3273,15 +3381,19 @@ pub async fn index_l1_only_scan(
 /// deliberate: it unblocks the store submissions now, and a port done under
 /// submission pressure is a port done badly.
 #[tauri::command]
-pub async fn index_promote_cb_archive(
-    state: State<'_, AppState>,
+pub async fn index_promote_cb_archive(state: State<'_, AppState>, handle: tauri::AppHandle, doc_id: String, original_path: String, retrieve_py_path: String, output_dir: Option<String>, owner_id: Option<String>) -> Result<serde_json::Value, String> {
+    let log = crate::operation_log::OperationLog::start("index.promote_cb_archive", serde_json::json!({"surface":"gui"}));
+    let result = index_promote_cb_archive_inner(state, handle, doc_id, original_path, retrieve_py_path, output_dir, owner_id).await;
+    crate::index::finish_logged(log, result, "promote_failed", |_| serde_json::Value::Null)
+}
+
+async fn index_promote_cb_archive_inner(state: State<'_, AppState>,
     handle: tauri::AppHandle,
     doc_id: String,
     original_path: String,
     retrieve_py_path: String,
     output_dir: Option<String>,
-    owner_id: Option<String>,
-) -> Result<serde_json::Value, String> {
+    owner_id: Option<String>) -> Result<serde_json::Value, String> {
     ensure_dev_tools_enabled("index_promote_cb_archive")?;
 
     #[cfg(not(all(feature = "dev-tools", feature = "sidecars")))]
@@ -3502,11 +3614,15 @@ async fn promote_path(
 ///
 /// Returns `{ ingested, skipped, errors }`.
 #[tauri::command]
-pub async fn index_ingest_cb_manifest(
-    state: State<'_, AppState>,
+pub async fn index_ingest_cb_manifest(state: State<'_, AppState>, manifest_db_path: String, owner_id: Option<String>) -> Result<serde_json::Value, String> {
+    let log = crate::operation_log::OperationLog::start("index.ingest_cb_manifest", serde_json::json!({"surface":"gui"}));
+    let result = index_ingest_cb_manifest_inner(state, manifest_db_path, owner_id).await;
+    crate::index::finish_logged(log, result, "ingest_failed", |report| serde_json::json!({"completed": report["ingested"].as_u64(), "total": report["total_rows"].as_u64(), "failed": report["errors"].as_u64()}))
+}
+
+async fn index_ingest_cb_manifest_inner(state: State<'_, AppState>,
     manifest_db_path: String,
-    owner_id: Option<String>,
-) -> Result<serde_json::Value, String> {
+    owner_id: Option<String>) -> Result<serde_json::Value, String> {
     use rusqlite::{Connection, OpenFlags};
 
     let pipeline = state.index.lock().await.pipeline.clone()
@@ -3648,14 +3764,18 @@ pub async fn index_ingest_cb_manifest(
 /// entries the recursive walker emitted; `ingested` is how many made it
 /// into LanceDB+Tantivy after L1FileEntry batches went through.
 #[tauri::command]
-pub async fn index_ingest_drive_manifest(
-    state: State<'_, AppState>,
+pub async fn index_ingest_drive_manifest(state: State<'_, AppState>, drive_id: String, root_path: String, allowed_exts: Option<Vec<String>>, max_depth: Option<usize>, owner_id: Option<String>) -> Result<serde_json::Value, String> {
+    let log = crate::operation_log::OperationLog::start("index.ingest_drive_manifest", serde_json::json!({"surface":"gui"}));
+    let result = index_ingest_drive_manifest_inner(state, drive_id, root_path, allowed_exts, max_depth, owner_id).await;
+    crate::index::finish_logged(log, result, "ingest_failed", |report| serde_json::json!({"completed": report["ingested"].as_u64(), "files": report["walked"].as_u64(), "failed": report["errors"].as_u64()}))
+}
+
+async fn index_ingest_drive_manifest_inner(state: State<'_, AppState>,
     drive_id: String,
     root_path: String,
     allowed_exts: Option<Vec<String>>,
     max_depth: Option<usize>,
-    owner_id: Option<String>,
-) -> Result<serde_json::Value, String> {
+    owner_id: Option<String>) -> Result<serde_json::Value, String> {
     let pipeline = state.index.lock().await.pipeline.clone()
         .ok_or("No local ingest pipeline initialised")?;
     let owner = owner_id.unwrap_or_else(|| uuid::Uuid::nil().to_string());
@@ -3770,14 +3890,18 @@ pub async fn index_ingest_drive_manifest(
 /// Triggered by the "Promote to L3" button in Übersicht's preview pane
 /// when a `crisp+drive://...` row is open.
 #[tauri::command]
-pub async fn index_promote_drive_archive(
-    state: State<'_, AppState>,
+pub async fn index_promote_drive_archive(state: State<'_, AppState>, handle: tauri::AppHandle, doc_id: String, drive_id: String, remote_path: String, owner_id: Option<String>) -> Result<serde_json::Value, String> {
+    let log = crate::operation_log::OperationLog::start("index.promote_drive_archive", serde_json::json!({"surface":"gui"}));
+    let result = index_promote_drive_archive_inner(&log, state, handle, doc_id, drive_id, remote_path, owner_id).await;
+    crate::index::finish_logged(log, result, "promote_failed", |_| serde_json::Value::Null)
+}
+
+async fn index_promote_drive_archive_inner(log: &crate::operation_log::OperationLog, state: State<'_, AppState>,
     handle: tauri::AppHandle,
     doc_id: String,
     drive_id: String,
     remote_path: String,
-    owner_id: Option<String>,
-) -> Result<serde_json::Value, String> {
+    owner_id: Option<String>) -> Result<serde_json::Value, String> {
     use tauri::Manager;
 
     let owner = owner_id.unwrap_or_else(|| uuid::Uuid::nil().to_string());
@@ -3824,6 +3948,7 @@ pub async fn index_promote_drive_archive(
                 .map_err(|e| anyhow::anyhow!("read_file_to_writer: {e:#}"))
         },
     );
+    log.step("downloading", serde_json::Value::Null);
     match transfer.handle.await {
         Ok(Ok(_)) => {},
         Ok(Err(e)) => return Err(format!("drive read: {e:#}")),
@@ -3831,6 +3956,7 @@ pub async fn index_promote_drive_archive(
     };
 
     // Preserve the registered-drive URI so the result remains retrievable.
+    log.step("writing", serde_json::Value::Null);
     promote_path(state, doc_id, staged, owner, remote_path, Some(drive_location)).await
 }
 
@@ -4913,12 +5039,16 @@ pub async fn index_token_highlight(
 /// Looks up the embedding for `doc_id` at `chunk_index`, then runs an
 /// ANN search excluding the source document.
 #[tauri::command]
-pub async fn index_find_similar(
-    state: State<'_, AppState>,
+pub async fn index_find_similar(state: State<'_, AppState>, doc_id: String, chunk_index: Option<i32>, limit: Option<usize>) -> Result<Vec<SearchResult>, String> {
+    let log = crate::operation_log::OperationLog::start("search.similar", serde_json::json!({"surface":"gui"}));
+    let result = index_find_similar_inner(state, doc_id, chunk_index, limit).await;
+    crate::index::finish_logged(log, result, "search_failed", |hits| serde_json::json!({"results": hits.len()}))
+}
+
+async fn index_find_similar_inner(state: State<'_, AppState>,
     doc_id: String,
     chunk_index: Option<i32>,
-    limit: Option<usize>,
-) -> Result<Vec<SearchResult>, String> {
+    limit: Option<usize>) -> Result<Vec<SearchResult>, String> {
     let _fg = crate::bg_ingest::ForegroundGuard::new(state.foreground_active.clone());
     let lock = state.index.lock().await;
     let local = lock
@@ -5006,12 +5136,16 @@ pub struct Cluster {
 /// LLM-suggested cluster labels — takes existing cluster data and
 /// sends it to the configured LLM for human-readable naming.
 #[tauri::command]
-pub async fn index_label_clusters(
-    state: State<'_, AppState>,
+pub async fn index_label_clusters(state: State<'_, AppState>, clusters: Vec<Cluster>, llm_url: String, llm_model: String) -> Result<Vec<String>, String> {
+    let log = crate::operation_log::OperationLog::start("index.label_clusters", serde_json::json!({"items":clusters.len()}));
+    let result = index_label_clusters_inner(state, clusters, llm_url, llm_model).await;
+    crate::index::finish_logged(log, result, "llm_failed", |labels| serde_json::json!({"count": labels.len()}))
+}
+
+async fn index_label_clusters_inner(state: State<'_, AppState>,
     clusters: Vec<Cluster>,
     llm_url: String,
-    llm_model: String,
-) -> Result<Vec<String>, String> {
+    llm_model: String) -> Result<Vec<String>, String> {
     // Build a prompt with all clusters' top terms + sample titles
     let mut prompt = String::from(
         "You are a librarian organizing a document collection. Below are document clusters, each described by their most distinctive keywords and sample document titles. Generate a short, descriptive label (2-5 words) for each cluster. Return ONLY the labels, one per line, in the same order.\n\n"
@@ -5071,10 +5205,14 @@ pub async fn index_label_clusters(
 
 /// P24.1 — Topical clustering on the embedding column.
 #[tauri::command]
-pub async fn index_cluster_documents(
-    state: State<'_, AppState>,
-    k: usize,
-) -> Result<Vec<Cluster>, String> {
+pub async fn index_cluster_documents(state: State<'_, AppState>, k: usize) -> Result<Vec<Cluster>, String> {
+    let log = crate::operation_log::OperationLog::start("index.cluster_documents", serde_json::json!({"count":k}));
+    let result = index_cluster_documents_inner(state, k).await;
+    crate::index::finish_logged(log, result, "cluster_failed", |clusters| serde_json::json!({"items": clusters.len()}))
+}
+
+async fn index_cluster_documents_inner(state: State<'_, AppState>,
+    k: usize) -> Result<Vec<Cluster>, String> {
     let lock = state.index.lock().await;
     if !lock.config.enabled {
         return Err("Index is disabled".into());

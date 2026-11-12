@@ -570,6 +570,67 @@ fn default_local_extraction_enabled() -> bool {
     true
 }
 
+/// Close a command's operation receipt. The caller's error is returned
+/// unchanged; only the fixed `code` and allowlisted receipt fields are logged.
+/// A receipt the command already closed (with a more specific failure code)
+/// is kept, because an `OperationLog` accepts exactly one terminal event.
+pub(crate) fn finish_logged<T>(
+    log: crate::operation_log::OperationLog,
+    result: Result<T, String>,
+    code: &'static str,
+    receipt: impl FnOnce(&T) -> serde_json::Value,
+) -> Result<T, String> {
+    match &result {
+        Ok(value) => log.succeed(receipt(value)),
+        Err(_) => log.fail(code),
+    }
+    result
+}
+
+#[cfg(test)]
+mod finish_logged_tests {
+    use super::finish_logged;
+    use crate::operation_log::{capture, OperationLog};
+    use serde_json::json;
+
+    #[test]
+    fn failure_keeps_the_error_and_logs_only_the_code() {
+        let error = "reading /Users/private/medical-report.pdf: permission denied".to_string();
+        let (result, events) = capture(|| {
+            let log = OperationLog::start("index.ingest_path", json!({"surface":"gui","files":1,"path":"/Users/private"}));
+            log.step("extracting", serde_json::Value::Null);
+            finish_logged::<usize>(log, Err(error.clone()), "ingest_failed", |count| json!({"count": count}))
+        });
+        assert_eq!(result.unwrap_err(), error);
+        let terminal = events.last().unwrap();
+        assert_eq!(terminal.phase, "failed");
+        assert_eq!(terminal.code.as_deref(), Some("ingest_failed"));
+        assert_eq!(terminal.stage.as_deref(), Some("extracting"));
+        let serialized = serde_json::to_string(&events).unwrap();
+        for denied in ["private", "medical", "permission"] { assert!(!serialized.contains(denied)); }
+    }
+
+    #[test]
+    fn success_records_allowlisted_counts_and_a_prior_specific_code_wins() {
+        let (_, events) = capture(|| {
+            let log = OperationLog::start("index.ingest_batch", json!({"files":2}));
+            finish_logged::<usize>(log, Ok(7), "ingest_failed", |count| json!({"count": count, "doc_id": "secret-id"}))
+        });
+        assert_eq!(events.last().unwrap().phase, "completed");
+        assert_eq!(events.last().unwrap().context.get("count"), Some(&json!(7)));
+        assert!(!serde_json::to_string(&events).unwrap().contains("secret"));
+
+        let (_, events) = capture(|| {
+            let log = OperationLog::start("index.init", json!({}));
+            log.fail("already_running");
+            finish_logged::<()>(log, Err("busy".into()), "init_failed", |_| serde_json::Value::Null)
+        });
+        let terminals: Vec<_> = events.iter().filter(|event| event.phase == "failed").collect();
+        assert_eq!(terminals.len(), 1);
+        assert_eq!(terminals[0].code.as_deref(), Some("already_running"));
+    }
+}
+
 /// Pick the effective model-cache directory, in priority order:
 ///   1. `CRISPSORTER_MODEL_CACHE_DIR` env var (machine-wide override)
 ///   2. `IndexConfig.model_cache_dir` (UI setting)

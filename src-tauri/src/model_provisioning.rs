@@ -80,13 +80,21 @@ pub async fn ocr_workspace_install_mobile_models(
     {
         use tauri::Emitter;
         uuid::Uuid::parse_str(&request_id).map_err(|_| "The model installation request ID is invalid.")?;
-        let (config, _) = crate::ocr_workspace::recognition_config(
+        // Each model download below carries its own `models.download`
+        // receipt; this one covers the set the first-run setup asked for.
+        let log = crate::operation_log::OperationLog::start("models.install_basic", serde_json::json!({"model_kind": "default"}));
+        let (config, _) = match crate::ocr_workspace::recognition_config(
             Default::default(), Some("tesseract"),
             language.as_deref().filter(|value| *value != "auto"),
-        )?;
-        let recognizer = config.stages.first().and_then(|stage| stage.rec_model.clone())
-            .ok_or("The basic OCR language model could not be selected.")?;
-        tokio::task::spawn_blocking(move || {
+        ) {
+            Ok(selected) => selected,
+            Err(error) => { log.fail("config_failed"); return Err(error); }
+        };
+        let Some(recognizer) = config.stages.first().and_then(|stage| stage.rec_model.clone()) else {
+            log.fail("model_unselected");
+            return Err("The basic OCR language model could not be selected.".into());
+        };
+        let result = tokio::task::spawn_blocking(move || {
             let names = vec!["dbnet-det".to_string(), recognizer];
             for name in &names {
                 download(name, |mut update| {
@@ -94,8 +102,14 @@ pub async fn ocr_workspace_install_mobile_models(
                     let _ = app.emit(PROGRESS_EVENT, update);
                 })?;
             }
-            Ok(names)
-        }).await.map_err(|error| format!("Model installer: {error}"))?
+            Ok::<_, String>(names)
+        }).await;
+        match &result {
+            Ok(Ok(names)) => log.succeed(serde_json::json!({"models": names.len()})),
+            Ok(Err(_)) => log.fail("download_failed"),
+            Err(_) => log.fail("worker_failed"),
+        }
+        result.map_err(|error| format!("Model installer: {error}"))?
     }
     #[cfg(not(feature = "ocr-mobile"))]
     {
@@ -112,10 +126,30 @@ pub async fn ocr_workspace_model_storage() -> Result<ModelStorageReport, String>
     { Err("Private model storage is unavailable in this build.".into()) }
 }
 
+/// Receipt for a storage-changing command: reclaimed bytes and versions only.
+#[cfg(feature = "ocr-mobile")]
+fn log_cleanup(
+    log: crate::operation_log::OperationLog,
+    result: Result<Result<ModelStorageCleanup, String>, tokio::task::JoinError>,
+) -> Result<Result<ModelStorageCleanup, String>, tokio::task::JoinError> {
+    match &result {
+        Ok(Ok(cleanup)) => log.succeed(serde_json::json!({
+            "bytes": cleanup.removed_bytes, "items": cleanup.removed_versions,
+        })),
+        Ok(Err(_)) => log.fail("storage_failed"),
+        Err(_) => log.fail("worker_failed"),
+    }
+    result
+}
+
 #[tauri::command]
 pub async fn ocr_workspace_clean_model_storage() -> Result<ModelStorageCleanup, String> {
     #[cfg(feature = "ocr-mobile")]
-    { tokio::task::spawn_blocking(mobile::clean_storage).await.map_err(|error| format!("Model cleanup: {error}"))? }
+    {
+        let log = crate::operation_log::OperationLog::start("models.storage_clean", serde_json::json!({"model_kind": "registry"}));
+        log_cleanup(log, tokio::task::spawn_blocking(mobile::clean_storage).await)
+            .map_err(|error| format!("Model cleanup: {error}"))?
+    }
     #[cfg(not(feature = "ocr-mobile"))]
     { Err("Private model storage is unavailable in this build.".into()) }
 }
@@ -123,7 +157,12 @@ pub async fn ocr_workspace_clean_model_storage() -> Result<ModelStorageCleanup, 
 #[tauri::command]
 pub async fn ocr_workspace_remove_mobile_model(name: String, expected_version: String) -> Result<ModelStorageCleanup, String> {
     #[cfg(feature = "ocr-mobile")]
-    { tokio::task::spawn_blocking(move || mobile::remove_model(&name, &expected_version)).await.map_err(|error| format!("Remove model: {error}"))? }
+    {
+        // The model name stays out of the log; the receipt is size-only.
+        let log = crate::operation_log::OperationLog::start("models.delete", serde_json::json!({"model_kind": "registry"}));
+        log_cleanup(log, tokio::task::spawn_blocking(move || mobile::remove_model(&name, &expected_version)).await)
+            .map_err(|error| format!("Remove model: {error}"))?
+    }
     #[cfg(not(feature = "ocr-mobile"))]
     { let _ = (name, expected_version); Err("Private model storage is unavailable in this build.".into()) }
 }
@@ -489,9 +528,39 @@ mod mobile {
         builder.build().map_err(|error| format!("Initialize model download: {error}"))
     }
 
+    /// Fixed log code for a download error. Matches only this module's own
+    /// messages; the error text itself never reaches the log.
+    pub(super) fn download_failure_code(error: &str) -> &'static str {
+        if error.starts_with("SHA-256 verification failed") { "checksum_mismatch" }
+        else if error.starts_with("The downloaded model is not a GGUF") { "format_invalid" }
+        else if error.starts_with("The model download is incomplete") { "incomplete_download" }
+        else if error.contains("exceeds the mobile limit") { "too_large" }
+        else if error.starts_with("Offline mode is enabled") { "offline" }
+        else if error.contains("requires acceptance of its") { "license_required" }
+        else if error.contains("is not an exact registered model name") { "unknown_model" }
+        else if error.starts_with("Download ") || error.starts_with("Model download interrupted") { "network_failed" }
+        else { "download_failed" }
+    }
+
+    /// Long-running and network-bound: one receipt per model with the
+    /// artifact count, each file's verified size, and a fixed failure code.
     #[cfg(feature = "ocr-mobile")]
     pub(super) fn download(name: &str, progress: impl Fn(DownloadProgress)) -> Result<String, String> {
+        let log = crate::operation_log::OperationLog::start(
+            "models.download", serde_json::json!({"model_kind": "registry", "surface": "native"}));
+        download_logged(name, progress, &log).map_err(|error| {
+            log.fail(download_failure_code(&error));
+            error
+        })
+    }
+
+    #[cfg(feature = "ocr-mobile")]
+    fn download_logged(
+        name: &str, progress: impl Fn(DownloadProgress), log: &crate::operation_log::OperationLog,
+    ) -> Result<String, String> {
+        use serde_json::json;
         let files = artifacts(name)?;
+        log.step("checking", json!({"files": files.len()}));
         let _install = INSTALL.lock().map_err(|_| "The model installer is unavailable.")?;
         let root = root()?;
         // Shared with other app processes. It also makes incoming-* directories
@@ -500,6 +569,7 @@ mod mobile {
         progress(DownloadProgress { name: name.to_owned(), filename: files[0].filename.clone(), phase: "checking", downloaded: 0, total: None, request_id: None });
         if let Some(path) = installed(root, name, &files)? {
             progress(DownloadProgress { name: name.to_owned(), filename: files[0].filename.clone(), phase: "complete", downloaded: 0, total: None, request_id: None });
+            log.succeed(json!({"reused": true, "files": files.len()}));
             return Ok(path.to_string_lossy().into_owned());
         }
         if offline() { return Err(format!("Offline mode is enabled and '{name}' is not installed. Turn off offline mode to download, or use an existing local GGUF file.")); }
@@ -507,6 +577,7 @@ mod mobile {
         let staging = tempfile::Builder::new().prefix("incoming-").tempdir_in(&model_dir)
             .map_err(|error| format!("Create model staging directory: {error}"))?;
         let client = download_client()?;
+        let mut downloaded_bytes = 0u64;
         for file in &files {
             let emit = |phase, downloaded, total| progress(DownloadProgress {
                 name: name.to_owned(), filename: file.filename.clone(), phase, downloaded, total, request_id: None,
@@ -515,6 +586,7 @@ mod mobile {
                 .send().and_then(reqwest::blocking::Response::error_for_status)
                 .map_err(|error| format!("Download {}: {error}", file.filename))?;
             let total = response.content_length();
+            log.step("downloading", json!({"total": total}));
             emit("downloading", 0, total);
             let mut last = Instant::now();
             let bytes = write_stream(staging.path(), file, response, total, MAX_MODEL_BYTES, |downloaded| {
@@ -522,13 +594,21 @@ mod mobile {
                     emit("downloading", downloaded, total); last = Instant::now();
                 }
             })?;
+            // write_stream only returns Ok after the SHA-256 pin matched.
+            log.step("verified", json!({"bytes": bytes}));
+            downloaded_bytes = downloaded_bytes.saturating_add(bytes);
             emit("verified", bytes, Some(bytes));
         }
+        log.step("committing", json!({"files": files.len()}));
         let path = commit_set(root, name, &files, staging)?;
         // Publishing a verified install remains successful if optional cleanup
         // cannot run. Installed and in-use generations are always protected.
-        if let Err(error) = storage::cleanup_locked(root) { eprintln!("OCR model cleanup: {error}"); }
+        if let Err(error) = storage::cleanup_locked(root) {
+            eprintln!("OCR model cleanup: {error}");
+            log.warn("cleanup_failed", json!({}));
+        }
         progress(DownloadProgress { name: name.to_owned(), filename: files[0].filename.clone(), phase: "complete", downloaded: 0, total: None, request_id: None });
+        log.succeed(json!({"files": files.len(), "bytes": downloaded_bytes}));
         Ok(path.to_string_lossy().into_owned())
     }
 
@@ -545,6 +625,17 @@ mod mobile {
             let error = client.get("http://127.0.0.1:9/model.gguf").send().unwrap_err();
             assert!(error.is_builder(), "HTTP was not rejected before I/O: {error}");
             assert_eq!(error.url().map(|url| url.scheme()), Some("http"));
+        }
+        #[test]
+        fn download_failures_map_to_fixed_log_codes_without_their_text() {
+            let file = artifact(b"GGUF-private-model");
+            let dir = tempfile::tempdir().unwrap();
+            let wrong = Artifact { sha256: "0".repeat(64), ..file.clone() };
+            let error = write_stream(dir.path(), &wrong, &b"GGUF-private-model"[..], None, 1024, |_| {}).unwrap_err();
+            assert_eq!(download_failure_code(&error), "checksum_mismatch");
+            let short = write_stream(tempfile::tempdir().unwrap().path(), &file, &b"GGUF"[..], Some(99), 1024, |_| {}).unwrap_err();
+            assert_eq!(download_failure_code(&short), "incomplete_download");
+            assert_eq!(download_failure_code("something /private/path went wrong"), "download_failed");
         }
         fn artifact(bytes: &[u8]) -> Artifact {
             Artifact { filename: "ocr-test.gguf".into(), url: "https://example.com/ocr-test.gguf".into(),

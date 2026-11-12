@@ -18,6 +18,35 @@ use super::cloud_backup::{
 use super::secret;
 use super::{SyncManager, SyncStatus};
 
+/// Copy selected numeric (or array-length) fields of a command's JSON result
+/// into allowlisted receipt keys. Paths, hashes, names and messages in the
+/// same result never reach the log.
+fn json_counts(value: &serde_json::Value, keys: &[(&str, &'static str)]) -> serde_json::Value {
+    let mut out = serde_json::Map::new();
+    for (from, to) in keys {
+        let count = match value.get(*from) {
+            Some(serde_json::Value::Array(items)) => Some(items.len() as u64),
+            Some(other) => other.as_u64(),
+            None => None,
+        };
+        if let Some(count) = count {
+            out.insert((*to).to_owned(), count.into());
+        }
+    }
+    serde_json::Value::Object(out)
+}
+
+fn policy_mode(policy: super::conflict::ConflictPolicy) -> &'static str {
+    use super::conflict::ConflictPolicy;
+    match policy {
+        ConflictPolicy::NewestWins => "sync.newest_wins",
+        ConflictPolicy::LocalWins => "sync.local_wins",
+        ConflictPolicy::RemoteWins => "sync.remote_wins",
+        ConflictPolicy::KeepBoth => "sync.keep_both",
+        ConflictPolicy::Manual => "sync.manual",
+    }
+}
+
 /// List persisted scheduled/local-cloud backup definitions.
 #[tauri::command]
 pub async fn backup_job_list(
@@ -37,11 +66,17 @@ pub async fn backup_job_upsert(
     state: State<'_, AppState>,
     job: crate::sync::backup_state::BackupJob,
 ) -> Result<crate::sync::backup_state::BackupJob, String> {
+    let log = crate::operation_log::OperationLog::start("sync.backup_job.save", serde_json::Value::Null);
+    let result: Result<crate::sync::backup_state::BackupJob, String> = async {
     let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
     crate::sync::backup_state::BackupState::open(&data_dir)
         .map_err(|e| e.to_string())?
         .upsert_job(job)
         .map_err(|e| e.to_string())
+    }
+    .await;
+    crate::drives::tauri_commands::finish_operation(&log, &result, "backup_job_save_failed", |_| serde_json::Value::Null);
+    result
 }
 
 /// Remove backup configuration without deleting local or remote data.
@@ -50,11 +85,17 @@ pub async fn backup_job_delete(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<bool, String> {
+    let log = crate::operation_log::OperationLog::start("sync.backup_job.delete", serde_json::Value::Null);
+    let result: Result<bool, String> = async {
     let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
     crate::sync::backup_state::BackupState::open(&data_dir)
         .map_err(|e| e.to_string())?
         .delete_job(&id)
         .map_err(|e| e.to_string())
+    }
+    .await;
+    crate::drives::tauri_commands::finish_operation(&log, &result, "backup_job_delete_failed", |removed| serde_json::json!({"count": u64::from(*removed)}));
+    result
 }
 
 /// Return recent execution history for one backup job.
@@ -149,6 +190,8 @@ pub async fn backup_job_restore(
     remote_path: String,
     destination: String,
 ) -> Result<serde_json::Value, String> {
+    let log = crate::operation_log::OperationLog::start("sync.backup_job.restore", serde_json::json!({"mode": "download"}));
+    let result: Result<serde_json::Value, String> = async {
     if snapshot.len() != 10 || snapshot.as_bytes().get(4) != Some(&b'-')
         || snapshot.as_bytes().get(7) != Some(&b'-')
         || !snapshot.chars().enumerate().all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
@@ -182,6 +225,10 @@ pub async fn backup_job_restore(
     );
     let bytes = transfer.handle.await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
     Ok(serde_json::json!({"restored": relative, "snapshot": snapshot, "destination": destination, "bytes": bytes}))
+    }
+    .await;
+    crate::drives::tauri_commands::finish_operation(&log, &result, "backup_restore_failed", |v| json_counts(v, &[("bytes", "bytes")]));
+    result
 }
 
 /// List persisted local-folder ↔ cloud-drive sync pairs.
@@ -203,6 +250,8 @@ pub async fn sync_pair_upsert(
     state: State<'_, AppState>,
     pair: super::pairs::SyncPair,
 ) -> Result<super::pairs::SyncPair, String> {
+    let log = crate::operation_log::OperationLog::start("sync.pair.save", serde_json::Value::Null);
+    let result: Result<super::pairs::SyncPair, String> = async {
     if pair.id.trim().is_empty() || pair.local_root.trim().is_empty()
         || pair.drive_id.trim().is_empty() || pair.remote_root.trim().is_empty()
     {
@@ -213,6 +262,10 @@ pub async fn sync_pair_upsert(
         .map_err(|e| e.to_string())?
         .upsert(pair)
         .map_err(|e| e.to_string())
+    }
+    .await;
+    crate::drives::tauri_commands::finish_operation(&log, &result, "sync_pair_save_failed", |_| serde_json::Value::Null);
+    result
 }
 
 /// Remove a persisted sync-pair definition without touching either endpoint.
@@ -221,11 +274,17 @@ pub async fn sync_pair_delete(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<bool, String> {
+    let log = crate::operation_log::OperationLog::start("sync.pair.delete", serde_json::Value::Null);
+    let result: Result<bool, String> = async {
     let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
     super::pairs::SyncPairStore::open(&data_dir)
         .map_err(|e| e.to_string())?
         .delete(&id)
         .map_err(|e| e.to_string())
+    }
+    .await;
+    crate::drives::tauri_commands::finish_operation(&log, &result, "sync_pair_delete_failed", |removed| serde_json::json!({"count": u64::from(*removed)}));
+    result
 }
 
 /// Preview the local side of a sync pair without contacting the provider or
@@ -308,9 +367,15 @@ pub async fn sync_pair_compare(
     id: String,
     policy: super::conflict::ConflictPolicy,
 ) -> Result<Vec<super::pairs::SyncComparisonEntry>, String> {
+    let log = crate::operation_log::OperationLog::start("sync.pair.compare", serde_json::json!({"mode": policy_mode(policy)}));
+    let result: Result<Vec<super::pairs::SyncComparisonEntry>, String> = async {
     let local = sync_pair_plan(state.clone(), id.clone()).await?;
     let remote = sync_pair_remote_plan(state, id).await?;
     Ok(super::pairs::compare_plans(&local, &remote, policy))
+    }
+    .await;
+    crate::drives::tauri_commands::finish_operation(&log, &result, "sync_pair_compare_failed", |entries| serde_json::json!({"items": entries.len()}));
+    result
 }
 
 pub(crate) fn inventory_remote(
@@ -370,6 +435,8 @@ pub async fn sync_pair_pull(
     dry_run: Option<bool>,
     conflict_policy: Option<super::conflict::ConflictPolicy>,
 ) -> Result<SyncPairPullResult, String> {
+    let log = crate::operation_log::OperationLog::start("sync.pair.pull", serde_json::json!({"mode": "download"}));
+    let result: Result<SyncPairPullResult, String> = async {
     if conflict_policy != Some(super::conflict::ConflictPolicy::RemoteWins) {
         return Err("sync pair pull requires remote-wins conflict policy".into());
     }
@@ -433,6 +500,10 @@ pub async fn sync_pair_pull(
         uploaded: 0, downloaded, watermark, error: None, started_at, finished_at: sync_pair_now_ms(),
     });
     Ok(SyncPairPullResult { pair_id: id, dry_run: false, planned: remote.len(), downloaded, watermark })
+    }
+    .await;
+    crate::drives::tauri_commands::finish_operation(&log, &result, "sync_pair_pull_failed", |r| serde_json::json!({"total": r.planned, "completed": r.downloaded, "mode": if r.dry_run { "sync.dry_run" } else { "download" }}));
+    result
 }
 
 /// Push the local side of a `ToCloud`/`TwoWay` pair through the shared
@@ -445,6 +516,8 @@ pub async fn sync_pair_push(
     dry_run: Option<bool>,
     conflict_policy: Option<super::conflict::ConflictPolicy>,
 ) -> Result<SyncPairPushResult, String> {
+    let log = crate::operation_log::OperationLog::start("sync.pair.push", serde_json::json!({"mode": "upload"}));
+    let result: Result<SyncPairPushResult, String> = async {
     let data_dir = state.data_dir.lock().await.clone().ok_or("data_dir not initialised")?;
     let store = super::pairs::SyncPairStore::open(&data_dir).map_err(|e| e.to_string())?;
     let mut pair = store
@@ -613,6 +686,10 @@ pub async fn sync_pair_push(
         uploaded,
         watermark,
     })
+    }
+    .await;
+    crate::drives::tauri_commands::finish_operation(&log, &result, "sync_pair_push_failed", |r| serde_json::json!({"total": r.planned, "completed": r.uploaded, "mode": if r.dry_run { "sync.dry_run" } else { "upload" }}));
+    result
 }
 
 fn record_sync_pair_failure(
@@ -659,6 +736,8 @@ pub async fn sync_set_conflict_policy(
     state: State<'_, AppState>,
     policy: super::conflict::ConflictPolicy,
 ) -> Result<super::conflict::ConflictPolicy, String> {
+    let log = crate::operation_log::OperationLog::start("sync.conflict_policy.save", serde_json::json!({"mode": policy_mode(policy)}));
+    let result: Result<super::conflict::ConflictPolicy, String> = async {
     let data_dir = state
         .data_dir
         .lock()
@@ -670,6 +749,10 @@ pub async fn sync_set_conflict_policy(
     crate::index::config_persist::save(&data_dir, &index.config)
         .map_err(|e| format!("persisting conflict policy: {e}"))?;
     Ok(policy)
+    }
+    .await;
+    crate::drives::tauri_commands::finish_operation(&log, &result, "conflict_policy_save_failed", |_| serde_json::Value::Null);
+    result
 }
 
 #[tauri::command]
@@ -699,10 +782,16 @@ pub async fn sync_list_conflicts(
 pub async fn sync_ack_conflict(
     state: State<'_, AppState>, id: i64,
 ) -> Result<bool, String> {
+    let log = crate::operation_log::OperationLog::start("sync.conflict.ack", serde_json::Value::Null);
+    let result: Result<bool, String> = async {
     let data_dir = state.data_dir.lock().await.clone()
         .ok_or("data_dir not initialised")?;
     SyncManager::open(&data_dir).map_err(|e| e.to_string())?
         .remove_conflict(id).map_err(|e| e.to_string())
+    }
+    .await;
+    crate::drives::tauri_commands::finish_operation(&log, &result, "conflict_ack_failed", |removed| serde_json::json!({"count": u64::from(*removed)}));
+    result
 }
 
 /// Rehydrate and apply the exact remote candidate for a manual conflict.
@@ -713,6 +802,8 @@ pub async fn sync_accept_remote_conflict(
     state: State<'_, AppState>,
     id: i64,
 ) -> Result<serde_json::Value, String> {
+    let log = crate::operation_log::OperationLog::start("sync.conflict.accept_remote", serde_json::Value::Null);
+    let result: Result<serde_json::Value, String> = async {
     let data_dir = state.data_dir.lock().await.clone()
         .ok_or("data_dir not initialised")?;
     let mgr = SyncManager::open(&data_dir).map_err(|e| e.to_string())?;
@@ -823,6 +914,10 @@ pub async fn sync_accept_remote_conflict(
         .map_err(|e| format!("applying remote conflict: {e:#}"))?;
     mgr.remove_conflict(id).map_err(|e| e.to_string())?;
     Ok(serde_json::json!({"id": id, "path": conflict.path, "sha256": conflict.remote_hash, "accepted": true}))
+    }
+    .await;
+    crate::drives::tauri_commands::finish_operation(&log, &result, "conflict_accept_failed", |v| serde_json::json!({"mode": if v.get("deleted").is_some() { "sync.delete" } else if v.get("metadata_updated").is_some() { "sync.metadata" } else { "sync.content" }}));
+    result
 }
 
 async fn offline_queue(
@@ -846,10 +941,16 @@ pub async fn sync_offline_enqueue(
     payload: String,
     provider_id: String,
 ) -> Result<i64, String> {
+    let log = crate::operation_log::OperationLog::start("storage.offline_queue.enqueue", serde_json::Value::Null);
+    let result: Result<i64, String> = async {
     offline_queue(&state)
         .await?
         .enqueue(&op_type, &payload, &provider_id)
         .map_err(|e| e.to_string())
+    }
+    .await;
+    crate::drives::tauri_commands::finish_operation(&log, &result, "offline_enqueue_failed", |_| serde_json::Value::Null);
+    result
 }
 
 #[tauri::command]
@@ -857,7 +958,13 @@ pub async fn sync_offline_cancel(
     state: State<'_, AppState>,
     id: i64,
 ) -> Result<bool, String> {
+    let log = crate::operation_log::OperationLog::start("storage.offline_queue.cancel", serde_json::Value::Null);
+    let result: Result<bool, String> = async {
     offline_queue(&state).await?.cancel(id).map_err(|e| e.to_string())
+    }
+    .await;
+    crate::drives::tauri_commands::finish_operation(&log, &result, "offline_cancel_failed", |cancelled| serde_json::json!({"count": u64::from(*cancelled)}));
+    result
 }
 
 /// Snapshot the shared application transfer queue for the transfer drawer,
@@ -875,7 +982,13 @@ pub async fn transfer_queue_cancel(
     state: State<'_, AppState>,
     job_id: u64,
 ) -> Result<bool, String> {
-    Ok(state.transfer_queue.cancel(job_id))
+    let accepted = state.transfer_queue.cancel(job_id);
+    // The transfer's own `storage.upload`/`storage.download` receipt records
+    // the resulting `cancelled` terminal; this records the request.
+    let log = crate::operation_log::OperationLog::start("storage.transfer.cancel",
+        serde_json::json!({"job_id": job_id}));
+    log.succeed(serde_json::json!({"accepted": accepted}));
+    Ok(accepted)
 }
 
 /// Inspect the durable cloud-operation offline queue.
@@ -919,6 +1032,8 @@ pub async fn offline_queue_list(
 pub async fn offline_queue_retry_failed(
     state: State<'_, AppState>,
 ) -> Result<usize, String> {
+    let log = crate::operation_log::OperationLog::start("storage.offline_queue.retry_failed", serde_json::Value::Null);
+    let result: Result<usize, String> = async {
     let data_dir = state
         .data_dir
         .lock()
@@ -929,6 +1044,10 @@ pub async fn offline_queue_retry_failed(
         .map_err(|e| e.to_string())?
         .retry_all_failed()
         .map_err(|e| e.to_string())
+    }
+    .await;
+    crate::drives::tauri_commands::finish_operation(&log, &result, "offline_retry_failed", |n| serde_json::json!({"count": n}));
+    result
 }
 
 /// Purge failed offline operations older than the requested number of days.
@@ -937,6 +1056,8 @@ pub async fn offline_queue_purge_failed(
     state: State<'_, AppState>,
     older_than_days: u64,
 ) -> Result<usize, String> {
+    let log = crate::operation_log::OperationLog::start("storage.offline_queue.purge_failed", serde_json::Value::Null);
+    let result: Result<usize, String> = async {
     let data_dir = state
         .data_dir
         .lock()
@@ -947,6 +1068,10 @@ pub async fn offline_queue_purge_failed(
         .map_err(|e| e.to_string())?
         .purge_old(std::time::Duration::from_secs(older_than_days.saturating_mul(86_400)))
         .map_err(|e| e.to_string())
+    }
+    .await;
+    crate::drives::tauri_commands::finish_operation(&log, &result, "offline_purge_failed", |n| serde_json::json!({"count": n}));
+    result
 }
 
 /// Persist the bytes for a failed drive write and enqueue a replay descriptor.
@@ -1011,6 +1136,38 @@ fn refuse_direct_smb_replay(
         serde_json::json!({"mode":"upload"}));
     log.fail("write_replay_disabled");
     Ok(true)
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    use super::{json_counts, policy_mode};
+
+    #[test]
+    fn json_receipts_keep_counts_and_drop_paths_and_hashes() {
+        let result = serde_json::json!({"restored": "private/dir/report.pdf", "sha256": "abc123",
+            "bytes": 42, "errors": ["private failure", "secret"], "destination": "/private/out"});
+        let ((), events) = crate::operation_log::capture(|| {
+            let log = crate::operation_log::OperationLog::start("sync.backup_job.restore",
+                serde_json::json!({"mode": "download"}));
+            log.succeed(json_counts(&result, &[("bytes", "bytes"), ("errors", "failed"), ("restored", "items")]));
+        });
+        let done = events.last().unwrap();
+        assert_eq!(done.phase, "completed");
+        assert_eq!(done.context.get("bytes"), Some(&serde_json::json!(42)));
+        assert_eq!(done.context.get("failed"), Some(&serde_json::json!(2)));
+        assert!(done.context.get("items").is_none());
+        let serialized = serde_json::to_string(&events).unwrap();
+        for private in ["private", "secret", "abc123", "report"] { assert!(!serialized.contains(private)); }
+    }
+
+    #[test]
+    fn every_conflict_policy_is_an_allowlisted_mode() {
+        use crate::sync::conflict::ConflictPolicy::*;
+        for policy in [NewestWins, LocalWins, RemoteWins, KeepBoth, Manual] {
+            let context = crate::operation_log::safe_context(serde_json::json!({"mode": policy_mode(policy)}));
+            assert!(context.contains_key("mode"));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1100,6 +1257,25 @@ pub async fn replay_offline_queue(
         .dequeue_batch(limit)
         .map_err(|e| e.to_string())?;
     let registry = crate::drives::DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
+    // The maintenance loop calls this periodically; an empty queue is not an
+    // operation worth a receipt.
+    if entries.is_empty() {
+        return Ok(serde_json::json!({ "replayed": 0, "failed": 0 }));
+    }
+    let log = crate::operation_log::OperationLog::start("storage.offline_queue.replay",
+        serde_json::json!({"mode": "upload", "items": entries.len()}));
+    let result = replay_offline_entries(state, &queue, &registry, entries).await;
+    crate::drives::tauri_commands::finish_operation(&log, &result, "offline_replay_failed",
+        |v| json_counts(v, &[("replayed", "completed"), ("failed", "failed")]));
+    result
+}
+
+async fn replay_offline_entries(
+    state: &AppState,
+    queue: &super::offline_queue::OfflineQueue,
+    registry: &crate::drives::DriveRegistry,
+    entries: Vec<super::offline_queue::QueuedOp>,
+) -> Result<serde_json::Value, String> {
     let mut replayed = 0usize;
     let mut failed = 0usize;
     for entry in entries {
@@ -1114,7 +1290,7 @@ pub async fn replay_offline_queue(
             failed += 1;
             continue;
         }
-        if refuse_direct_smb_replay(&queue, &entry, &registry)? {
+        if refuse_direct_smb_replay(queue, &entry, registry)? {
             failed += 1;
             continue;
         }
@@ -1204,6 +1380,8 @@ pub async fn sync_status(
 pub async fn sync_push(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
+    let log = crate::operation_log::OperationLog::start("sync.push", serde_json::json!({"mode": "upload"}));
+    let result: Result<serde_json::Value, String> = async {
     let (data_dir, remote_url, api_key) = {
         let dd = state.data_dir.lock().await.clone();
         let idx = state.index.lock().await;
@@ -1218,6 +1396,10 @@ pub async fn sync_push(
         .await
         .map_err(|e| e.to_string())?;
     Ok(serde_json::json!({ "pushed": pushed, "failed": failed }))
+    }
+    .await;
+    crate::drives::tauri_commands::finish_operation(&log, &result, "sync_push_failed", |v| json_counts(v, &[("pushed", "completed"), ("failed", "failed")]));
+    result
 }
 
 /// Enqueue a manual outbox entry (primarily for testing the sync path).
@@ -1376,6 +1558,8 @@ async fn apply_sync_deletions(
 pub async fn sync_pull(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
+    let log = crate::operation_log::OperationLog::start("sync.pull", serde_json::json!({"mode": "download"}));
+    let result: Result<serde_json::Value, String> = async {
     let (data_dir, remote_url, api_key, local, fts, conflict_policy) = {
         let dd  = state.data_dir.lock().await.clone();
         let idx = state.index.lock().await;
@@ -1518,6 +1702,10 @@ pub async fn sync_pull(
             "max_indexed_at": max_ts, "has_more": false }));
     }
     }
+    }
+    .await;
+    crate::drives::tauri_commands::finish_operation(&log, &result, "sync_pull_failed", |v| json_counts(v, &[("pulled", "items"), ("applied", "completed"), ("queued_manual", "pending")]));
+    result
 }
 
 /// Clear all permanently-failed outbox entries (retries ≥ 10).
@@ -1525,10 +1713,16 @@ pub async fn sync_pull(
 pub async fn sync_clear_failed(
     state: State<'_, AppState>,
 ) -> Result<usize, String> {
+    let log = crate::operation_log::OperationLog::start("sync.clear_failed", serde_json::Value::Null);
+    let result: Result<usize, String> = async {
     let data_dir = state.data_dir.lock().await.clone()
         .ok_or("data_dir not initialised")?;
     let mgr = SyncManager::open(&data_dir).map_err(|e| e.to_string())?;
     mgr.clear_failed().map_err(|e| e.to_string())
+    }
+    .await;
+    crate::drives::tauri_commands::finish_operation(&log, &result, "sync_clear_failed_failed", |n| serde_json::json!({"count": n}));
+    result
 }
 
 // ── P13.7 Step 5 — cloud-backup target commands ──────────────────────────
@@ -1657,6 +1851,8 @@ pub async fn sync_cb_set_token(
     state: State<'_, AppState>,
     token: String,
 ) -> Result<(), String> {
+    let log = crate::operation_log::OperationLog::start("sync.cb.token_save", serde_json::Value::Null);
+    let result: Result<(), String> = async {
     let url = cb_url(&state).await;
     if url.is_empty() {
         return Err("cloud_backup_url not configured".into());
@@ -1668,6 +1864,10 @@ pub async fn sync_cb_set_token(
     }
     secret::set_token_for_url(&url, token.trim())
         .map_err(|e| e.to_string())
+    }
+    .await;
+    crate::drives::tauri_commands::finish_operation(&log, &result, "cb_token_save_failed", |_| serde_json::Value::Null);
+    result
 }
 
 /// Wipe the stored token without touching the URL.  Used by the
@@ -1677,27 +1877,41 @@ pub async fn sync_cb_set_token(
 pub async fn sync_cb_clear_token(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    let log = crate::operation_log::OperationLog::start("sync.cb.token_clear", serde_json::Value::Null);
+    let result: Result<(), String> = async {
     let url = cb_url(&state).await;
     if url.is_empty() {
         return Ok(()); // nothing to clear
     }
     secret::clear_token_for_url(&url).map_err(|e| e.to_string())
+    }
+    .await;
+    crate::drives::tauri_commands::finish_operation(&log, &result, "cb_token_clear_failed", |_| serde_json::Value::Null);
+    result
 }
 
 /// Store the proxy password in the OS keychain; an empty value clears it.
 #[tauri::command]
 pub async fn proxy_set_password(password: String) -> Result<(), String> {
+    let log = crate::operation_log::OperationLog::start("sync.proxy.password_save", serde_json::Value::Null);
+    let result: Result<(), String> = async {
     if password.trim().is_empty() {
         crate::sync::proxy_secret::clear().map_err(|e| e.to_string())
     } else {
         crate::sync::proxy_secret::set(&password).map_err(|e| e.to_string())
     }
+    }
+    .await;
+    crate::drives::tauri_commands::finish_operation(&log, &result, "proxy_password_save_failed", |_| serde_json::Value::Null);
+    result
 }
 
 /// Make a bounded request through the configured proxy. This validates both
 /// URL/auth parsing and reachability without exposing the password to the UI.
 #[tauri::command]
 pub async fn proxy_test_connection(state: State<'_, AppState>) -> Result<String, String> {
+    let log = crate::operation_log::OperationLog::start("sync.proxy.test", serde_json::Value::Null);
+    let result: Result<String, String> = async {
     let config = state.index.lock().await.config.clone();
     let proxy = crate::sync::proxy::ProxyConfig {
         url: config.proxy_url,
@@ -1718,6 +1932,10 @@ pub async fn proxy_test_connection(state: State<'_, AppState>) -> Result<String,
         .await
         .map_err(|e| format!("proxy connection failed: {e}"))?;
     Ok(format!("Proxy connection succeeded (HTTP {})", response.status()))
+    }
+    .await;
+    crate::drives::tauri_commands::finish_operation(&log, &result, "proxy_test_failed", |_| serde_json::Value::Null);
+    result
 }
 
 /// Build a [`CloudBackupClient`] from the current state.  Returns
@@ -1765,6 +1983,8 @@ pub async fn sync_cb_manifest_push(
     state: State<'_, AppState>,
     limit: Option<usize>,
 ) -> Result<serde_json::Value, String> {
+    let log = crate::operation_log::OperationLog::start("sync.cb.manifest_push", serde_json::json!({"mode": "upload"}));
+    let result: Result<serde_json::Value, String> = async {
     let limit = limit.unwrap_or(200).clamp(1, 2000);
     let cli = make_cb_client(&state).await?;
     let data_dir = state.data_dir.lock().await.clone()
@@ -1844,6 +2064,10 @@ pub async fn sync_cb_manifest_push(
         "watermark": max_ts,
         "more_available": pushed == limit
     }))
+    }
+    .await;
+    crate::drives::tauri_commands::finish_operation(&log, &result, "cb_manifest_push_failed", |v| json_counts(v, &[("pushed", "items"), ("accepted", "completed")]));
+    result
 }
 
 /// Pull rows newer than the local `cb_last_manifest_pull_ts`
@@ -1855,6 +2079,8 @@ pub async fn sync_cb_manifest_pull(
     state: State<'_, AppState>,
     limit: Option<usize>,
 ) -> Result<serde_json::Value, String> {
+    let log = crate::operation_log::OperationLog::start("sync.cb.manifest_pull", serde_json::json!({"mode": "download"}));
+    let result: Result<serde_json::Value, String> = async {
     let limit = limit.unwrap_or(200).clamp(1, 2000);
     let cli = make_cb_client(&state).await?;
     let data_dir = state.data_dir.lock().await.clone()
@@ -2024,6 +2250,10 @@ pub async fn sync_cb_manifest_pull(
         "watermark": new_watermark,
         "has_more": pulled.has_more,
     }))
+    }
+    .await;
+    crate::drives::tauri_commands::finish_operation(&log, &result, "cb_manifest_pull_failed", |v| json_counts(v, &[("pulled", "items"), ("applied", "completed"), ("queued_manual", "pending")]));
+    result
 }
 
 /// Stage N — recompute the volume-proportional partition map for
@@ -2043,6 +2273,8 @@ pub async fn sync_cb_partition(
     max_shards: Option<usize>,
     group_depth: Option<usize>,
 ) -> Result<serde_json::Value, String> {
+    let log = crate::operation_log::OperationLog::start("sync.cb.partition", serde_json::Value::Null);
+    let result: Result<serde_json::Value, String> = async {
     use crate::sync::partition::{
         partition_assignments, FileSize, PartitionMap, PartitionOptions,
     };
@@ -2114,6 +2346,10 @@ pub async fn sync_cb_partition(
         "group_depth":         opts.group_depth,
         "sample_collections":  sample,
     }))
+    }
+    .await;
+    crate::drives::tauri_commands::finish_operation(&log, &result, "cb_partition_failed", |v| json_counts(v, &[("num_files", "files"), ("num_shards", "count")]));
+    result
 }
 
 /// `POST /api/v2/index/search` — hybrid LanceDB search across
@@ -2209,6 +2445,8 @@ pub async fn sync_cb_drain(
     state: State<'_, AppState>,
     batch_size: Option<usize>,
 ) -> Result<serde_json::Value, String> {
+    let log = crate::operation_log::OperationLog::start("sync.cb.drain", serde_json::Value::Null);
+    let result: Result<serde_json::Value, String> = async {
     let cli = make_cb_client(&state).await?;
     let data_dir = state.data_dir.lock().await.clone()
         .ok_or("data_dir not initialised")?;
@@ -2230,6 +2468,10 @@ pub async fn sync_cb_drain(
         "upload_failed":  upload_failed,
         "drained":        pushed + uploaded,
     }))
+    }
+    .await;
+    crate::drives::tauri_commands::finish_operation(&log, &result, "cb_drain_failed", |v| json_counts(v, &[("pushed", "completed"), ("failed", "failed"), ("uploaded", "files")]));
+    result
 }
 
 /// `POST /api/files/by-hash/<sha>` — stream-upload `local_path` to
@@ -2242,6 +2484,8 @@ pub async fn sync_cb_upload_file(
     sha256: String,
     local_path: String,
 ) -> Result<serde_json::Value, String> {
+    let log = crate::operation_log::OperationLog::start("sync.cb.upload_file", serde_json::json!({"mode": "upload"}));
+    let result: Result<serde_json::Value, String> = async {
     let cli = make_cb_client(&state).await?;
     let path = std::path::PathBuf::from(&local_path);
     if !path.exists() {
@@ -2255,6 +2499,10 @@ pub async fn sync_cb_upload_file(
         "stored":          resp.stored,
         "local_blob_path": resp.local_blob_path,
     }))
+    }
+    .await;
+    crate::drives::tauri_commands::finish_operation(&log, &result, "cb_upload_failed", |v| json_counts(v, &[("size_bytes", "bytes")]));
+    result
 }
 
 /// `GET /api/files/by-hash/<sha>` — stream bytes to `dest_path`
@@ -2265,6 +2513,8 @@ pub async fn sync_cb_download_file(
     sha256: String,
     dest_path: String,
 ) -> Result<serde_json::Value, String> {
+    let log = crate::operation_log::OperationLog::start("sync.cb.download_file", serde_json::json!({"mode": "download"}));
+    let result: Result<serde_json::Value, String> = async {
     let cli = make_cb_client(&state).await?;
     let dest = std::path::PathBuf::from(&dest_path);
     // Create the parent dir if needed (matches the `tauri-plugin-fs`
@@ -2282,6 +2532,10 @@ pub async fn sync_cb_download_file(
         "dest_path":  dest_path,
         "bytes":      bytes,
     }))
+    }
+    .await;
+    crate::drives::tauri_commands::finish_operation(&log, &result, "cb_download_failed", |v| json_counts(v, &[("bytes", "bytes")]));
+    result
 }
 
 /// `GET /api/search?q=&limit=` — server-side FTS5 query over
@@ -2314,6 +2568,8 @@ pub async fn sync_cb_embeddings_push(
     state: State<'_, AppState>,
     rows: Vec<EmbeddingRow>,
 ) -> Result<serde_json::Value, String> {
+    let log = crate::operation_log::OperationLog::start("sync.cb.embeddings_push", serde_json::json!({"mode": "upload", "items": rows.len()}));
+    let result: Result<serde_json::Value, String> = async {
     let cli = make_cb_client(&state).await?;
     let resp = cli.embeddings_push(&rows).await.map_err(|e| e.to_string())?;
 
@@ -2331,6 +2587,10 @@ pub async fn sync_cb_embeddings_push(
         "rejected": resp.rejected,
         "errors":   resp.errors,
     }))
+    }
+    .await;
+    crate::drives::tauri_commands::finish_operation(&log, &result, "cb_embeddings_push_failed", |v| json_counts(v, &[("accepted", "completed"), ("rejected", "failed")]));
+    result
 }
 
 /// Stage O — unified backend health snapshot.  Polls cb-api,
@@ -2457,6 +2717,8 @@ pub async fn sync_cb_backup_shards(
     force: bool,
     keep_daily: Option<usize>,
 ) -> Result<serde_json::Value, String> {
+    let log = crate::operation_log::OperationLog::start("sync.cb.backup_shards", serde_json::json!({"mode": "upload", "forced": force}));
+    let result: Result<serde_json::Value, String> = async {
     use crate::drives::DriveRegistry;
     use crate::sync::backup_state::BackupState;
     use std::sync::Arc;
@@ -2605,6 +2867,10 @@ pub async fn sync_cb_backup_shards(
         "errors":    errors,
         "date_dir":  today,
     }))
+    }
+    .await;
+    crate::drives::tauri_commands::finish_operation(&log, &result, "cb_backup_shards_failed", |v| json_counts(v, &[("backed_up", "completed"), ("errors", "failed")]));
+    result
 }
 
 /// Restore a shard backup from a cloud drive into the cb-api VPS.
@@ -2616,6 +2882,8 @@ pub async fn sync_cb_restore_shard(
     drive_id: String,
     date: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    let log = crate::operation_log::OperationLog::start("sync.cb.restore_shard", serde_json::json!({"mode": "download"}));
+    let result: Result<serde_json::Value, String> = async {
     use crate::drives::DriveRegistry;
     use std::sync::Arc;
 
@@ -2675,6 +2943,10 @@ pub async fn sync_cb_restore_shard(
         "date": date_dir,
         "bytes": byte_count,
     }))
+    }
+    .await;
+    crate::drives::tauri_commands::finish_operation(&log, &result, "cb_restore_shard_failed", |v| json_counts(v, &[("bytes", "bytes")]));
+    result
 }
 
 /// Stage R — one-shot import of `source_files` rows from a controller.py
@@ -2692,6 +2964,8 @@ pub async fn sync_cb_import_from_manifest_db(
     batch_size: usize,
     dry_run:    bool,
 ) -> Result<serde_json::Value, String> {
+    let log = crate::operation_log::OperationLog::start("sync.cb.import", serde_json::json!({"mode": if dry_run { "sync.dry_run" } else { "sync.import" }}));
+    let result: Result<serde_json::Value, String> = async {
     use crate::sync::cloud_backup::ManifestRow;
     use std::path::PathBuf;
 
@@ -2809,6 +3083,10 @@ pub async fn sync_cb_import_from_manifest_db(
         "watermark":  max_source_id,
         "dry_run":    dry_run,
     }))
+    }
+    .await;
+    crate::drives::tauri_commands::finish_operation(&log, &result, "cb_import_failed", |v| json_counts(v, &[("imported", "completed")]));
+    result
 }
 
 // ── Stage S — Federated search ──────────────────────────────────────────────
@@ -3240,6 +3518,8 @@ pub async fn sync_cb_admin_mint(
     name: String,
     owner_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    let log = crate::operation_log::OperationLog::start("sync.cb.admin_mint", serde_json::Value::Null);
+    let result: Result<serde_json::Value, String> = async {
     let (cli, _url) = cb_client_for_admin(&state).await?;
     let resp: AdminMintResponse = cli
         .admin_mint(&admin_token, &name, owner_id.as_deref())
@@ -3250,6 +3530,10 @@ pub async fn sync_cb_admin_mint(
         "name":     resp.name,
         "owner_id": resp.owner_id,
     }))
+    }
+    .await;
+    crate::drives::tauri_commands::finish_operation(&log, &result, "cb_admin_mint_failed", |_| serde_json::Value::Null);
+    result
 }
 
 /// Stage T — revoke an existing API key by name.
@@ -3259,6 +3543,8 @@ pub async fn sync_cb_admin_revoke(
     admin_token: String,
     name: String,
 ) -> Result<serde_json::Value, String> {
+    let log = crate::operation_log::OperationLog::start("sync.cb.admin_revoke", serde_json::Value::Null);
+    let result: Result<serde_json::Value, String> = async {
     let (cli, _url) = cb_client_for_admin(&state).await?;
     let resp: AdminRevokeResponse = cli
         .admin_revoke(&admin_token, &name)
@@ -3268,6 +3554,10 @@ pub async fn sync_cb_admin_revoke(
         "revoked": resp.revoked,
         "name":    resp.name,
     }))
+    }
+    .await;
+    crate::drives::tauri_commands::finish_operation(&log, &result, "cb_admin_revoke_failed", |_| serde_json::Value::Null);
+    result
 }
 
 /// Stage T — list all API keys on the VPS (metadata only, no hashes).

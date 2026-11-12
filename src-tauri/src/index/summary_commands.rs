@@ -199,10 +199,14 @@ pub async fn index_export_lexical_report(
 /// Returned-window exports share the atomic writer. The frontend has already
 /// captured query, selection and report content before opening the Save dialog.
 #[tauri::command]
-pub async fn index_write_search_report(
-    app: tauri::AppHandle, state: State<'_, AppState>, path: std::path::PathBuf,
-    content: String, protected_source_uris: Vec<String>,
-) -> Result<std::path::PathBuf, String> {
+pub async fn index_write_search_report(app: tauri::AppHandle, state: State<'_, AppState>, path: std::path::PathBuf, content: String, protected_source_uris: Vec<String>) -> Result<std::path::PathBuf, String> {
+    let log = crate::operation_log::OperationLog::start("search.write_report", serde_json::json!({"bytes":content.len()}));
+    let result = index_write_search_report_inner(app, state, path, content, protected_source_uris).await;
+    crate::index::finish_logged(log, result, "write_failed", |_| serde_json::Value::Null)
+}
+
+async fn index_write_search_report_inner(app: tauri::AppHandle, state: State<'_, AppState>, path: std::path::PathBuf,
+    content: String, protected_source_uris: Vec<String>) -> Result<std::path::PathBuf, String> {
     if content.len() > 32 * 1024 * 1024 { return Err("The returned-window report exceeds 32 MiB. Use a streamed complete report.".into()); }
     if protected_source_uris.len() > 10000 { return Err("The returned-window source list is too large. Use a streamed complete report.".into()); }
     let lock = state.index.lock().await;

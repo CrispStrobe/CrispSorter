@@ -46,6 +46,7 @@
     import { open, save, ask } from '@tauri-apps/plugin-dialog';
     import { listen } from '@tauri-apps/api/event';
     import { invoke } from '@tauri-apps/api/core';
+    import { beginOperation } from '$lib/operationLog';
     import { onMount } from 'svelte';
     import type { BatchItem, BatchStatus } from '../types';
     import { stat, writeTextFile } from '@tauri-apps/plugin-fs';
@@ -201,6 +202,7 @@
         const nextId = sortedItems[selectedIndex + 1]?.id;
         reviewDrafts.applyingId = item.id;
         detailSaveError = '';
+        const operation = beginOperation('batch.review_edit', { count: changed.length });
         try {
             batchManager.markManual(item.id, changed);
             item.suggestedTitle = draft.title;
@@ -209,10 +211,12 @@
             await batchManager.recalculateTargetPath(item.id);
             reviewDrafts.discard([item.id]);
             await reviewDrafts.flush();
+            operation.complete({ saved: true });
             if (advance && nextId && selectedItemId === item.id) selectedItemId = nextId;
         } catch (error) {
             // Retain the draft and old applied values if persistence failed.
             Object.assign(item, previous);
+            operation.fail(error, { saved: false });
             detailSaveError = String(error);
         } finally { reviewDrafts.applyingId = null; }
     }
@@ -604,13 +608,15 @@
         duplicateError = '';
         duplicateNotice = '';
         let refresh = false;
+        const operation = beginOperation('batch.duplicate_cleanup', { total: toRemove.length });
         try {
             if (deleteFromDisk) {
                 const confirmed = await ask(
                     `${duplicateLabels.keeper}\n${keeper.originalPath}\n\n${duplicateLabels.targets} (${toRemove.length})\n${toRemove.map(item => item.originalPath).join('\n')}`,
                     { title: duplicateLabels.verified, kind: 'warning', okLabel: duplicateLabels.confirm, cancelLabel: duplicateLabels.cancel },
                 );
-                if (!confirmed) return;
+                if (!confirmed) { operation.cancel(); return; }
+                operation.stage('committing', { count: toRemove.length }, 'info');
                 const outcome = await deleteVerifiedCopies(group, keepId, () => batchManager.items,
                     path => invoke<string>('file_sha256', { path }),
                     async path => {
@@ -621,6 +627,7 @@
                     duplicateError = `${duplicateLabels.failed}\n${outcome.failed.map(issue => `${issue.item.originalName}: ${issue.reason}`).join('\n')}`;
                 }
                 if (outcome.deleted.length) duplicateNotice = `${outcome.deleted.length} ${duplicateLabels.deleted}`;
+                operation.complete({ completed: outcome.deleted.length, failed: outcome.failed.length, partial: outcome.failed.length > 0 });
             } else {
                 if (!batchManager.items.some(item => item.id === keeper.id && item.originalPath === keeper.originalPath)) {
                     throw new Error(i18n.lang === 'de' ? 'Der zu behaltende Eintrag wurde geändert. Erneut prüfen.' : 'The entry to keep changed. Refresh and review the group again.');
@@ -628,9 +635,11 @@
                 const current = toRemove.filter(scanned => batchManager.items.some(item => item.id === scanned.id && item.originalPath === scanned.originalPath));
                 await batchManager.removeItems(current.map(item => item.id));
                 duplicateNotice = duplicateLabels.removed;
+                operation.complete({ completed: current.length });
             }
             refresh = true;
         } catch (error) {
+            operation.fail(error);
             duplicateError = `${String(error)}. ${duplicateLabels.retry}`;
         } finally {
             batchManager.isCleaningDuplicates = false;
@@ -776,6 +785,7 @@
         }
         indexingSelected = true;
         const items = batchManager.items.filter(i => ids.includes(i.id));
+        const operation = beginOperation('batch.index_add', { total: items.length });
         const BATCH_SIZE = 16;
         let ok = 0, fail = 0;
 
@@ -812,11 +822,13 @@
                 ok += batch.length;
             } catch (e) {
                 console.error('[Index] batch ingest failed:', e);
+                operation.stage('warning', { failed: batch.length }, 'warn');
                 fail += batch.length;
             }
         }
 
         indexingSelected = false;
+        operation.complete({ completed: ok, failed: fail, partial: fail > 0 });
         showToast(reviewLabels.indexResult.replace('{ok}', String(ok)).replace('{fail}', String(fail)));
     }
 

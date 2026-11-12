@@ -2617,10 +2617,13 @@
         modelRequests[provider.id] = request;
         modelListAttempted[provider.id] = true;
         delete modelRefreshErrors[provider.id];
+        // Counts only: the provider endpoint and model names stay out of the log.
+        const operation = beginOperation('settings.refresh_models');
         try {
             const result = await providerRequests.run(request, currentProvider, resolveSecret,
                 (config, key) => llmClient.fetchModels(config.id, key, config.baseUrl));
-            if (!result.current || !providerRequests.isCurrent(request, currentProvider())) return;
+            if (!result.current || !providerRequests.isCurrent(request, currentProvider())) { operation.cancel(); return; }
+            operation.complete({ count: result.value.length });
             const target = currentProvider()!;
             target.models = result.value;
             modelListChecked[target.id] = request.config;
@@ -2629,6 +2632,7 @@
             }
             await handleSave();
         } catch (e: any) {
+            operation.fail(e);
             if (providerRequests.isCurrent(request, currentProvider())) {
                 modelRefreshErrors[request.config.id] = { request, message: providerErrorMessage(e,
                     'The model list could not be loaded. Check the endpoint and key, then refresh to retry.') };
@@ -2650,14 +2654,18 @@
             delete testingProviders[pid];
             return;
         }
+        // Outcome and timing only: never the endpoint, model or reply.
+        const operation = beginOperation('settings.test_connection');
         try {
             const prompt = "Reply with 'OK' and nothing else.";
             const result = await providerRequests.run(request, currentProvider, resolveSecret,
                 (config, key) => llmClient.query(config.id, config.selectedModel, prompt, key, 0.3, undefined, undefined, config.baseUrl));
             if (result.current && providerRequests.isCurrent(request, currentProvider())) {
+                operation.complete();
                 testResults[pid] = { request, success: true, message: `Connected! Response: ${result.value}` };
-            }
+            } else operation.cancel();
         } catch (e: any) {
+            operation.fail(e);
             if (providerRequests.isCurrent(request, currentProvider())) {
                 testResults[pid] = { request, success: false, message: providerErrorMessage(e,
                     'The connection test failed without an error message. Check that the server is running and the selected model can answer chat requests.') };
@@ -2707,26 +2715,33 @@
         if (!model.downloadUrl) return;
         
         console.log(`[Settings] Starting download for ${model.name} (ID: ${model.id}) from ${model.downloadUrl}`);
+        // Size and outcome only: the model name, URL and target path stay out of the log.
+        const operation = beginOperation('models.download', { backend: 'local' });
         try {
             const fileName = model.downloadUrl.split('/').pop() || 'model.gguf';
             const path = await save({ defaultPath: fileName, filters: [{ name: 'GGUF', extensions: ['gguf'] }] });
             if (!path) {
                 console.log(`[Settings] Download cancelled by user.`);
+                operation.cancel();
                 return;
             }
 
             console.log(`[Settings] Target path for download: ${path}`);
             model.progress = 0;
+            operation.stage('progress', {}, 'info');
             await invoke('download_file', { id: model.id, url: model.downloadUrl, path });
-            
+
             model.path = path;
             model.isDownloaded = true;
             model.progress = undefined;
             const metadata = await stat(path);
             model.size = (metadata.size / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
             console.log(`[Settings] Download complete: ${model.name}, size=${model.size}`);
+            operation.stage('saving', { bytes: metadata.size });
             await handleSave();
+            operation.complete({ bytes: metadata.size, saved: true });
         } catch (e) {
+            operation.fail(e);
             console.error(`[Settings] Download failed for ${model.name}:`, e);
             alert('Download failed: ' + e);
             model.progress = undefined;
@@ -2735,11 +2750,16 @@
 
     async function removeLocalModel(index: number) {
         const model = localModels[index];
+        const operation = beginOperation('models.delete', { backend: 'local' });
+        let removedFromDisk = false;
         if (model.isDownloaded && model.path && confirm(`Delete ${model.name} from disk?`)) {
-            await remove(model.path).catch(() => {});
+            // The list entry is dropped either way; a failed file removal is a warning.
+            await remove(model.path).then(() => { removedFromDisk = true; })
+                .catch(() => operation.stage('warning', { failed: 1 }, 'warn'));
         }
         localModels.splice(index, 1);
         await handleSave();
+        operation.complete({ count: removedFromDisk ? 1 : 0 });
     }
 
     async function setLocalModelActive(path: string) {
@@ -2930,6 +2950,9 @@
     async function pullOllamaModel(tag: string) {
         console.log(`[Settings] Pulling Ollama model: ${tag}`);
         ollamaPulling[tag] = 0;
+        // Byte counts only: the model tag and server URL stay out of the log.
+        const operation = beginOperation('models.pull', { backend: 'local' });
+        let pulledBytes = 0;
         try {
             const stream = await llmClient.pullModel('ollama', tag, selectedProvider.baseUrl);
             const reader = stream.getReader();
@@ -2944,14 +2967,17 @@
                         const status = JSON.parse(line);
                         if (status.total && status.completed) {
                             ollamaPulling[tag] = Math.round((status.completed / status.total) * 100);
+                            if (typeof status.completed === 'number') pulledBytes = Math.max(pulledBytes, status.completed);
                         }
                     } catch(e) {}
                 }
             }
             console.log(`[Settings] Ollama pull complete: ${tag}`);
+            operation.complete({ bytes: pulledBytes });
             delete ollamaPulling[tag];
             await handleRefreshModels('ollama');
         } catch(e) {
+            operation.fail(e);
             console.error('[Settings] Ollama pull failed:', e);
             alert('Pull failed: ' + e);
             delete ollamaPulling[tag];
