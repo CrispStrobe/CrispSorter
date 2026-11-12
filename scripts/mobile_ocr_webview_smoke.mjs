@@ -38,6 +38,7 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { verifyAndroidSandbox, canonicalAppPath, isWithinAppRoot, probeOptions, processMemory, summarizeMemory, textErrorRate, validateBuildSource, validatePackagedAndroidLibraries } from './mobile_ocr_probe_utils.mjs';
 import { assessQualityFixture } from './mobile_ocr_quality.mjs';
+import { connectionHealth, monitorConnection } from './mobile_ocr_connection_health.mjs';
 import { checkCandidateOcrBoundary } from './mobile_ocr_candidate_boundary.mjs';
 
 const PACKAGE = 'com.crispstrobe.crispsorter';
@@ -95,23 +96,27 @@ function projectRegion(region) {
 
 async function main() {
   const opt = probeOptions(process.argv.slice(2));
+  const boundaryOnly = opt.qualification === 'candidate-boundary';
   const output = path.resolve(opt.output);
   await fs.mkdir(path.dirname(output), { recursive: true });
   await fs.mkdir(output); // Never overwrite evidence from an earlier run.
   const receipt = {
-    schema_version: 1, kind: 'android-webview-native-ocr', started_at: stamp(), status: 'running',
+    schema_version: 1, kind: 'android-webview-native-ocr', qualification_mode: opt.qualification, started_at: stamp(), status: 'running',
     synthetic_only: true, physical_camera_tested: false, corpus_quality_qualified: false,
     system_save_picker_tested: false, system_document_picker_tested: false,
     ui_interactions_tested: false, device_kind: opt['device-kind'],
     physical_device_qualified: false,
     source: { sorter_commit: opt['source-commit'], crispembed_commit: opt['embed-commit'],
+      harness_commit: opt['harness-source-commit'] ?? null,
       identity_basis: 'Clean checkout build receipt, matched packaged native code/data, and exact installed APK SHA-256',
       github_run_id: process.env.GITHUB_RUN_ID ?? null, github_sha: process.env.GITHUB_SHA ?? null },
     serial: opt.serial, package: PACKAGE, steps: [], cleanup_errors: [], memory_samples: [],
     limits: { repeated_inference_pages: opt['repeat-pages'], maximum_process_rss_mib: opt['max-rss-mib'] },
   };
   const consoleLog = [];
-  let browser, page, forwardPort, pid, privateRoot, appData, exportPath;
+  let browser, page, forwardPort, pid, privateRoot, appData, exportPath, connectionMonitor;
+  const connectionEvents = [];
+  receipt.connection_lifecycle = connectionEvents;
   let pickerFixturePath, pickerDumpPath;
   const privateAliases = [];
   const canonicalPrivateAlias = value => canonicalAppPath(remotePath(value), privateRoot, privateAliases);
@@ -280,6 +285,7 @@ async function main() {
     }
   }
   const invoke = (command, args = {}, timeout = 30_000) => {
+    connectionMonitor?.assertHealthy();
     const milliseconds = budget(timeout, command);
     return bounded(page.evaluate(
       ({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args },
@@ -287,6 +293,7 @@ async function main() {
   };
   const importBytes = (command, bytes, metadata, timeout = 90_000) => {
     assert(['ocr_workspace_import_bytes', 'ocr_workspace_import_image'].includes(command));
+    connectionMonitor?.assertHealthy();
     return bounded(page.evaluate(async ({ command, base64, metadata }) => {
       const header = btoa(Array.from(new TextEncoder().encode(JSON.stringify(metadata)), byte => String.fromCharCode(byte)).join(''));
       return window.__TAURI_INTERNALS__.invoke(command, { base64 }, { headers: { 'x-ocr-metadata': header } });
@@ -340,28 +347,31 @@ async function main() {
       assert.equal(inputs.fixture.width, 1400);
       assert.equal(inputs.fixture.height, 480);
       assert.equal(inputs.fixture.text, 'CRISP MOBILE OCR\nDocument 2048\nTotal 125.00');
-      const qualitySpecBytes = await fs.readFile(new URL('../tools/mobile-ocr-probe/quality.json', import.meta.url));
-      const qualitySpec = JSON.parse(qualitySpecBytes);
-      assert.equal(inputs.quality_fixtures?.spec_sha256, digest(qualitySpecBytes), 'Prepared quality inputs differ from this exact source.');
-      assert.equal(inputs.quality_fixtures.font_sha256, inputs.fixture.font_sha256);
-      assert.deepEqual(inputs.quality_fixtures.models, qualitySpec.models);
-      assert.deepEqual(qualitySpec.models.map(model => model.name), ['tesseract-deu']);
-      assert.equal(inputs.quality_fixtures.cases.length, qualitySpec.cases.length);
+      let qualitySpec = { models: [], cases: [] };
       const quality = [];
-      for (let index = 0; index < qualitySpec.cases.length; index++) {
-        const { text, png_sha256, bytes: pngSize, ...actualSpec } = inputs.quality_fixtures.cases[index];
-        const fixture = qualitySpec.cases[index];
-        assert.deepEqual(actualSpec, fixture);
-        assert.equal(text, fixture.lines.map(line => line.text).join('\n'));
-        assert(/^quality-[a-z-]+\.png$/.test(fixture.filename) && hex(png_sha256, 64));
-        const pixels = await fs.readFile(path.join(opt.inputs, fixture.filename));
-        assert(pixels.length > 32 && pixels.length <= 2 * 1024 * 1024);
-        assert.equal(pixels.length, pngSize);
-        assert.equal(digest(pixels), png_sha256);
-        assert.equal(pixels.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
-        assert.equal(pixels.readUInt32BE(16), fixture.width);
-        assert.equal(pixels.readUInt32BE(20), fixture.height);
-        quality.push({ fixture, bytes: pixels, sha256: png_sha256 });
+      if (!boundaryOnly) {
+        const qualitySpecBytes = await fs.readFile(new URL('../tools/mobile-ocr-probe/quality.json', import.meta.url));
+        qualitySpec = JSON.parse(qualitySpecBytes);
+        assert.equal(inputs.quality_fixtures?.spec_sha256, digest(qualitySpecBytes), 'Prepared quality inputs differ from this exact source.');
+        assert.equal(inputs.quality_fixtures.font_sha256, inputs.fixture.font_sha256);
+        assert.deepEqual(inputs.quality_fixtures.models, qualitySpec.models);
+        assert.deepEqual(qualitySpec.models.map(model => model.name), ['tesseract-deu']);
+        assert.equal(inputs.quality_fixtures.cases.length, qualitySpec.cases.length);
+        for (let index = 0; index < qualitySpec.cases.length; index++) {
+          const { text, png_sha256, bytes: pngSize, ...actualSpec } = inputs.quality_fixtures.cases[index];
+          const fixture = qualitySpec.cases[index];
+          assert.deepEqual(actualSpec, fixture);
+          assert.equal(text, fixture.lines.map(line => line.text).join('\n'));
+          assert(/^quality-[a-z-]+\.png$/.test(fixture.filename) && hex(png_sha256, 64));
+          const pixels = await fs.readFile(path.join(opt.inputs, fixture.filename));
+          assert(pixels.length > 32 && pixels.length <= 2 * 1024 * 1024);
+          assert.equal(pixels.length, pngSize);
+          assert.equal(digest(pixels), png_sha256);
+          assert.equal(pixels.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+          assert.equal(pixels.readUInt32BE(16), fixture.width);
+          assert.equal(pixels.readUInt32BE(20), fixture.height);
+          quality.push({ fixture, bytes: pixels, sha256: png_sha256 });
+        }
       }
       for (const model of [...inputs.models, ...qualitySpec.models]) {
         assert(hex(model.sha256, 64) && /^[a-z0-9-]+$/.test(model.name));
@@ -428,6 +438,8 @@ async function main() {
       return { bytes, inputs, quality, candidateRuntime: build.candidate_reuse != null };
     }, 120_000);
 
+    if (boundaryOnly) assert(prepared.candidateRuntime, 'Boundary-only replay requires candidate reuse provenance.');
+
     await step('attach to the running application WebView through its own debug socket', async () => {
       pid = await adbText(['shell', 'pidof', PACKAGE]);
       assert(/^\d+$/.test(pid), 'Expected one live application process from the launch smoke.');
@@ -452,8 +464,10 @@ async function main() {
       browser = await playwright.chromium.connectOverCDP('ws://127.0.0.1:' + forwardPort + '/devtools/browser', {
         noDefaults: true, timeout: budget(30_000, 'connect CDP'),
       });
+      connectionMonitor = monitorConnection(browser, connectionEvents);
       const pageDeadline = Math.min(deadline, Date.now() + 30_000);
       while (Date.now() < pageDeadline && !page) {
+        connectionMonitor.assertHealthy();
         for (const candidate of browser.contexts().flatMap(context => context.pages())) {
           const candidateUrl = new URL(candidate.url());
           if (!['tauri.localhost', 'localhost'].includes(candidateUrl.hostname)) continue;
@@ -469,6 +483,7 @@ async function main() {
         if (!page) await delay(500);
       }
       assert(page, 'The debug WebView did not expose the real Tauri bridge.');
+      connectionMonitor.attachPage(page);
       const appUrl = new URL(page.url());
       assert(['tauri.localhost', 'localhost'].includes(appUrl.hostname) && ['http:', 'https:', 'tauri:'].includes(appUrl.protocol),
         'Unexpected application origin: ' + appUrl.origin);
@@ -497,7 +512,7 @@ async function main() {
       const projects = await invoke('ocr_workspace_list');
       assert.deepEqual(projects, [], 'Use a fresh dedicated test installation; existing projects must not be overwritten or erased.');
       const registry = await invoke('embedder_registry_list', {}, 60_000);
-      for (const model of [...prepared.inputs.models, ...prepared.inputs.quality_fixtures.models]) {
+      for (const model of [...prepared.inputs.models, ...(boundaryOnly ? [] : prepared.inputs.quality_fixtures.models)]) {
         const entry = registry.find(item => item.name === model.name);
         assert(entry && entry.filename === model.filename && entry.cached === false, 'Expected an uninstalled baseline model: ' + model.name);
       }
@@ -632,6 +647,17 @@ async function main() {
         });
         receipt.candidate_boundary.verified_baseline_models = receipt.verified_models;
       }, 220_000);
+    }
+
+    if (boundaryOnly) {
+      await step('verify retained replay input and app process survive the boundary controls', async () => {
+        assert.equal(await privateDigest(archivedPath(imported)), prepared.inputs.fixture.png_sha256);
+        assert.equal(await privateDigest(original.image_path), receipt.original_asset_sha256);
+        assert.equal(await adbText(['shell', 'pidof', PACKAGE]), pid);
+      });
+      receipt.qualification = 'Candidate native failure and Tesseract valid-empty boundary only; full OCR, document, UI, export and physical-device gates were not run.';
+      receipt.status = 'passed';
+      return;
     }
 
     const recognized = [];
@@ -1306,6 +1332,41 @@ async function main() {
         await fs.writeFile(path.join(output, 'application-logcat.txt'), logs.stdout);
       } catch (error) { receipt.cleanup_errors.push('Capture logcat: ' + String(error)); }
     }
+    try { connectionMonitor?.assertHealthy(); }
+    catch (error) {
+      if (receipt.status === 'passed') {
+        receipt.status = 'failed';
+        receipt.error = String(error?.stack ?? error).slice(0, 32_768);
+        process.exitCode = 1;
+      }
+    }
+    // Observe loss before intentional driver cleanup. Never reconnect or replay
+    // a possibly completed native command, and never infer renderer health from
+    // the main process alone.
+    if (receipt.status === 'failed' && pid) {
+      if (receipt.connection?.socket && forwardPort) {
+        try {
+          receipt.connection_failure = await connectionHealth({
+            serial: opt.serial, packageName: PACKAGE, pid, socket: receipt.connection.socket,
+            forwardPort, browser, page,
+            adbText: args => adbText(args, { timeout: 10_000, maxBuffer: 256 * 1024 }),
+            runAs: args => runAs(args, { timeout: 10_000, maxBuffer: 128 * 1024 }),
+          });
+        } catch (error) { receipt.cleanup_errors.push('Capture connection health: ' + String(error)); }
+      }
+      for (const [filename, args] of [
+        ['application-crash-logcat.txt', ['logcat', '-b', 'crash', '-d', '-v', 'threadtime', '-t', '300']],
+        ['application-system-logcat.txt', ['logcat', '-b', 'main', '-b', 'system', '-d', '-v', 'threadtime', '-t', '1000',
+          'ActivityManager:I', 'ActivityTaskManager:I', 'lmkd:I', 'lowmemorykiller:I', 'chromium:E', 'AndroidRuntime:E', 'libc:F', 'DEBUG:F', '*:S']],
+      ]) {
+        try {
+          const logs = await adb(args, { timeout: 10_000, maxBuffer: 2 * 1024 * 1024 });
+          await fs.writeFile(path.join(output, filename), logs.stdout);
+        } catch (error) { receipt.cleanup_errors.push('Capture crash/system logcat: ' + String(error)); }
+      }
+    }
+    connectionMonitor?.beginCleanup();
+    receipt.connection_lifecycle = connectionEvents;
     if (browser) {
       try { await bounded(browser.close(), 10_000, 'disconnect CDP'); }
       catch (error) { receipt.cleanup_errors.push('Disconnect CDP: ' + String(error)); }

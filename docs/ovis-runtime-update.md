@@ -322,8 +322,59 @@ establishes decoded OCR, a positively recognized blank page, CrispSorter
 application behavior or GPU execution.
 
 The [Android x86_64 candidate app run](https://github.com/CrispStrobe/CrispSorter/actions/runs/43313212722)
-was building the app at this update. It reuses the verified candidate runtime and exercises
-the app IPC native-failure and white-raster blank controls. Until it completes,
-these controls have only source review and response-validator tests; even a pass
-will not establish Ovis inference, same-context recovery or physical-device
-behavior.
+built the app and reached its emulator boundary check. The retained native log
+shows the deliberate DBNet/unified mismatch being refused for missing
+encoder/decoder tensors, followed by `unified OCR model load failed`. The actual
+WebView rejection ends with `Recognize page: CrispEmbed OCR pipeline run failed:
+OCR pipeline recognition failed; see native diagnostics`. The harness expected
+the obsolete `OCR recognition failed` application context and rejected that
+genuine native failure. The harness now requires the exact current execution
+context plus the unchanged native wrapper sentinel; its regression follows the
+actual Rust `pipeline.run` error context and replays the sanitized retained
+rejection. Earlier model/config/constructor errors and successful empty replies
+remain failures of the negative gate.
+
+The [sanitized observation](../tests/results/ocr-mobile-candidate/run-43313212722-boundary.json)
+binds the run, archive, APK, source commits, native receipt, raw rejection and
+log hashes. The whole run remains failed: the blank control and later checks
+did not execute. Its retained evidence establishes this deliberate native
+initialization rejection crossing the rebuilt Rust wrapper and app IPC; it does
+not establish valid blank behavior, Ovis inference, same-context recovery or
+physical-device behavior. Local validator replay is not emulator execution.
+
+The retained APK bytes match the build receipt's SHA-256, so correcting this
+external harness does not require rebuilding the app. An emulator-only replay
+must bind original application source `a26ea39776b5510f55a73f0a0fde3f54b0724b20`
+and corrected harness source separately, retaining exact APK/native/lock checks.
+The existing runner assumes its checkout is the app source and cannot directly
+replay this artifact. The full quality/document fixture directory and installed
+private baseline models were not retained; a replay needs exact fixture
+reconstruction or a narrow boundary runner, and available verified baseline
+model bytes in the fresh emulator.
+
+The manual `ocr-mobile-native.yml` route with `candidate_replay: true` now supplies that
+narrow runner. It stages artifact `13991450588` from the failed run with exact
+committed archive/APK/build/native/PNG pins, checks out the original app source
+separately, and records the corrected harness commit and tree. It repeats source,
+receipt and file-hash checks before emulator use. The WebView harness validates
+the exact installed APK, imports the retained original PNG, and uses only the
+existing pinned DBNet/English baseline installed through the app. Startup,
+photo-preparation and project-save prerequisites still run; it then performs
+the native rejection/valid-empty checks and stops before full OCR, German,
+document, UI and export gates. It downloads no host fixture weights and builds
+neither runtime nor app. The complete app flow remains the default mode.
+The replay route is prepared and has not been dispatched or executed; the
+original archive expires on 2026-11-26 and an unavailable archive fails closed.
+
+The [diagnostic Android emulator replay](https://github.com/CrispStrobe/CrispSorter/actions/runs/43325542179)
+passed all ten scoped steps with no cleanup errors. It used the retained app
+built at `a26ea39776b5510f55a73f0a0fde3f54b0724b20`, candidate runtime source
+`2d2ab3275022e095f4a8f580e276bb2e3aa3f59c`, and corrected harness source
+`336c584b21ba1a6a155e60e5b4c650b41693c572`. The deliberate incompatible-model
+request returned the native pipeline error through app IPC; a separate white
+raster returned zero regions and a non-NULL empty native text result through
+Tesseract. Baseline model hashes and the installed APK were checked. This does
+not qualify Ovis inference, patch bounds, same-context recovery, multistage
+fallback, physical devices or the later source revision. The previous replay's
+WebView loss remains unexplained; the successful replay does not establish its
+cause.

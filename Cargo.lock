@@ -2346,6 +2346,8 @@ dependencies = [
  "quick-xml 0.38.4",
  "rayon",
  "reqwest 0.13.4",
+ "rustls",
+ "rustls-native-certs",
  "rten",
  "rusqlite",
  "scraper",

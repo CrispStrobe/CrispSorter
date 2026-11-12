@@ -367,8 +367,26 @@ bound, failure after successful VLM initialization, EOS-only VLM text, recovery
 in the same native context, prior-result clearing, or multi-stage success/blank fallback.
 Those cases need separate native/model-specific and rebuilt-consumer execution.
 Malformed PDF, missing-file/model, and policy errors elsewhere in the lane do
-not establish that they crossed the native recognition boundary. This route is
-prepared; no candidate app or boundary execution result is claimed here.
+not establish that they crossed the native recognition boundary.
+The [retained candidate observation](../tests/results/ocr-mobile-candidate/run-43313212722-boundary.json)
+records a real native initialization failure reaching the rebuilt app wrapper
+and WebView IPC in run `43313212722`. The run failed on an obsolete harness
+error-context assertion; the exact current context is now checked against the
+actual Rust source and frozen rejection. The blank and subsequent gates did not
+execute. The corrected harness has not been rerun on an emulator.
+The manual `ocr-mobile-native.yml` route with `candidate_replay: true` reuses the exact APK,
+receipts and retained PNG from that run, recording original application and
+corrected harness source identities separately. Its explicit
+`candidate-boundary` qualification mode requires emulator/candidate provenance
+and stops after the native rejection and Tesseract blank controls. It installs
+only the already pinned English baseline through the app and has no app/native
+build or host model-fixture download step. It does not report completion of the
+default full OCR/UI/document/export flow. The original artifact must remain
+available, with its committed hash pins intact; no replay has been executed.
+Set `target: android-x86_64` for replay. This explicit input skips the registered
+workflow's contracts and normal mobile build jobs; default dispatches and pushes
+retain their existing path. Replay shares the original, unchanged workflow
+concurrency block.
 
 The [build/link qualification](https://github.com/CrispStrobe/CrispSorter/actions/runs/40875226935)
 completed successfully for Android ARM64, iOS ARM64, and iOS ARM64 simulator.
@@ -405,6 +423,26 @@ Connect. These archive checks supplement signing and source-bound receipts;
 they do not prove that an artifact was built from a given commit or executed on
 a device, and they introduce no approval requirement.
 
+The upload-only `testflight_current` selector consumes the existing standard IPA
+without rebuilding or publishing a release. Run it from the same source ref as
+the completed draft build:
+
+```sh
+gh workflow run release.yml --repo CrispStrobe/CrispSorter --ref <same-source-ref> \
+  -f platform=testflight_current -f mobile_profile=standard \
+  -f publish=false -f mac_appstore=false
+```
+
+It checks that the current version's unpublished draft resolves to the exact
+checkout SHA, then checks its standard iOS receipt's source/version/hash and the
+downloaded IPA's bytes and identity. macOS verifies the actual extracted code
+signature before upload. The actual IPA supplies the build number, and the UTC
+cutoff recorded before upload binds internal distribution to that fresh build.
+Public release and macOS App Store jobs cannot run under this selector; invalid
+publication flags fail before artifact selection. There is no new consent gate.
+If the source ref advances after the draft build, source matching rejects the
+old receipt. Legacy upload/resume selectors retain their separate old IPA pin.
+
 Current-source completion still requires new binaries for Linux, Windows, macOS,
 Android and iOS, their matching source/version/hash receipts and required signing
 evidence, and a newly uploaded iOS build selected by its exact build number and
@@ -413,3 +451,29 @@ version/hash are available from that source-bound artifact; the existing old
 IPA cannot establish new-source TestFlight coverage. Windows Authenticode and macOS Developer ID credentials
 are still required for signed desktop publication; see
 [desktop signing](desktop-signing.md).
+
+### Resume an accepted current-source TestFlight upload
+
+`testflight_current_resume` is an upload-free recovery selector. Supply
+`testflight_uploaded_after` with the **original** upload's UTC cutoff, exactly in
+`YYYY-MM-DDTHH:MM:SSZ` form. The upload step prints that value before contacting
+Apple. Do not substitute the retry time: processing/assignment recovery must
+remain bound to the original accepted upload. Missing, malformed, naive or future
+timestamps fail before any draft lookup or environment update.
+
+Resume retains `publish=false`, `mac_appstore=false`, standard-profile admission,
+exact current source/draft/tag/receipt binding, final IPA hash/size/version checks
+and platform signature verification. It derives the build number from that
+verified IPA. It then queries/assigns only the exact app marketing-version and
+build-number pair uploaded at or after the explicit original cutoff. A reused
+build number from another marketing version, missing version relationship,
+missing exact build or non-VALID processing state cannot select another build.
+There is no fallback to the newest or older valid build.
+
+This selector never runs altool upload, rebuilds the app, starts another release
+platform or publishes a release. It only recovers processing/group assignment
+for an already accepted upload; an upload that was not accepted needs the
+ordinary current-source upload selector instead. The existing legacy
+`testflight_resume` refusal remains unchanged. No new manual approval is added.
+The new route is source/test preparation, not evidence that a particular upload
+or internal group assignment has completed.

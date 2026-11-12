@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "kind": "sanitized-android-candidate-boundary-observation",
+  "run_url": "https://github.com/CrispStrobe/CrispSorter/actions/runs/43313212722",
+  "artifact_id": 13991450588,
+  "artifact_archive_sha256": "4480becdcd0736acb8f857a7dc7e1eb59238ff166fb1ec6b04a8a17a41b02d9f",
+  "application_source_commit": "a26ea39776b5510f55a73f0a0fde3f54b0724b20",
+  "native_source_commit": "2d2ab3275022e095f4a8f580e276bb2e3aa3f59c",
+  "ggml_source_commit": "3a27b6c665b191cb230be367db5c52d81dd3e2ac",
+  "application_apk_sha256": "576530d424b879d7ed3cbf839df106345ea47f5b8e689039f99725ddfcbe481d",
+  "application_build_receipt_sha256": "4d283eecf87edb77b123eff204a8ad4409e5752104c55e09b78ca4458ad652e6",
+  "native_runtime_receipt_sha256": "49c034be44f0509da1c2f74f147b71d92907a8a8b8276e2b82f05e4a3323e3b7",
+  "raw_negative_observation_sha256": "876137cfedd03f166c6d93482991ab482d91feca398c2049cb3570db53c7d289",
+  "raw_application_logcat_sha256": "40acbe1ff93cfa55d7817be8783d6bad4f808e1a2fcb2e666c51d1586828b76e",
+  "observed_rejection": "Error: page.evaluate: Recognize page: CrispEmbed OCR pipeline run failed: OCR pipeline recognition failed; see native diagnostics",
+  "native_wrapper_error": "OCR pipeline recognition failed; see native diagnostics",
+  "native_wrapper_source_path": "crispembed/src/lib.rs",
+  "native_wrapper_source_sha256": "70cf3c11ab0ca6c7e6207ffc79570bcf53b819042c931cb9ffa5e7441c2d31e5",
+  "sanitized_native_diagnostics": [
+    "math_ocr: <app-model-path> is not a TrOCR-style encoder/decoder GGUF (general.architecture=dbnet, 0/12 enc + 0/6 dec layers mapped) — refusing to run with missing tensors. Pass this model to the engine that matches its architecture instead.",
+    "ocr_orchestrator: unified OCR model load failed: <app-model-path>"
+  ],
+  "failure_classification": "Harness expected obsolete OCR recognition failed context; native initialization rejection crossed the rebuilt Rust wrapper and actual app IPC with current CrispEmbed OCR pipeline run failed context.",
+  "valid_blank_executed": false,
+  "remaining_app_gates_executed": false,
+  "qualification": "Native error boundary observed; whole candidate run failed. Blank and subsequent gates remain unexecuted. Source-bound validator replay is not a new app/emulator execution.",
+  "retained_artifact_reuse": {
+    "apk_hash_verified_against_archived_bytes": true,
+    "app_rebuild_required_for_this_harness_only_fix": false,
+    "existing_runner_direct_replay_supported": false,
+    "requirements": [
+      "Bind application identity to original application source a26ea39776b5510f55a73f0a0fde3f54b0724b20 and harness identity to the corrected source separately; keep exact APK/source/native receipt checks.",
+      "Prepare missing pinned quality/document fixture files before using the complete existing WebView runner; the archive retains inputs.json and original synthetic PNG, but not the full fixture directory.",
+      "Provision the existing hash-verified small baseline models in the fresh emulator; neither private installed models nor the complete fixture models are retained in this artifact. A fresh emulator cannot recognize without available model bytes."
+    ]
+  }
+}

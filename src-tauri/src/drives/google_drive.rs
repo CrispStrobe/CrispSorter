@@ -11,7 +11,9 @@
 use anyhow::{anyhow, Context, Result};
 use std::path::Path;
 
-use crate::sync::proxy::{build_blocking_client, ProxyConfig};
+use crate::sync::proxy::ProxyConfig;
+#[cfg(not(feature = "experimental-google-root-pins"))]
+use crate::sync::proxy::build_blocking_client;
 
 use super::{CloudDrive, DirEntry, DriveCapabilities, DriveType, FileStat, FileVersion};
 
@@ -57,7 +59,10 @@ impl GoogleDriveDrive {
         client_secret: Option<String>,
         proxy: &ProxyConfig,
     ) -> Result<Self> {
+        #[cfg(not(feature = "experimental-google-root-pins"))]
         let client = build_blocking_client(proxy)?;
+        #[cfg(feature = "experimental-google-root-pins")]
+        let client = crate::sync::pinned_google_transport::build_google_client(proxy)?;
         Ok(Self::with_api_base_and_client(
             label,
             access_token,

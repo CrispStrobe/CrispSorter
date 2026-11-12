@@ -88,6 +88,8 @@ tauri-plugin-fs = "2.4.5"
 # default-features=false drops the native-tls (OpenSSL) backend.
 # Desktop gets native-tls (best perf), mobile gets rustls (no system OpenSSL needed).
 reqwest = { version = "0.13.2", features = ["json", "stream", "blocking", "cookies", "multipart", "query", "form"] }
+rustls = { version = "=0.23.40", optional = true, default-features = false, features = ["std", "ring", "tls12"] }
+rustls-native-certs = { version = "=0.8.4", optional = true }
 # Vendored OpenSSL: cross-compiles OpenSSL from source so Android / iOS
 # builds don't need a pre-installed system OpenSSL.  On desktop the
 # system libssl is still preferred (vendored only kicks in when the
@@ -298,6 +300,8 @@ mockito = "1.5"
 #   crispembed-metal    — Metal (macOS)
 #   crispembed-cuda     — CUDA (NVIDIA)
 [features]
+# Experimental Linux Google Drive API/upload transport only. Defaults remain off.
+experimental-google-root-pins = ["dep:rustls", "dep:rustls-native-certs"]
 default = []
 # Desktop-only features that are excluded from mobile builds.
 # Mobile builds (Android / iOS) must NOT enable this feature — the

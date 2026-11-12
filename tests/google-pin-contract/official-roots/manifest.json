@@ -1,0 +1,16 @@
+{
+  "gtsr1": {
+    "source_url": "https://pki.goog/repo/certs/gtsr1.pem",
+    "verified_utc": "2026-11-12",
+    "pem_sha256": "4195ea007a7ef8d3e2d338e8d9ff0083198e36bfa025442ddf41bb5213904fc2",
+    "der_sha256": "d947432abde7b7fa90fc2e6b59101b1280e0e1c7e4e40fa3c6887fff57a7f4cf",
+    "spki_sha256_base64": "hxqRlPTu1bMS/0DITB1SSu0vd4u/8l8TjPgfaAp63Gc="
+  },
+  "gtsr4": {
+    "source_url": "https://pki.goog/repo/certs/gtsr4.pem",
+    "verified_utc": "2026-11-12",
+    "pem_sha256": "7e8b80d078d3dd77d3ed2108dd2b33412c12d7d72cb0965741c70708691776a2",
+    "der_sha256": "349dfa4058c5e263123b398ae795573c4e1313c83fe68f93556cd5e8031b3c7d",
+    "spki_sha256_base64": "mEflZT5enoR1FuXLgYYGqnVEoZvmf9c2bVBpiOjYQ0c="
+  }
+}

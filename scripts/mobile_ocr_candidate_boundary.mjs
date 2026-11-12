@@ -2,6 +2,8 @@
 // evidence validator do not constitute native or application execution.
 import assert from 'node:assert/strict';
 
+export const NATIVE_PIPELINE_RUN_FAILURE = 'Recognize page: CrispEmbed OCR pipeline run failed: OCR pipeline recognition failed; see native diagnostics';
+
 export async function checkCandidateOcrBoundary({ recognize, importBlank, retain, pagePath, baselineConfig }) {
   const disabledCleanup = { enabled: false, denoise: false };
   const negativeConfig = { ...baselineConfig, enabled: true, engine: 'unified', language: null,
@@ -22,7 +24,7 @@ export async function checkCandidateOcrBoundary({ recognize, importBlank, retain
   // cannot stand in for the rebuilt wrapper's NULL-full-text error branch.
   await retain('candidate-native-failure.json', negative);
   assert.equal(negative.outcome, 'rejected', 'Native recognition failure became an app success.');
-  assert.match(negative.error, /Recognize page: OCR recognition failed: OCR pipeline recognition failed; see native diagnostics/,
+  assert(negative.error.endsWith(NATIVE_PIPELINE_RUN_FAILURE),
     'Expected the actual rebuilt Rust pipeline-run error; an earlier app rejection is insufficient.');
 
   const blank = await importBlank();

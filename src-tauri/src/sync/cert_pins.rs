@@ -69,7 +69,8 @@ impl PinSet {
 /// Built-in pin sets for major cloud providers.
 ///
 /// Pin hashes sourced from the respective CA root certificates.
-/// Last verified: 2026-07.
+/// Google R1/R4 SPKI checked against pki.goog published roots 2026-11-12.
+// Other provider pin data has not been freshly qualified.
 pub fn builtin_pin_sets() -> Vec<PinSet> {
     vec![
         PinSet {
@@ -84,7 +85,7 @@ pub fn builtin_pin_sets() -> Vec<PinSet> {
                 // GTS Root R1 (Google Trust Services)
                 "hxqRlPTu1bMS/0DITB1SSu0vd4u/8l8TjPgfaAp63Gc=".into(),
                 // GTS Root R4 (backup)
-                "MhmPCI0GnRAMiaRSmmGpj8gPKE+E9GYMBvvLH3OdsFo=".into(),
+                "mEflZT5enoR1FuXLgYYGqnVEoZvmf9c2bVBpiOjYQ0c=".into(),
             ],
         },
         PinSet {
