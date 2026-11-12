@@ -110,6 +110,7 @@ jobs:
           tar -xzf "$archive" -C "$RUNNER_TEMP"
           ort="$RUNNER_TEMP/onnxruntime-linux-x64-1.23.2"
           cp "$ort/LICENSE" "$ort/ONNXRUNTIME-LICENSE"
+          cp "$ort/ThirdPartyNotices.txt" "$ort/ONNXRUNTIME-THIRD-PARTY-NOTICES.txt"
           echo "ORT_LIB_LOCATION=$ort/lib" >> "$GITHUB_ENV"
           echo 'ORT_PREFER_DYNAMIC_LINK=1' >> "$GITHUB_ENV"
 
@@ -192,7 +193,8 @@ jobs:
                   --features "${{ inputs.features }}" --crispembed-ref "${{ env.CRISPEMBED_REF }}"
                   --crispembed-commit "${{ env.CRISPEMBED_COMMIT }}" --out ../dist
                   --extra-lib "$ORT_LIB_LOCATION/libonnxruntime.so.1"
-                  --extra-license "$RUNNER_TEMP/onnxruntime-linux-x64-1.23.2/ONNXRUNTIME-LICENSE")
+                  --extra-license "$RUNNER_TEMP/onnxruntime-linux-x64-1.23.2/ONNXRUNTIME-LICENSE"
+                  --extra-license "$RUNNER_TEMP/onnxruntime-linux-x64-1.23.2/ONNXRUNTIME-THIRD-PARTY-NOTICES.txt")
           python3 bench/ocr/package_build.py "${common[@]}" --variant cpu \
             --crispembed-archive ../ce-assets/crispembed-linux-x86_64.tar.gz --crispembed-asset crispembed-linux-x86_64.tar.gz
           python3 bench/ocr/package_build.py "${common[@]}" --variant cuda \
