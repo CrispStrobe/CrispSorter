@@ -1513,6 +1513,9 @@
     {#if batchManager.isStopping}
         <p class="processing-notice" role="status">{reviewLabels.stoppingHint}</p>
     {/if}
+    {#if batchManager.ocrModelsNotice && !batchManager.isProcessing}
+        <p class="processing-notice" role="status" data-ocr-models-notice>{batchManager.ocrModelsNotice}</p>
+    {/if}
     {#if $caps.mobile}
         <p class="provider-import-note">{i18n.lang === 'de'
             ? 'Dateien aus Anbietern werden nur gelesen (PDF, DOCX, EPUB, TXT, Markdown, HTML; maximal 16 MiB). Verschieben und Kopieren werden noch nicht unterstützt.'

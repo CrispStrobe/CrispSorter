@@ -101,6 +101,8 @@ fn run_worker<T: serde::de::DeserializeOwned>(path: &Path, config: &OcrPipelineC
             .arg("--crispsorter-ocr-worker").arg(request.path()).arg(response.path())
             .env("CRISPEMBED_MAX_PIXELS", CPU_PIXEL_BUDGET.to_string())
             .env("QWEN2VL_OCR_FORCE_CPU", "1")
+            // Same cache and search locations as this process (model_cache).
+            .envs(crate::model_cache::child_env())
             .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped())
             .output().context("start isolated OCR worker")?;
         match crate::operation_log::replay_worker_events(events.path(), log.id()) {

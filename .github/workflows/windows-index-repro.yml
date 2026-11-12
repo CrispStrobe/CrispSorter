@@ -1,0 +1,40 @@
+name: Windows index commit qualification
+
+# A manually requested, narrow reproduction of the independent image-index
+# ingest failure. It does not run or dispatch the application's full CI matrix.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'tests/index-write-contract/windows_fts_contract.rs'
+      - '.github/workflows/windows-index-repro.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  windows-index-commit:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - id: protoc
+        uses: arduino/setup-protoc@v3
+        continue-on-error: true
+        with:
+          version: "29.0"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - if: steps.protoc.outcome == 'failure'
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "29.0"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tests/index-write-contract
+      - name: Reproduce production independent-index ingest and FTS commit
+        run: cargo test --locked --manifest-path tests/index-write-contract/Cargo.toml parallel_independent_image_indexes_commit_fts -- --nocapture

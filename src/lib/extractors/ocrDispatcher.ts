@@ -2,6 +2,8 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import type Tesseract from 'tesseract.js';
 import { loadSavedOcrPolicy, ocrPolicyLanguage, type OcrPolicy, type OcrSelection } from './ocrSettings';
 import { beginOperation, type OperationLog } from '../operationLog';
+import { ensureOcrModels, modelGate, type EnsureResult } from '../ocr/modelGate';
+import { plannedFromError, type PlannedModel } from '../ocr/modelManager';
 
 export const MAX_OCR_IMAGE_BYTES = 32 * 1024 * 1024;
 export const MAX_OCR_METADATA_BYTES = 64 * 1024;
@@ -121,6 +123,28 @@ async function imageBytes(image: OcrImage): Promise<Uint8Array> {
     return new Uint8Array(await blob.arrayBuffer());
 }
 
+/** A native OCR session found models that are not installed, and the user
+ * did not download them. Callers can pause instead of failing every file. */
+export class OcrModelsMissingError extends Error {
+    readonly models: PlannedModel[];
+    constructor(models: PlannedModel[]) {
+        super(`OCR models are not installed: ${models.map(m => m.name).join(', ')}. Download them when asked or in Settings > OCR models.`);
+        this.name = 'OcrModelsMissingError';
+        this.models = models;
+    }
+}
+
+/** Inbox/batch: check the saved OCR policy's models once per run. */
+export async function ensureInboxOcrModels(context: string): Promise<EnsureResult> {
+    if (!isTauri() || !modelGate.available) return { ok: true, plan: null, missing: [] };
+    try {
+        const policy = await loadSavedOcrPolicy(undefined, true);
+        return await ensureOcrModels({ surface: 'extract', ...nativeOptions(policy) }, { context, rememberDecline: false });
+    } catch {
+        return { ok: true, plan: null, missing: [] };
+    }
+}
+
 function nativeOptions(policy: OcrPolicy) {
     // An explicit legacy tier owns its language defaults. System Tesseract's
     // Automatic choice also keeps the installed-English native behavior.
@@ -137,6 +161,17 @@ export async function createOcrSession(options: OcrSessionOptions = {}): Promise
         options.signal?.throwIfAborted();
         policy = await loadSavedOcrPolicy(options.ocr, native);
         options.signal?.throwIfAborted();
+        if (native && modelGate.available) {
+            // Never download during recognition: ask once (shared with other
+            // sessions), or fail fast after the user declined this session.
+            session.stage('checking');
+            const models = await withExtractionAbort(ensureOcrModels({ surface: 'extract', ...nativeOptions(policy) },
+                { context: 'Text recognition', rememberDecline: true }), options.signal);
+            if (!models.ok) {
+                session.stage('awaiting_models', { count: models.missing.length }, 'info');
+                throw new OcrModelsMissingError(models.missing);
+            }
+        }
         session.complete({ engine: policy.engine, language: policy.language, cpuBudget: policy.cpuPixelBudget });
     } catch (error) {
         if (options.signal?.aborted && error === options.signal.reason) session.cancel(); else session.fail(error);
@@ -184,6 +219,9 @@ export async function createOcrSession(options: OcrSessionOptions = {}): Promise
             } catch (error) {
                 if (options.signal?.aborted && error === options.signal.reason) operation.cancel({ nativeContinues: native && dispatched });
                 else operation.fail(error);
+                // Native recognition refuses to download; report which models.
+                const missing = plannedFromError(error);
+                if (missing) throw new OcrModelsMissingError(missing);
                 throw error;
             }
         },

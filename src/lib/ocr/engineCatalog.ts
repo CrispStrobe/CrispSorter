@@ -92,7 +92,8 @@ export function engineRequirement(engine: string): string | null {
   if (engine === 'minicpm_ocr') return 'Requires matching model files, CRISPEMBED_MINICPM_OCR=1 and CRISPEMBED_QWEN35_OCR=1.';
   if (engine === 'got') return 'The model is labelled non-commercial. Its licence consent and model availability are checked before recognition.';
   if (engine === 'system_tesseract') return 'Uses the installed desktop executable and language packs. Model default means English; language detection is not automatic.';
-  if (engine === 'ocrs') return 'Uses the local ocrs models for Latin-script text.';
-  if (engine === 'paddle') return 'Uses the local PaddleOCR models. The script selection chooses the Latin or CJK recognizer.';
+  if (engine === 'ocrs') return 'Latin-script text. Its two models (about 12 MB) are downloaded after you confirm, the first time it runs.';
+  if (engine === 'paddle') return 'The script selection chooses the Latin or CJK recognizer. Its models (about 12-16 MB) are downloaded after you confirm, the first time they are needed.';
+  if (engine === 'easyocr') return 'EasyOCR has no published model download. Place easyocr-english-g2-f16.gguf in the model folder, or choose PP-OCRv6 or Tesseract. Automatic never selects it.';
   return null;
 }

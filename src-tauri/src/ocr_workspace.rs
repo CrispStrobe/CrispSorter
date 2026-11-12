@@ -253,7 +253,8 @@ fn offered_engines(native: bool, system: bool, ocrs: bool, paddle: bool) -> Vec<
 pub fn ocr_workspace_capabilities() -> Value {
     let native = cfg!(feature = "crispembed");
     let system = crate::ocr_word_evidence::capabilities();
-    let ocrs = crate::extractors::ocr_ocrs::is_ocrs_available();
+    // Offered when compiled: the model manager installs missing weights.
+    let ocrs = crate::extractors::ocr_ocrs::is_ocrs_offered();
     let paddle = crate::extractors::ocr_paddle::is_paddle_ocr_available();
     let engines = offered_engines(native, system.available, ocrs, paddle);
     let available = native || system.available || ocrs || paddle;
@@ -581,14 +582,11 @@ pub async fn ocr_workspace_prepare(
     let size = checked_physical_size(page_width_points, page_height_points)?;
     let worker_log=log.clone();
     tokio::task::spawn_blocking(move || {
-        // Models are downloaded only after the user agreed for this request.
-        if !allow_downloads.unwrap_or(false) {
-            let missing = missing_preparation_models(&config);
-            if !missing.is_empty() {
-                worker_log.warn("model_consent_required",json!({"models":missing.len()}));
-                return Err(format!("{MODEL_DOWNLOAD_REQUIRED}{}", serde_json::to_string(&missing).unwrap_or_default()));
-            }
-        }
+        // Models are downloaded only after the user agreed for this request,
+        // through the model manager; preparation itself never downloads.
+        let plan = crate::ocr_models::plan(&config, &[]);
+        let preparation: Vec<_> = plan.models.into_iter().filter(|m| m.engine == "preparation").collect();
+        crate::ocr_models::ensure_or_gate(&preparation, allow_downloads.unwrap_or(false), &worker_log)?;
         let progress = |stage: &str| {
             let code = if stage.starts_with("Straightening") {"dewarp"}
                 else if stage.starts_with("Image restoration") {"restore"}
@@ -612,29 +610,6 @@ pub async fn ocr_workspace_prepare(
 
 /// Error prefix the UI turns into a download confirmation; JSON follows.
 pub const MODEL_DOWNLOAD_REQUIRED: &str = "MODEL_DOWNLOAD_REQUIRED:";
-
-#[derive(Debug, Serialize)]
-struct MissingModel { name: String, purpose: &'static str, license: Option<String> }
-
-/// Registry models the configured preparation needs that are not yet local.
-#[cfg(feature = "crispembed")]
-fn missing_preparation_models(config: &crate::extractors::OcrPipelineConfig) -> Vec<MissingModel> {
-    use crate::extractors::ocr_crispembed;
-    let mut wanted: Vec<(String, &'static str)> = Vec::new();
-    if config.restore { wanted.push((ocr_crispembed::restore_model_name(config), "restoration")); }
-    if config.sr { wanted.push((ocr_crispembed::sr_model_name(config), "super-resolution")); }
-    if config.stages.first().map(|s| s.cleanup.denoise).unwrap_or(config.denoise) {
-        wanted.push((config.nafnet_model.clone().filter(|m| !m.is_empty()).unwrap_or_else(|| "nafnet-denoise".into()), "learned denoise"));
-    }
-    if config.dewarp && config.dewarp_engine == "tps" { wanted.push(("tps-loc".into(), "dewarp")); }
-    wanted.into_iter().filter(|(name, _)| !ocr_crispembed::model_is_local(name)).map(|(name, purpose)| {
-        let license = crispembed::CrispEmbed::model_license_info(&name).map(|info| info.spdx).filter(|s| !s.is_empty());
-        MissingModel { name, purpose, license }
-    }).collect()
-}
-
-#[cfg(not(feature = "crispembed"))]
-fn missing_preparation_models(_config: &crate::extractors::OcrPipelineConfig) -> Vec<MissingModel> { Vec::new() }
 
 fn prepare_page(root: &Path, source: &Path, config: &crate::extractors::OcrPipelineConfig, physical_size: Option<(f64, f64)>) -> Result<PreparedPage, String> {
     prepare_page_with_progress(root, source, config, physical_size, &|_| {})
@@ -710,7 +685,7 @@ fn prepare_page_with_progress(root: &Path, source: &Path, config: &crate::extrac
 #[cfg(feature = "crispembed")]
 fn cleanup_image(image: DynamicImage, config: &crate::extractors::OcrPipelineConfig, recipe: &crate::extractors::OcrCleanupSpec, classical: bool, denoise: bool) -> Result<DynamicImage, String> {
     let model = if denoise {
-        Some(crate::model_provisioning::resolve_model(config.nafnet_model.as_deref().unwrap_or("nafnet-denoise"), Some(true))
+        Some(crate::model_provisioning::resolve_model(config.nafnet_model.as_deref().unwrap_or("nafnet-denoise"), Some(false))
             .map_err(|e| format!("Load denoising model: {e}"))?)
     } else { None };
     let engine = crispembed::CrispScanCleanup::new(model.as_deref(), 0).map_err(|e| format!("Initialize scan cleanup: {e}"))?;
@@ -773,10 +748,11 @@ pub async fn ocr_workspace_recognize(
     page_width_points: Option<f64>,
     page_height_points: Option<f64>,
     cpu_pixel_budget: Option<bool>,
+    allow_downloads: Option<bool>,
 ) -> Result<RecognizedPage, String> {
     let log=OperationLog::start("ocr.workspace_recognition",json!({"surface":"gui","engine":engine,"language":language}));
     let result = ocr_workspace_recognize_inner(app, state, page_path, config, engine, language, zone,
-        page_width_points, page_height_points, cpu_pixel_budget,&log).await;
+        page_width_points, page_height_points, cpu_pixel_budget, allow_downloads.unwrap_or(false), &log).await;
     match &result {
         Ok(page) => log.succeed(json!({"regions":page.regions.len(),"warnings":page.warnings.len()})),
         Err(_) => log.fail("recognition_failed"),
@@ -796,6 +772,7 @@ async fn ocr_workspace_recognize_inner(
     page_width_points: Option<f64>,
     page_height_points: Option<f64>,
     cpu_pixel_budget: Option<bool>,
+    allow_downloads: bool,
     log: &OperationLog,
 ) -> Result<RecognizedPage, String> {
     log.step("validating",Value::Null);
@@ -815,9 +792,19 @@ async fn ocr_workspace_recognize_inner(
     let legacy_rec_lang = options.ocr_rec_lang;
     crate::extractors::ocr_policy::validate_runtime(&config)?;
     let cpu_budget = config.cpu_pixel_budget;
+    // Recognition never downloads implicitly. Missing models are reported
+    // (MODEL_DOWNLOAD_REQUIRED) so the UI can ask once, or installed first
+    // when the caller already has the user's agreement.
+    let plan_config = config.clone();
+    let plan = tokio::task::spawn_blocking(move || crate::ocr_models::plan(&plan_config, &[])).await
+        .map_err(|e| format!("Model plan: {e}"))?;
+    if !allow_downloads { crate::ocr_models::ensure_or_gate(&plan.models, false, log)?; }
     let _foreground = crate::bg_ingest::ForegroundGuard::new(state.foreground_active.clone());
     log.step("recognizing",Value::Null);
     let result = tokio::task::spawn_blocking(move || -> Result<RecognizedPage, String> {
+        if !plan.missing.is_empty() {
+            crate::ocr_models::install_models(&plan.missing, None, &|_| {})?;
+        }
         let mut result = recognize_page(&root, &path, &config, zone, warnings, size, cpu_budget, legacy_rec_lang)?;
         if zone.is_some() || !config.enabled {
             // managed_page validated the canonical path used for all I/O.

@@ -1,0 +1,651 @@
+//! Explicit live tests against a real Internxt account.
+//!
+//! They are ignored by default because they mutate remote state and move real
+//! bytes. Credentials are read from `INTERNXT_LOGIN`/`INTERNXT_PW`, optionally
+//! loading the developer's external `../.env`; values are never printed.
+
+use anyhow::{Context, Result};
+use crisp_internxt::{InternxtNativeClient, InternxtSession, NativeItem, DEFAULT_DRIVE_API_URL};
+use std::io::Write;
+use std::path::Path;
+use std::process::{Command, Stdio};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+const LARGE_FILE_SIZE: usize = 100 * 1024 * 1024 + 1;
+
+#[test]
+#[ignore = "mutates a real Internxt account; run explicitly with --ignored"]
+fn live_login_list_refresh_and_file_mutations() {
+    let Some((email, password, tfa)) = credentials() else {
+        eprintln!("live test skipped: INTERNXT_LOGIN/INTERNXT_PW not available");
+        return;
+    };
+    run_small_round_trip(&email, &password, tfa.as_deref()).unwrap();
+}
+
+#[test]
+#[ignore = "uploads and downloads 100 MiB; run explicitly with --ignored"]
+fn live_multipart_upload_download_round_trip() {
+    let Some((email, password, tfa)) = credentials() else {
+        eprintln!("live test skipped: INTERNXT_LOGIN/INTERNXT_PW not available");
+        return;
+    };
+    let session = InternxtNativeClient::login_without_keys(
+        DEFAULT_DRIVE_API_URL,
+        &email,
+        &password,
+        tfa.as_deref(),
+    )
+    .unwrap();
+    let client = InternxtNativeClient::new(&session.drive_api_url, &session.new_token).unwrap();
+    let folder_name = unique_name("CrispSorter Rust multipart");
+    let folder_uuid = client
+        .create_folder(&session.root_folder_id, &folder_name)
+        .unwrap();
+    let result = run_multipart(&client, &session, &folder_uuid, &folder_name);
+    let _ = client.trash(&folder_uuid, "folder");
+    result.unwrap();
+}
+
+#[test]
+#[ignore = "mutates a real Internxt account; run explicitly with --ignored"]
+fn live_search_copy_and_update_round_trip() {
+    let Some((email, password, tfa)) = credentials() else {
+        eprintln!("live test skipped: INTERNXT_LOGIN/INTERNXT_PW not available");
+        return;
+    };
+    run_search_copy_update(&email, &password, tfa.as_deref()).unwrap();
+}
+
+#[test]
+#[ignore = "mutates a real account and invokes the configured Python CLI"]
+fn live_cross_client_python_rust_round_trip() {
+    let Some((email, password, tfa)) = credentials() else {
+        eprintln!("cross-client live test skipped: INTERNXT_LOGIN/INTERNXT_PW not available");
+        return;
+    };
+    if std::env::var("INTERNXT_PYTHON_READY").as_deref() != Ok("1") {
+        eprintln!(
+            "cross-client live test skipped: set INTERNXT_PYTHON_READY=1 to opt into Python CLI"
+        );
+        return;
+    }
+    let python_cli = std::env::var_os("INTERNXT_PYTHON_CLI")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../internxt-cli/cli.py")
+        });
+    let python =
+        std::env::var_os("INTERNXT_PYTHON").unwrap_or_else(|| std::ffi::OsString::from("python3"));
+    if !python_cli.exists() {
+        eprintln!(
+            "cross-client live test skipped: Python CLI not found at {}",
+            python_cli.display()
+        );
+        return;
+    }
+
+    let session = InternxtNativeClient::login_without_keys(
+        DEFAULT_DRIVE_API_URL,
+        &email,
+        &password,
+        tfa.as_deref(),
+    )
+    .unwrap();
+    let client = InternxtNativeClient::new(&session.drive_api_url, &session.new_token).unwrap();
+    let rust_name = unique_name("crispsorter-rust-to-python").replace(' ', "-");
+    let python_name = unique_name("crispsorter-python-to-rust").replace(' ', "-");
+    let rust_source = std::env::temp_dir().join(format!("{rust_name}.txt"));
+    let python_source = std::env::temp_dir().join(format!("{python_name}.txt"));
+    let python_download_dir = std::env::temp_dir().join(unique_name("crispsorter-python-download"));
+    std::fs::write(&rust_source, b"written by Rust; read by Python\n").unwrap();
+    std::fs::write(&python_source, b"written by Python; read by Rust\n").unwrap();
+    std::fs::create_dir_all(&python_download_dir).unwrap();
+    let result = (|| -> Result<()> {
+        client.upload_path(
+            &session,
+            &session.root_folder_id,
+            &rust_name,
+            "txt",
+            &rust_source,
+        )?;
+        let rust_item =
+            wait_for_remote_path(&client, &session, Path::new(&format!("/{rust_name}.txt")))?;
+        let rust_remote_path = format!("/{}", rust_item.name);
+        run_python_cli(
+            &python,
+            &python_cli,
+            &email,
+            &password,
+            [
+                "download-path",
+                &rust_remote_path,
+                "--destination",
+                python_download_dir.to_str().unwrap(),
+                "--on-conflict",
+                "overwrite",
+            ],
+        )?;
+        assert_eq!(
+            std::fs::read(python_download_dir.join(&rust_item.name))?,
+            b"written by Rust; read by Python\n"
+        );
+
+        run_python_cli(
+            &python,
+            &python_cli,
+            &email,
+            &password,
+            [
+                "upload",
+                python_source.to_str().unwrap(),
+                "--target",
+                "/",
+                "--on-conflict",
+                "overwrite",
+            ],
+        )?;
+        let item =
+            wait_for_remote_path(&client, &session, Path::new(&format!("/{python_name}.txt")))?;
+        let downloaded = python_download_dir.join(format!("{python_name}-rust.txt"));
+        client.download_file_to_path(&session, &item.uuid, &downloaded)?;
+        assert_eq!(
+            std::fs::read(downloaded)?,
+            b"written by Python; read by Rust\n"
+        );
+        Ok(())
+    })();
+    let _ = client
+        .resolve_path(&session, Path::new(&format!("/{rust_name}.txt")))
+        .map(|item| {
+            let _ = client.trash(&item.uuid, "file");
+        });
+    let _ = client
+        .resolve_path(&session, Path::new(&format!("/{python_name}.txt")))
+        .map(|item| {
+            let _ = client.trash(&item.uuid, "file");
+        });
+    let _ = std::fs::remove_file(rust_source);
+    let _ = std::fs::remove_file(python_source);
+    let _ = std::fs::remove_dir_all(python_download_dir);
+    result.unwrap();
+}
+
+#[test]
+#[ignore = "mutates a real account and invokes the configured Dart CLI"]
+fn live_cross_client_dart_rust_round_trip() {
+    let Some((email, password, tfa)) = credentials() else {
+        eprintln!("Dart cross-client live test skipped: credentials unavailable");
+        return;
+    };
+    if std::env::var("INTERNXT_DART_READY").as_deref() != Ok("1") {
+        eprintln!(
+            "Dart cross-client live test skipped: set INTERNXT_DART_READY=1 to opt into Dart CLI"
+        );
+        return;
+    }
+    let dart = std::env::var_os("INTERNXT_DART").unwrap_or_else(|| "dart".into());
+    let dart_project = std::env::var_os("INTERNXT_DART_PROJECT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../internxt-dart"));
+    if !dart_project.join("bin/inxt.dart").exists() {
+        eprintln!(
+            "Dart cross-client live test skipped: Dart project not found at {}",
+            dart_project.display()
+        );
+        return;
+    }
+
+    let session = InternxtNativeClient::login_without_keys(
+        DEFAULT_DRIVE_API_URL,
+        &email,
+        &password,
+        tfa.as_deref(),
+    )
+    .unwrap();
+    let client = InternxtNativeClient::new(&session.drive_api_url, &session.new_token).unwrap();
+    let isolated_home = std::env::temp_dir().join(format!(
+        "crispsorter-internxt-dart-home-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&isolated_home).unwrap();
+    let rust_name = unique_name("crispsorter-rust-to-dart").replace(' ', "-");
+    let dart_name = unique_name("crispsorter-dart-to-rust").replace(' ', "-");
+    let folder_name = unique_name("crispsorter-dart-live").replace(' ', "-");
+    let rust_source = std::env::temp_dir().join(format!("{rust_name}.txt"));
+    let dart_source = std::env::temp_dir().join(format!("{dart_name}.txt"));
+    let dart_download_dir = std::env::temp_dir().join(unique_name("crispsorter-dart-download"));
+    std::fs::write(&rust_source, b"written by Rust; read by Dart\n").unwrap();
+    std::fs::write(&dart_source, b"written by Dart; read by Rust\n").unwrap();
+    std::fs::create_dir_all(&dart_download_dir).unwrap();
+
+    let result = (|| -> Result<()> {
+        run_dart_login(
+            &dart,
+            &dart_project,
+            &isolated_home,
+            &email,
+            &password,
+            tfa.as_deref(),
+        )?;
+        let folder_uuid = client.create_folder(&session.root_folder_id, &folder_name)?;
+        let folder_path = format!("/{folder_name}");
+        client.upload_path(&session, &folder_uuid, &rust_name, "txt", &rust_source)?;
+        let rust_item = wait_for_remote_path(
+            &client,
+            &session,
+            Path::new(&format!("/{folder_name}/{rust_name}.txt")),
+        )?;
+        run_dart_cli(
+            &dart,
+            &dart_project,
+            &isolated_home,
+            &[
+                "download-path".into(),
+                format!("{folder_path}/{}", rust_item.name),
+                "--target".into(),
+                dart_download_dir.to_string_lossy().into_owned(),
+                "--on-conflict".into(),
+                "overwrite".into(),
+            ],
+        )?;
+        assert_eq!(
+            std::fs::read(dart_download_dir.join(&rust_item.name))?,
+            b"written by Rust; read by Dart\n"
+        );
+
+        run_dart_cli(
+            &dart,
+            &dart_project,
+            &isolated_home,
+            &[
+                "upload".into(),
+                dart_source.to_string_lossy().into_owned(),
+                "--target".into(),
+                folder_path.clone(),
+                "--on-conflict".into(),
+                "overwrite".into(),
+                "--chunk-workers".into(),
+                "1".into(),
+            ],
+        )?;
+        let dart_item = wait_for_remote_path(
+            &client,
+            &session,
+            Path::new(&format!("/{folder_name}/{dart_name}.txt")),
+        )?;
+        let downloaded = dart_download_dir.join(format!("{dart_name}-rust.txt"));
+        client.download_file_to_path(&session, &dart_item.uuid, &downloaded)?;
+        assert_eq!(
+            std::fs::read(downloaded)?,
+            b"written by Dart; read by Rust\n"
+        );
+        Ok(())
+    })();
+    let _ = client
+        .resolve_path(&session, Path::new(&format!("/{folder_name}")))
+        .map(|item| {
+            let _ = client.trash(&item.uuid, "folder");
+        });
+    let _ = std::fs::remove_file(rust_source);
+    let _ = std::fs::remove_file(dart_source);
+    let _ = std::fs::remove_dir_all(dart_download_dir);
+    let _ = std::fs::remove_dir_all(isolated_home);
+    result.unwrap();
+}
+
+fn wait_for_remote_path(
+    client: &InternxtNativeClient,
+    session: &InternxtSession,
+    path: &Path,
+) -> Result<NativeItem> {
+    let mut last_error = None;
+    for attempt in 0..60 {
+        // The first Rust-side lookup may have cached the folder before the
+        // Python process uploaded its file. Refresh the cache on every poll
+        // so this actually tests cross-client visibility.
+        client.clear_listing_cache();
+        match client.resolve_path(session, path) {
+            Ok(item) => return Ok(item),
+            Err(error) => {
+                last_error = Some(error);
+                if attempt < 59 {
+                    std::thread::sleep(Duration::from_secs(1));
+                }
+            }
+        }
+    }
+    Err(last_error.expect("remote path polling made no attempts"))
+}
+
+fn run_python_cli<const N: usize>(
+    python: &std::ffi::OsStr,
+    cli: &Path,
+    email: &str,
+    password: &str,
+    args: [&str; N],
+) -> Result<()> {
+    // The Python CLI persists its bearer session under ~/.internxt-cli. Use
+    // an isolated HOME so a developer's unrelated cached account (for
+    // example CSTR) cannot override the explicitly supplied test account.
+    let isolated_home = std::env::temp_dir().join(format!(
+        "crispsorter-internxt-python-home-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&isolated_home).context("creating isolated Python CLI home")?;
+    let mut command = Command::new(python);
+    command
+        .arg(cli)
+        .args(args)
+        .env("HOME", &isolated_home)
+        .env("INTERNXT_NO_KEYRING", "1")
+        .env("INTERNXT_EMAIL", email)
+        .env("INTERNXT_PASSWORD", password);
+    if let Ok(secret) = std::env::var("INTERNXT_TFA_SECRET") {
+        command.env("INTERNXT_TFA_SECRET", secret);
+    }
+    let output = command.output().context("running Python Internxt CLI")?;
+    let _ = std::fs::remove_dir_all(&isolated_home);
+    anyhow::ensure!(
+        output.status.success(),
+        "Python CLI failed ({}): stdout={} stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
+fn run_dart_login(
+    dart: &std::ffi::OsStr,
+    project: &Path,
+    home: &Path,
+    email: &str,
+    password: &str,
+    tfa: Option<&str>,
+) -> Result<()> {
+    let mut command = Command::new(dart);
+    command
+        .current_dir(project)
+        .args(["run", "bin/inxt.dart", "login", "--password-stdin"])
+        .env("HOME", home)
+        .env("INTERNXT_EMAIL", email)
+        .env("INTERNXT_PASSWORD", password);
+    if let Some(tfa) = tfa {
+        command.env("INTERNXT_2FA", tfa);
+    }
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("starting Dart Internxt CLI login")?;
+    child
+        .stdin
+        .take()
+        .context("opening Dart CLI login stdin")?
+        .write_all(format!("{password}\n").as_bytes())?;
+    let output = child
+        .wait_with_output()
+        .context("waiting for Dart CLI login")?;
+    anyhow::ensure!(
+        output.status.success(),
+        "Dart CLI login failed ({}): stdout={} stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
+fn run_dart_cli(
+    dart: &std::ffi::OsStr,
+    project: &Path,
+    home: &Path,
+    args: &[String],
+) -> Result<()> {
+    let output = Command::new(dart)
+        .current_dir(project)
+        .args(["run", "bin/inxt.dart"])
+        .args(args)
+        .env("HOME", home)
+        .output()
+        .context("running Dart Internxt CLI")?;
+    anyhow::ensure!(
+        output.status.success(),
+        "Dart CLI failed ({}): stdout={} stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
+fn run_search_copy_update(email: &str, password: &str, tfa: Option<&str>) -> Result<()> {
+    let session =
+        InternxtNativeClient::login_without_keys(DEFAULT_DRIVE_API_URL, email, password, tfa)?;
+    let client = InternxtNativeClient::new(&session.drive_api_url, &session.new_token)?;
+    let source_name = unique_name("CrispSorter Rust lifecycle source");
+    let target_name = unique_name("CrispSorter Rust lifecycle target");
+    let source_uuid = client.create_folder(&session.root_folder_id, &source_name)?;
+    let target_uuid = client.create_folder(&session.root_folder_id, &target_name)?;
+    let source_path = std::env::temp_dir().join(unique_name("crispsorter-lifecycle-source"));
+    let replacement_path =
+        std::env::temp_dir().join(unique_name("crispsorter-lifecycle-replacement"));
+    std::fs::write(&source_path, b"before")?;
+    std::fs::write(&replacement_path, b"after")?;
+    let result = (|| -> Result<()> {
+        eprintln!("live lifecycle: upload");
+        client.upload_path(&session, &source_uuid, "lifecycle", "txt", &source_path)?;
+        eprintln!("live lifecycle: resolve");
+        let item = client.resolve_path(&session, &Path::new(&source_name).join("lifecycle.txt"))?;
+        eprintln!("live lifecycle: search");
+        let matches =
+            client.search_files_from(&session, Path::new(&source_name), "lifecycle.*", true, 1)?;
+        assert!(matches.iter().any(|entry| entry.item.uuid == item.uuid));
+        eprintln!("live lifecycle: copy");
+        let copied = client.copy_file(&session, &item.uuid, &target_uuid, Some("copied"))?;
+        assert_eq!(copied.name, "copied.txt");
+        let skipped = client.copy_file_with_policy(
+            &session,
+            &item.uuid,
+            &target_uuid,
+            Some("copied"),
+            crisp_internxt::ConflictPolicy::Skip,
+        )?;
+        assert_eq!(skipped.uuid, copied.uuid);
+        let overwritten = client.copy_file_with_policy(
+            &session,
+            &item.uuid,
+            &target_uuid,
+            Some("copied"),
+            crisp_internxt::ConflictPolicy::Overwrite,
+        )?;
+        assert_eq!(overwritten.name, "copied.txt");
+        eprintln!("live lifecycle: update");
+        client.update_file(&session, &item.uuid, &replacement_path)?;
+        eprintln!("live lifecycle: download verification");
+        let updated =
+            client.resolve_path(&session, &Path::new(&source_name).join("lifecycle.txt"))?;
+        let downloaded = std::env::temp_dir().join(unique_name("crispsorter-lifecycle-download"));
+        client.download_file_to_path(&session, &updated.uuid, &downloaded)?;
+        assert_eq!(std::fs::read(downloaded)?, b"after");
+        let file_timestamp = client.set_file_timestamp(&updated.uuid, "2026-07-31T12:00:00.000Z");
+        assert!(file_timestamp
+            .as_ref()
+            .err()
+            .map(|error| error.to_string().contains("409"))
+            .unwrap_or(false));
+        let folder_timestamp =
+            client.set_folder_timestamp(&source_uuid, "2026-07-31T12:00:00.000Z");
+        assert!(
+            folder_timestamp.is_ok()
+                || folder_timestamp
+                    .as_ref()
+                    .err()
+                    .map(|error| error.to_string().contains("409"))
+                    .unwrap_or(false)
+        );
+        Ok(())
+    })();
+    let _ = std::fs::remove_file(source_path);
+    let _ = std::fs::remove_file(replacement_path);
+    let _ = client.trash(&source_uuid, "folder");
+    let _ = client.trash(&target_uuid, "folder");
+    result
+}
+
+fn run_small_round_trip(email: &str, password: &str, tfa: Option<&str>) -> Result<()> {
+    let session =
+        InternxtNativeClient::login_without_keys(DEFAULT_DRIVE_API_URL, email, password, tfa)?;
+    let client = InternxtNativeClient::new(&session.drive_api_url, &session.new_token)?;
+    let root = client
+        .list_folder(&session.root_folder_id)
+        .context("listing root")?;
+    assert!(root.iter().all(|item| !item.uuid.is_empty()));
+
+    let folder_name = unique_name("CrispSorter Rust live");
+    let moved_name = format!("{folder_name} moved");
+    let folder_uuid = client
+        .create_folder(&session.root_folder_id, &folder_name)
+        .context("creating first live folder")?;
+    let moved_uuid = client
+        .create_folder(&session.root_folder_id, &moved_name)
+        .context("creating second live folder")?;
+    let result = (|| -> Result<()> {
+        let payload = b"CrispSorter native Internxt live round-trip\n\xE2\x9C\x93";
+        let local = std::env::temp_dir().join(unique_name("crispsorter-live-upload"));
+        std::fs::write(&local, payload).context("writing small live source")?;
+        client
+            .upload_path(&session, &folder_uuid, "round-trip", "txt", &local)
+            .context("uploading small live file")?;
+        let path = Path::new(&folder_name).join("round-trip.txt");
+        let item = client
+            .resolve_path(&session, &path)
+            .context("resolving upload")?;
+        let downloaded = std::env::temp_dir().join(unique_name("crispsorter-live-download"));
+        client
+            .download_file_to_path(&session, &item.uuid, &downloaded)
+            .context("downloading small live file")?;
+        assert_eq!(
+            std::fs::read(&downloaded).context("reading small live result")?,
+            payload
+        );
+        let _ = std::fs::remove_file(local);
+        let _ = std::fs::remove_file(downloaded);
+
+        client
+            .rename_file(&item.uuid, "renamed", "txt")
+            .context("renaming live file")?;
+        let renamed = client
+            .resolve_path(&session, &Path::new(&folder_name).join("renamed.txt"))
+            .context("resolving renamed live file")?;
+        client
+            .move_file(&renamed.uuid, &moved_uuid)
+            .context("moving live file")?;
+        let moved = client
+            .resolve_path(&session, &Path::new(&moved_name).join("renamed.txt"))
+            .context("resolving moved live file")?;
+        let moved_download = std::env::temp_dir().join(unique_name("crispsorter-live-moved"));
+        client
+            .download_file_to_path(&session, &moved.uuid, &moved_download)
+            .context("downloading moved live file")?;
+        assert_eq!(std::fs::read(&moved_download)?, payload);
+        let _ = std::fs::remove_file(moved_download);
+
+        let refreshed = client
+            .refresh_session(&session)
+            .context("refreshing live session")?;
+        assert!(!refreshed.token.is_empty());
+        assert!(!refreshed.new_token.is_empty());
+        Ok(())
+    })();
+    let _ = client.trash(&folder_uuid, "folder");
+    let _ = client.trash(&moved_uuid, "folder");
+    result
+}
+
+fn run_multipart(
+    client: &InternxtNativeClient,
+    session: &InternxtSession,
+    folder_uuid: &str,
+    folder_name: &str,
+) -> Result<()> {
+    let source = std::env::temp_dir().join(unique_name("crispsorter-multipart-source"));
+    {
+        let mut file = std::fs::File::create(&source)?;
+        let mut chunk = vec![0u8; 1024 * 1024];
+        for (index, byte) in chunk.iter_mut().enumerate() {
+            *byte = (index as u64).wrapping_mul(31) as u8;
+        }
+        let mut remaining = LARGE_FILE_SIZE;
+        while remaining > 0 {
+            let length = remaining.min(chunk.len());
+            file.write_all(&chunk[..length])?;
+            remaining -= length;
+        }
+    }
+    let state_path = std::env::temp_dir().join(unique_name("crispsorter-multipart-state"));
+    client.upload_path_with_resume_state(
+        session,
+        folder_uuid,
+        "multipart-round-trip",
+        "bin",
+        &source,
+        &state_path,
+    )?;
+    assert!(client.load_upload_resume_state(&state_path)?.is_none());
+    let path = Path::new(folder_name).join("multipart-round-trip.bin");
+    let item = client.resolve_path(session, &path)?;
+    let downloaded = std::env::temp_dir().join(unique_name("crispsorter-multipart-download"));
+    client.download_file_to_path(session, &item.uuid, &downloaded)?;
+    assert_eq!(std::fs::read(&downloaded)?, std::fs::read(&source)?);
+    let _ = std::fs::remove_file(source);
+    let _ = std::fs::remove_file(downloaded);
+    client.clear_upload_resume_state(&state_path);
+    Ok(())
+}
+
+fn unique_name(prefix: &str) -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock before Unix epoch")
+        .as_nanos();
+    format!("{prefix} {nanos}")
+}
+
+fn credentials() -> Option<(String, String, Option<String>)> {
+    let mut values = std::collections::HashMap::new();
+    for path in [
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.env"),
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.env"),
+    ] {
+        load_env_file(&path, &mut values);
+    }
+    let get = |name: &str| {
+        std::env::var(name)
+            .ok()
+            .or_else(|| values.get(name).cloned())
+    };
+    let email = get("INTERNXT_LOGIN")?;
+    let password = get("INTERNXT_PW")?;
+    let tfa = get("INTERNXT_TFA").or_else(|| get("IXT_2FA"));
+    Some((email, password, tfa))
+}
+
+fn load_env_file(path: &Path, values: &mut std::collections::HashMap<String, String>) {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return;
+    };
+    for line in text.lines() {
+        let line = line.trim();
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim().is_empty() || key.trim_start().starts_with('#') {
+            continue;
+        }
+        let value = value.trim().trim_matches(['"', '\'']);
+        values.insert(key.trim().to_owned(), value.to_owned());
+    }
+}

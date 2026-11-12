@@ -1,4 +1,4 @@
-//! Per-drive reuse of the native provider clients (Filen, Internxt) from crisp-cloud-rs.
+//! Per-drive reuse of the vendored native provider clients (Filen, Internxt).
 //!
 //! Both clients own a pooled HTTP client and an in-memory folder-listing
 //! cache. Building a fresh client for every `CloudDrive` call discarded both
@@ -102,7 +102,7 @@ impl<S, C> ProviderClientCache<S, C> {
 
 /// Whether an error means the stored credentials are no longer accepted, so
 /// the cached session must be re-read from the keychain before the next call.
-/// Matches the wording of both crisp-cloud-rs clients (`HTTP 401 Unauthorized`,
+/// Matches the wording of both vendored clients (`HTTP 401 Unauthorized`,
 /// expired JWTs, Filen's "login again" API-key guard).
 pub(crate) fn is_auth_error(error: &anyhow::Error) -> bool {
     let text = format!("{error:#}").to_ascii_lowercase();

@@ -33,6 +33,7 @@
     import LogPanel from '$lib/components/LogPanel.svelte';
     import Translate from '$lib/components/Translate.svelte';
     import OcrWorkbench from '$lib/components/OcrWorkbench.svelte';
+    import ModelDownloadHost from '$lib/components/ocr/ModelDownloadHost.svelte';
     import PdfEditor from '$lib/components/PdfEditor.svelte';
     import TransferDrawer from '$lib/components/TransferDrawer.svelte';
     import DriveBrowser from '$lib/components/DriveBrowser.svelte';
@@ -882,6 +883,10 @@
          every path that could send document text to a third party is
          covered without any call site knowing it exists. -->
     <ThirdPartyAiConsent />
+
+    <!-- One shared OCR model download dialog for the workbench, the inbox
+         and Settings: OCR never downloads a model without asking. -->
+    <ModelDownloadHost />
 
     {#if showQuickNavigation}
         <QuickNavigation destinations={navigationItems} current={activeTab} language={i18n.lang}

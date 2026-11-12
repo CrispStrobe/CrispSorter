@@ -1,5 +1,33 @@
 # Reviewed OCR text export compatibility
 
+## Hosted qualification checkpoint — 12 November 2026
+
+At application source `65602c52b1cf1204aa83861dd39de0245906ab1b`, the
+[reviewed text export run](https://github.com/CrispStrobe/CrispSorter/actions/runs/43222016493)
+passed independent Word, HTML and plain-text reader checks, phone/desktop browser
+checks, Android portable-exporter compilation and iOS portable-exporter checks.
+The separate [Office run](https://github.com/CrispStrobe/CrispSorter/actions/runs/43222016544)
+passed synthetic production-module DOCX/XLSX generation and independent ZIP/XML
+inspection on Linux and Windows. Its retained XLSX reader report explicitly
+records OpenPyXL xstring/CR interpretation limitations; those are not exact
+reader roundtrips. The evidence is attached to the linked runs.
+
+In the [same source's full application CI run](https://github.com/CrispStrobe/CrispSorter/actions/runs/43222016428),
+all five `ocr_workspace::tests::{docx_adapter,xlsx_adapter}*` native tests
+passed on Linux, macOS and Windows. The Linux and macOS jobs passed overall;
+the Windows job failed on two unrelated image-index fixtures with an access
+denied error during full-text commit, so it is not an overall Windows pass.
+These tests exercise the application adapters but do not establish end-to-end UI
+or provider-save behavior.
+
+These results are for the specified source, including its Cargo.lock, not a
+claim that every other commit passed. The exporter, workflow and harness paths
+checked against `02d372b0` were unchanged, but Cargo.lock differs. Complete
+application export, real Android/iOS save-picker/provider paths, physical
+devices, Microsoft Word/Excel interoperability and independent schema validation
+remain separate gates. General bidirectional PDF support remains unavailable.
+
+
 The export preflight examines the chosen pages and included regions before a
 destination picker opens. With the qualified CrispEmbed renderer
 (`9c44a69c`, unchanged in the pinned v0.17.19 release), general bidirectional PDF capability

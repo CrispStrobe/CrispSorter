@@ -109,6 +109,22 @@ def package(a):
                 n += 1
         if not any(p.name.startswith("libcrispembed.so") for p in (root / "lib").iterdir()):
             raise SystemExit("no libcrispembed.so in the CrispEmbed archive")
+        crispembed_libs = sorted(p.name for p in (root / "lib").iterdir())
+        extra_libs = []
+        for name in a.extra_lib:
+            source = Path(name)
+            destination = root / "lib" / source.name
+            if not source.is_file() or ".so" not in source.name or destination.exists():
+                raise SystemExit(f"invalid or duplicate extra shared library: {source}")
+            # Follow the supplied link to create a self-contained SONAME file.
+            shutil.copy2(source, destination, follow_symlinks=True)
+            extra_libs.append(dict(name=destination.name, sha256=sha256_file(destination)))
+        for name in a.extra_license:
+            source = Path(name)
+            destination = root / "lib" / source.name
+            if not source.is_file() or destination.exists():
+                raise SystemExit(f"invalid or duplicate extra licence: {source}")
+            shutil.copy2(source, destination)
         sh("patchelf", "--set-rpath", "$ORIGIN/../lib", str(exe))
         for lic in ("LICENSE", "NOTICE.marker", "NVIDIA-NOTICE.txt", "NVIDIA-EULA.txt", "Apache-2.0.txt"):
             for f in ext.rglob(lic):
@@ -122,7 +138,8 @@ def package(a):
             schema="crispsorter-ocr-bench-build-v1", variant=a.variant, git_sha=a.git_sha, git_ref=a.git_ref,
             features=a.features, cargo_profile="release", binary_sha256=sha256_file(exe),
             crispembed=dict(asset=a.crispembed_asset, archive_sha256=sha256_file(a.crispembed_archive),
-                            ref=a.crispembed_ref, commit=a.crispembed_commit, libs=sorted(p.name for p in (root / "lib").iterdir())),
+                            ref=a.crispembed_ref, commit=a.crispembed_commit, libs=crispembed_libs),
+            extra_libs=extra_libs,
             libs_copied=n, glibc_required=max_glibc(elfs), build_host=dict(platform=platform.platform(),
             glibc=" ".join(platform.libc_ver()), rustc=sh("rustc", "--version", check=False).stdout.strip()),
             ldd_missing_at_build=missing, runtime_apt_packages=pkgs, ldd=ldd_text,
@@ -156,6 +173,8 @@ def main():
     ap.add_argument("--git-ref", default="")
     ap.add_argument("--features", required=True)
     ap.add_argument("--out", default="dist")
+    ap.add_argument("--extra-lib", action="append", default=[], help="additional shared library to bundle (repeatable)")
+    ap.add_argument("--extra-license", action="append", default=[], help="licence for an additional shared library (repeatable)")
     a = ap.parse_args()
     if not re.fullmatch(r"[0-9a-f]{40}", a.git_sha):
         sys.exit("--git-sha must be a full 40-hex commit")

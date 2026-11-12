@@ -25,9 +25,8 @@ cross-checks for user-facing behavior, especially login/2FA, copy/update,
 cache invalidation, wildcard search, resumable transfers, and interoperability.
 They do not override the Go provider contract when the clients disagree.
 
-The Rust native crates are the standalone `crisp-internxt` and `crisp-filen`
-crates from [crisp-cloud-rs](https://github.com/CrispStrobe/crisp-cloud-rs),
-used as git dependencies (no app-local copies), so Rust consumers share the same
+The Rust native crates are deliberately kept close to the standalone
+`crisp-internxt` and `crisp-filen` APIs so Rust consumers can use the same
 reader/writer, transfer, mutation, and error concepts. The application facade
 then maps those native APIs into the synchronous, object-safe `CloudDrive`
 trait used by CrispSorter.

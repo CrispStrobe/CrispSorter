@@ -1,6 +1,8 @@
 """Static wiring of the benchmark: pins, workflows, Kaggle kernel rendering. No network."""
 import json
 import re
+import runpy
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -43,12 +45,26 @@ class Wiring(unittest.TestCase):
                 self.assertNotRegex(t, r"hf_[A-Za-z0-9]{30,}", str(p))
 
     def test_kernel_metadata(self):
-        m = json.loads((BENCH / "kaggle/kernel-metadata.json").read_text())
+        m = runpy.run_path(str(BENCH / "kaggle/kpush.py"))["DEFAULT_METADATA"]
         self.assertTrue(m["id"].startswith("${KAGGLE_ACCOUNT}/"))
         self.assertEqual(m["dataset_sources"], ["${KAGGLE_ACCOUNT}/crispasr-hf-token"])
         for k in ("enable_gpu", "enable_internet", "is_private"):
             self.assertEqual(m[k], "true", k)  # strings, not booleans
         self.assertEqual(m["code_file"], "kernel.py")
+
+    def test_kpush_works_without_local_metadata(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            for name in ("kpush.py", "kernel.py"):
+                shutil.copy(BENCH / "kaggle" / name, root / name)
+            output = root / "rendered"
+            result = subprocess.run([sys.executable, str(root / "kpush.py"), "--run-id", "r1",
+                                     "--binary-sha", "a" * 40, "--dry-run", str(output)],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            metadata = json.loads((output / "kernel-metadata.json").read_text())
+            self.assertEqual(metadata["code_file"], "kernel.py")
+            self.assertEqual(metadata["enable_gpu"], "true")
 
     def test_kpush_renders_every_placeholder(self):
         with tempfile.TemporaryDirectory() as d:
@@ -68,6 +84,19 @@ class Wiring(unittest.TestCase):
             files = re.search(r"BENCH_FILES = \[(.*?)\]", code, re.S).group(1)
             for rel in re.findall(r'"([^"]+)"', files):
                 self.assertTrue((BENCH / rel).is_file(), rel)
+
+    def test_ovis_comparison_is_explicit_and_gpu_fails_closed(self):
+        engines = {e["id"]: e for e in json.loads((BENCH / "engines.json").read_text())["engines"]}
+        for name in ("ovisocr2_cpu", "ovisocr2_cpu_legacy", "ovisocr2_gpu"):
+            arm = engines[name]
+            self.assertFalse(arm["default"])
+            self.assertEqual(arm["engine"], "unified")
+            self.assertEqual(arm["args"], ["--model", "ovisocr2-f16", "--cleanup=false"])
+            for gate in ("CRISPEMBED_QWEN35_OCR", "CRISPEMBED_OVISOCR2_FRONTEND", "CRISPEMBED_OVISOCR2_INFERENCE"):
+                self.assertEqual(arm["env"][gate], "1")
+        self.assertEqual(engines["ovisocr2_cpu_legacy"]["env"]["CRISPEMBED_QWEN35_OCR_GRAPH_DECODER"], "0")
+        self.assertEqual(engines["ovisocr2_gpu"]["env"]["CRISPEMBED_QWEN35_OCR_GPU_STRICT"], "1")
+        self.assertEqual(engines["ovisocr2_gpu"]["devices"], ["gpu"])
 
     def test_kpush_rejects_short_sha(self):
         r = subprocess.run([sys.executable, str(BENCH / "kaggle/kpush.py"), "--run-id", "r1", "--binary-sha", "abc",

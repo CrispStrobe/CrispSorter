@@ -14,6 +14,7 @@
     import { ProviderSaveQueue, prepareProviderSecrets, reconcileProviderSecrets } from '../llm/providerPersistence';
     import { COST_REPORT_PROVIDERS, costKeyAccount, resolveProviderReportKey, fetchProviderAccountReport } from '../llm/providerCosts';
     import { caps, currentCaps } from '../capabilities';
+    import OcrModelsSettings from './ocr/OcrModelsSettings.svelte';
     import { listConsented, revokeConsent, providerDisplayName } from '$lib/llm/thirdPartyConsent';
     import { buildLicenseConsentDialog, type ModelLicenseInfo } from '$lib/licenseConsentMessage';
     import {
@@ -3777,6 +3778,8 @@
                     </div>
                 {/if}
             </div>
+
+            {#if $caps.desktop}<OcrModelsSettings />{/if}
 
             <!-- OCR (Tesseract) -->
             <div class="section-card">

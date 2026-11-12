@@ -98,6 +98,21 @@ def android_failure_evidence(serial, output):
     return evidence
 
 
+def android_launcher(adb):
+    """Resolve the installed package's actual launcher, then start it explicitly.
+
+    Launcher intent filters need not contain CATEGORY_DEFAULT, which an implicit
+    ActivityManager start may require even when the package resolver finds them.
+    """
+    result = run(adb + ['shell', 'cmd', 'package', 'resolve-activity', '--brief',
+                        '-a', 'android.intent.action.MAIN', '-c', 'android.intent.category.LAUNCHER', '-p', PACKAGE])
+    pattern = re.compile(rf'{re.escape(PACKAGE)}/[A-Za-z0-9_.$]+')
+    components = [line.strip() for line in result.splitlines() if pattern.fullmatch(line.strip())]
+    if len(components) != 1:
+        raise RuntimeError('Could not resolve exactly one launcher activity for the installed app: ' + result[:1000])
+    return components[0]
+
+
 def android(serial, apk, output, wait):
     if not re.fullmatch(r'emulator-\d+', serial):
         raise ValueError('Android smoke requires an explicitly selected emulator serial')
@@ -136,8 +151,9 @@ def android(serial, apk, output, wait):
         'scope': 'Installed package byte identity before launch; no successful startup claim.',
     }, indent=2) + '\n')
     run(adb + ['shell', 'am', 'force-stop', PACKAGE])
+    component = android_launcher(adb)
     launch = run(adb + ['shell', 'am', 'start', '-W', '-a', 'android.intent.action.MAIN',
-                        '-c', 'android.intent.category.LAUNCHER', '-p', PACKAGE])
+                        '-c', 'android.intent.category.LAUNCHER', '-n', component])
     (output / 'launch.txt').write_text(launch + '\n')
     if 'Error:' in launch or 'Status: ok' not in launch:
         raise RuntimeError('Android activity did not start: ' + launch)

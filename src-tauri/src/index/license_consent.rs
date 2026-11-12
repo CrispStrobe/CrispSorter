@@ -285,6 +285,9 @@ pub fn license_for_registry_name(name: &str) -> ModelLicense {
         | "internvl2-2b"
         | "layout-heron"
         | "lightonocr"
+        // OvisOCR2 and its pinned Qwen3.5 base chain are Apache-2.0; see
+        // CrispEmbed's audited models/cards/ovisocr2-card.template.md.
+        | "ovisocr2-f16"
         | "lilt-base"
         | "lilt-funsd"
         | "lilt-funsd-f32"
@@ -370,6 +373,14 @@ pub fn license_for_registry_name(name: &str) -> ModelLicense {
         // PP-OCRv6 det/rec and EasyOCR English Gen2 are apache-2.0 in the pinned
         // registry (`model_mgr.cpp`), and both engines are offered in Settings.
         | "easyocr-english-g2"
+        // Pinned non-registry OCR weights (`ocr_builtin_models`): PaddleOCR v4
+        // (Apache-2.0) and ocrs (CC-BY-SA-4.0, attribution/share-alike only).
+        | "paddleocr-det-v4"
+        | "paddleocr-rec-v4-en"
+        | "paddleocr-rec-v4-ch"
+        | "paddleocr-slanet-v2"
+        | "ocrs-detection"
+        | "ocrs-recognition"
         | "ppocrv6-tiny-det"
         | "ppocrv6-tiny-rec"
         | "qari-ocr"
@@ -555,6 +566,17 @@ pub fn resolve_registry_model(name: &str, auto_download: Option<bool>) -> anyhow
     }
     let lic = license_for_registry_name(name);
     let accepted = native_acceptance_for(name, lic, |n| native_registry_row(n).map(|r| r.0))?;
+    // One shared cache, plus the directories earlier releases downloaded to
+    // (`model_cache`). Found after the licence gate, so consent still
+    // governs loading a restricted model that is already on disk.
+    if let Some(path) = crate::model_cache::locate_registry(name) {
+        return Ok(path.to_string_lossy().into_owned());
+    }
+    // Without download permission, never ask CrispEmbed: on a terminal it
+    // would prompt for a download itself, bypassing the app's model manager.
+    if auto_download == Some(false) && crate::model_cache::registry_files(name).is_some() {
+        anyhow::bail!("model '{name}' is not installed");
+    }
     match accepted {
         None => crispembed::CrispEmbed::resolve_model(name, auto_download).map_err(anyhow::Error::msg),
         #[cfg(feature = "crispembed-license-api")]
@@ -604,6 +626,7 @@ mod tests {
         assert!(!license_for_registry_name("gliner-deberta").requires_consent());
         assert!(!license_for_registry_name("bge-m3").requires_consent());
         assert!(!license_for_registry_name("pixie-rune-v1").requires_consent());
+        assert!(matches!(license_for_registry_name("ovisocr2-f16"), ModelLicense::Permissive));
     }
 
     #[test]

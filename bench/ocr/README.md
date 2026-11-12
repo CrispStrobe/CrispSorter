@@ -14,7 +14,7 @@ flight, and a rerun with the same run id resumes.
 | `engines.json` | engine configurations: CLI engine, extra args/env, devices, timeouts, CPU job grouping |
 | `vendor/` | CrispEmbed's scorer and gold-corpus converter, verbatim at `c364feb9` (v0.17.19), sha256-pinned in `PINS.json` |
 | `package_build.py` / `fetch_build.py` | package a build with a CrispEmbed runtime / download + verify + unpack it |
-| `kaggle/` | GPU kernel (`kernel.py`, `kernel-metadata.json`) and `kpush.py` |
+| `kaggle/` | GPU kernel (`kernel.py`) and `kpush.py`, which renders submission metadata locally |
 | `tests/` | `python3 -m unittest discover -s bench/ocr/tests -v` (no binary, no network, HF mocked) |
 
 Workflows: `.github/workflows/ocr-bench-build.yml` (build + upload binaries) and
@@ -86,6 +86,19 @@ averaging only successes rewards engines that fail on hard pages.
 Each unit JSON records the exact argv, requested/effective settings, input sha256 + ground
 truth sha256, binary sha256 + git sha, scorer sha256, host, licence acceptance, timing,
 memory, GPU and the full recognised text (so it can be re-scored later).
+
+## Optional OvisOCR2 comparison
+
+The explicit `ovisocr2_cpu`, `ovisocr2_cpu_legacy`, and `ovisocr2_gpu` arms use
+CrispEmbed 0.17.19's pinned Apache-2.0 OvisOCR2 F16 model through the app's
+`unified` GGUF route. They are excluded from `default`, require the listed
+experimental native gates, and disable cleanup so the same input reaches each
+arm. The legacy CPU arm disables the graph decoder and threaded attention; the
+GPU arm requires the native strict-GPU gate so CPU fallback is not a GPU result.
+Use the same frozen pages, runtime lock and model hash for all arms, retain every
+failure and timeout, and compare both text/quality and resource measurements.
+Upstream's 11-case parity does not establish app-level or general OCR quality.
+The GPU comparison must run on an actual supported GPU worker.
 
 ## Store layout (`cstr/crispsorter-ocr-bench`)
 

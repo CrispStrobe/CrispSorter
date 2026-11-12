@@ -83,6 +83,13 @@ FAKE_ENGINES = [
 
 
 class TestScoringAndPins(unittest.TestCase):
+    def test_pre_pull_does_not_replace_a_custom_model_or_page_language(self):
+        self.assertIsNone(runner.models_pull_argv("/tmp/cli", {"engine": "unified", "args": ["--model", "ovisocr2-f16"]}))
+        self.assertIsNone(runner.models_pull_argv("/tmp/cli", {"engine": "surya", "args": ["--rec-model=custom"]}))
+        self.assertIsNone(runner.models_pull_argv("/tmp/cli", {"engine": "tesseract", "language": "page"}))
+        self.assertEqual(runner.models_pull_argv("/tmp/cli", {"engine": "tesseract", "language": "deu"}),
+                         ["/tmp/cli", "--accept-license", "models", "pull", "tesseract", "--language", "deu"])
+
     def test_vendored_scorer_matches_pin_and_scores(self):
         s = runner.Scorer()
         self.assertEqual(s.identity["sha256"], runner.load_pins()["vendored"]["crispembed_score.py"]["sha256"])
