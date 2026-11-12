@@ -1365,11 +1365,16 @@ async fn start_llamacpp_sidecar(
     }
 
     app_log!("info", "Starting llama-server sidecar, port={}", port);
-    app_log!("info", "Model path: {}", model_path);
+    // Lifecycle receipt: spawn, then ready / not ready from the health loop.
+    // The model path stays out of the log.
+    let log = operation_log::OperationLog::start("app.sidecar.llama_cpp", serde_json::json!({}));
 
     // Resolve the bin directory: in dev it's src-tauri/bin, in release it's next to the exe
     let bin_dir = if cfg!(debug_assertions) {
-        let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
+        let exe_path = std::env::current_exe().map_err(|e| {
+            log.fail("binary_missing");
+            e.to_string()
+        })?;
         // target/debug/tauri-app.exe  →  src-tauri/bin
         exe_path
             .parent()
@@ -1383,7 +1388,10 @@ async fn start_llamacpp_sidecar(
         let resource_dir = app_handle
             .path()
             .resource_dir()
-            .map_err(|e: tauri::Error| e.to_string())?;
+            .map_err(|e: tauri::Error| {
+                log.fail("binary_missing");
+                e.to_string()
+            })?;
         resource_dir.join("bin")
     };
 
@@ -1405,6 +1413,7 @@ async fn start_llamacpp_sidecar(
 
     let exe_path = bin_dir.join(exe_name);
     if !exe_path.exists() {
+        log.fail("binary_missing");
         return Err(format!(
             "llama-server binary not found at: {}",
             exe_path.display()
@@ -1449,10 +1458,12 @@ async fn start_llamacpp_sidecar(
         .spawn()
         .map_err(|e| {
             println!("[Sidecar] SPAWN ERROR: {}", e);
+            log.fail("spawn_failed");
             e.to_string()
         })?;
 
     println!("[Sidecar] Spawned PID: {:?}", child.id());
+    log.step("spawned", serde_json::json!({}));
 
     // Stream stdout
     if let Some(stdout) = child.stdout.take() {
@@ -1498,6 +1509,7 @@ async fn start_llamacpp_sidecar(
                 match reqwest::get(&health_url).await {
                     Ok(r) if r.status().is_success() => {
                         println!("[Sidecar] llama-server ready after {}s", attempt * 2);
+                        log.succeed(serde_json::json!({"attempt": attempt}));
                         let _ = app.emit("sidecar-ready", true);
                         return;
                     }
@@ -1507,6 +1519,7 @@ async fn start_llamacpp_sidecar(
                 }
             }
             println!("[Sidecar] llama-server did not become ready within 60s");
+            log.fail("not_ready");
             let _ = app.emit("sidecar-failed", "Server did not respond within 60s");
         });
     }
@@ -1522,6 +1535,8 @@ async fn stop_llamacpp_sidecar(state: tauri::State<'_, AppState>) -> Result<(), 
     if let Some(mut child) = sidecar_lock.take() {
         let _ = child.kill().await;
         println!("[Sidecar] Stopped.");
+        operation_log::OperationLog::start("app.sidecar.llama_cpp_stop", serde_json::json!({}))
+            .succeed(serde_json::json!({}));
     }
     Ok(())
 }
@@ -1569,6 +1584,8 @@ async fn start_mlx_server(
         "[MLX] Resolved binary: '{}' — model: {}, port: {}",
         resolved_bin, model_path, port
     );
+    // Lifecycle receipt; the model id and binary path stay out of the log.
+    let log = operation_log::OperationLog::start("app.sidecar.mlx", serde_json::json!({}));
 
     let mut child = tokio::process::Command::new(&resolved_bin)
         .args([
@@ -1583,11 +1600,13 @@ async fn start_mlx_server(
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| {
+            log.fail("spawn_failed");
             format!(
                 "Failed to start '{}': {}. Install with: pip install mlx-lm",
                 resolved_bin, e
             )
         })?;
+    log.step("spawned", serde_json::json!({}));
 
     if let Some(stdout) = child.stdout.take() {
         let app = app_handle.clone();
@@ -1623,6 +1642,7 @@ async fn start_mlx_server(
                 match reqwest::get(&health_url).await {
                     Ok(r) if r.status().is_success() => {
                         println!("[MLX] Server ready after {}s", attempt * 2);
+                        log.succeed(serde_json::json!({"attempt": attempt}));
                         let _ = app.emit("mlx-ready", true);
                         return;
                     }
@@ -1632,6 +1652,7 @@ async fn start_mlx_server(
                 }
             }
             println!("[MLX] Server did not become ready within 120s");
+            log.fail("not_ready");
             let _ = app.emit(
                 "mlx-log",
                 "[MLX] Server did not respond within 120s — check logs",
@@ -1673,10 +1694,17 @@ fn check_mlx_models_cached(repo_ids: Vec<String>) -> Vec<bool> {
 async fn delete_mlx_model(repo_id: String) -> Result<String, String> {
     let dir_name = format!("models--{}", repo_id.replace('/', "--"));
     let cache_dir = std::path::PathBuf::from(get_mlx_cache_dir()).join(&dir_name);
+    // The repo id and cache path stay out of the log.
+    let log = operation_log::OperationLog::start("models.mlx_delete", serde_json::json!({"backend": "local"}));
     if cache_dir.exists() {
-        fs::remove_dir_all(&cache_dir).map_err(|e| e.to_string())?;
+        fs::remove_dir_all(&cache_dir).map_err(|e| {
+            log.fail("remove_failed");
+            e.to_string()
+        })?;
+        log.succeed(serde_json::json!({}));
         Ok(format!("Deleted: {}", cache_dir.display()))
     } else {
+        log.fail("not_found");
         Err(format!("Not found in cache: {}", cache_dir.display()))
     }
 }
@@ -1687,9 +1715,11 @@ async fn start_ollama(
     state: tauri::State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
+    let log = operation_log::OperationLog::start("app.sidecar.ollama", serde_json::json!({}));
     // Check if Ollama is already running externally
     if let Ok(r) = reqwest::get("http://localhost:11434/api/tags").await {
         if r.status().is_success() {
+            log.succeed(serde_json::json!({"reused": true}));
             let _ = app_handle.emit("ollama-ready", true);
             return Ok("Ollama already running".to_string());
         }
@@ -1725,7 +1755,11 @@ async fn start_ollama(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Failed to start ollama: {}. Is Ollama installed?", e))?;
+        .map_err(|e| {
+            log.fail("spawn_failed");
+            format!("Failed to start ollama: {}. Is Ollama installed?", e)
+        })?;
+    log.step("spawned", serde_json::json!({}));
 
     if let Some(stdout) = child.stdout.take() {
         let app = app_handle.clone();
@@ -1759,6 +1793,7 @@ async fn start_ollama(
                 match reqwest::get("http://localhost:11434/api/tags").await {
                     Ok(r) if r.status().is_success() => {
                         println!("[Ollama] Ready after {}s", attempt * 2);
+                        log.succeed(serde_json::json!({"attempt": attempt}));
                         let _ = app.emit("ollama-ready", true);
                         return;
                     }
@@ -1766,6 +1801,7 @@ async fn start_ollama(
                 }
             }
             println!("[Ollama] Did not become ready within 60s");
+            log.fail("not_ready");
             let _ = app.emit("ollama-failed", "Ollama did not respond within 60s");
         });
     }
@@ -1781,6 +1817,8 @@ async fn stop_ollama(state: tauri::State<'_, AppState>) -> Result<(), String> {
     if let Some(mut child) = ollama_lock.take() {
         let _ = child.kill().await;
         println!("[Ollama] Stopped.");
+        operation_log::OperationLog::start("app.sidecar.ollama_stop", serde_json::json!({}))
+            .succeed(serde_json::json!({}));
     }
     Ok(())
 }
@@ -1792,6 +1830,8 @@ async fn stop_mlx_server(state: tauri::State<'_, AppState>) -> Result<(), String
     if let Some(mut child) = mlx_lock.take() {
         let _ = child.kill().await;
         println!("[MLX] Server stopped");
+        operation_log::OperationLog::start("app.sidecar.mlx_stop", serde_json::json!({}))
+            .succeed(serde_json::json!({}));
     }
     Ok(())
 }
@@ -3032,11 +3072,18 @@ pub fn run() {
                 *h = Some(app.handle().clone());
             }
             app_log!("info", "CrispSorter v{} starting", env!("CARGO_PKG_VERSION"));
+            // One receipt for the stateful part of startup: each subsystem
+            // that fails to come up is a warning code, never a path.
+            let startup = operation_log::OperationLog::start("app.startup", serde_json::json!({"surface": "gui"}));
+            if app.path().app_data_dir().is_err() {
+                startup.warn("data_dir_unavailable", serde_json::json!({}));
+            }
 
             // Initialise job queue + store data_dir now that it is known.
             if let Ok(data_dir) = app.path().app_data_dir() {
                 if let Err(error) = model_provisioning::initialize(&data_dir) {
                     app_log!("error", "OCR model store: {error}");
+                    startup.warn("model_store_unavailable", serde_json::json!({}));
                 }
                 // Before anything can read a secret: pin the vault to the
                 // real data dir, so the user's chosen store is in force from
@@ -3048,14 +3095,14 @@ pub fn run() {
                 // has no access to a previously-picked folder until its
                 // bookmark is resolved and started.
                 folder_access::set_data_dir(data_dir.clone());
-                for (path, why) in folder_access::restore_all() {
-                    app_log!("warn", "folder permission not restored for {}: {}", path.display(), why);
+                // Count only: the folder paths are private.
+                let not_restored = folder_access::restore_all().len();
+                if not_restored > 0 {
+                    startup.warn("folder_access_not_restored", serde_json::json!({"failed": not_restored}));
                 }
-                app_log!(
-                    "info",
-                    "secret store: {}",
-                    secrets::vault::status().choice.kind()
-                );
+                if secrets::vault::status().error.is_some() {
+                    startup.warn("secret_store_unavailable", serde_json::json!({}));
+                }
                 let state: tauri::State<'_, AppState> = app.state();
                 // Store data_dir for drive_* commands and similar.
                 // Use try_lock so we don't block the sync setup hook.
@@ -3120,7 +3167,7 @@ pub fn run() {
                         &idx_lock.config.audio_asr_backend,
                     );
                 }
-                app_log!("info", "Loaded persisted IndexConfig from {}", data_dir.display());
+                app_log!("info", "Loaded persisted IndexConfig");
 
                 // P13.7 Stage J — background drain task for the
                 // cb_manifest_push outbox.  Runs every 30s while
@@ -3322,6 +3369,7 @@ pub fn run() {
                 });
             }
 
+            startup.succeed(serde_json::json!({"store": secrets::active_store_log_kind()}));
             Ok(())
         })
         .manage(AppState {

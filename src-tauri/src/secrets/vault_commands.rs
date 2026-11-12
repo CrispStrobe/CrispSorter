@@ -9,7 +9,10 @@
 use super::vault::{
     self, BackendChoice, FileKeySource, KeychainInfo, MacUnlock, Status,
 };
+use super::{active_store_log_kind, store_log_kind, vault_error_code};
+use crate::operation_log::OperationLog;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::path::PathBuf;
 
 /// Everything the picker needs in one round trip.
@@ -52,15 +55,43 @@ pub async fn secret_backend_status() -> Result<Status, String> {
 /// see [`secret_backend_migrate`].
 #[tauri::command]
 pub async fn secret_backend_select(choice: SimpleChoice) -> Result<Status, String> {
-    vault::select(choice.into_choice()?).map_err(|e| e.to_string())?;
-    Ok(vault::status())
+    let choice = match choice.into_choice() {
+        Ok(choice) => choice,
+        Err(e) => {
+            OperationLog::start("secrets.backend_select", json!({})).fail("invalid_choice");
+            return Err(e);
+        }
+    };
+    let log = OperationLog::start(
+        "secrets.backend_select",
+        json!({"store": store_log_kind(choice.kind())}),
+    );
+    match vault::select(choice) {
+        Ok(()) => {
+            log.succeed(json!({}));
+            Ok(vault::status())
+        }
+        Err(e) => {
+            log.fail(vault_error_code(&e));
+            Err(e.to_string())
+        }
+    }
 }
 
 /// Unlock a passphrase vault for the rest of this run.
 #[tauri::command]
 pub async fn secret_backend_unlock(passphrase: String) -> Result<Status, String> {
-    vault::unlock(&passphrase).map_err(|e| e.to_string())?;
-    Ok(vault::status())
+    let log = OperationLog::start("secrets.unlock", json!({"store": active_store_log_kind()}));
+    match vault::unlock(&passphrase) {
+        Ok(()) => {
+            log.succeed(json!({}));
+            Ok(vault::status())
+        }
+        Err(e) => {
+            log.fail(vault_error_code(&e));
+            Err(e.to_string())
+        }
+    }
 }
 
 /// Lower the "the user already said no" latch, so the next read is
@@ -69,9 +100,21 @@ pub async fn secret_backend_unlock(passphrase: String) -> Result<Status, String>
 pub async fn secret_backend_retry() -> Result<Status, String> {
     // Reopening a keychain or vault file can block on I/O; keep it off
     // the async runtime's worker threads.
-    tokio::task::spawn_blocking(vault::retry)
-        .await
-        .map_err(|e| format!("retry worker: {e}"))
+    let log = OperationLog::start("secrets.backend_retry", json!({"store": active_store_log_kind()}));
+    match tokio::task::spawn_blocking(vault::retry).await {
+        Ok(status) => {
+            if status.error.is_some() {
+                log.fail("store_unavailable");
+            } else {
+                log.succeed(json!({}));
+            }
+            Ok(status)
+        }
+        Err(e) => {
+            log.fail("worker_failed");
+            Err(format!("retry worker: {e}"))
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -95,9 +138,30 @@ pub async fn secret_backend_migrate(
     from: SimpleChoice,
     accounts: Vec<(String, String)>,
 ) -> Result<MigrationReport, String> {
-    let from = from.into_choice()?;
-    let (copied, skipped, failures) =
-        vault::migrate(&from, &accounts).map_err(|e| e.to_string())?;
+    let from = match from.into_choice() {
+        Ok(from) => from,
+        Err(e) => {
+            OperationLog::start("secrets.backend_migrate", json!({})).fail("invalid_choice");
+            return Err(e);
+        }
+    };
+    let log = OperationLog::start(
+        "secrets.backend_migrate",
+        json!({"store": store_log_kind(from.kind()), "total": accounts.len()}),
+    );
+    let (copied, skipped, failures) = match vault::migrate(&from, &accounts) {
+        Ok(report) => report,
+        Err(e) => {
+            log.fail(vault_error_code(&e));
+            return Err(e.to_string());
+        }
+    };
+    log.succeed(json!({
+        "completed": copied,
+        "pending": skipped,
+        "failed": failures.len(),
+        "partial": !failures.is_empty(),
+    }));
     Ok(MigrationReport {
         copied,
         skipped,
@@ -135,13 +199,21 @@ pub async fn secret_backend_create_keychain(
     #[cfg(target_os = "macos")]
     {
         use super::vault::mac_keychain;
-        let path = path
-            .or_else(vault::suggested_keychain_path)
-            .ok_or_else(|| "could not work out where to put the keychain".to_string())?;
+        let log = OperationLog::start("secrets.keychain_create", json!({"store": "mac_keychain"}));
+        let Some(path) = path.or_else(vault::suggested_keychain_path) else {
+            log.fail("no_location");
+            return Err("could not work out where to put the keychain".to_string());
+        };
         let data_dir = vault::default_app_data_dir();
         let generated = password.as_deref().unwrap_or_default().is_empty();
-        let pw = mac_keychain::create_keychain(&path, &data_dir, password.as_deref())
-            .map_err(|e| e.to_string())?;
+        let pw = match mac_keychain::create_keychain(&path, &data_dir, password.as_deref()) {
+            Ok(pw) => pw,
+            Err(e) => {
+                log.fail("create_failed");
+                return Err(e.to_string());
+            }
+        };
+        log.succeed(json!({}));
         Ok(CreatedKeychain {
             path,
             password: pw,
