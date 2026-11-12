@@ -1207,14 +1207,16 @@ mod tests {
     struct Cut { data: std::io::Cursor<Vec<u8>> }
     impl Read for Cut {
         fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-            let n = self.data.read(&mut buf[..buf.len().min(7)])?;
+            let limit = buf.len().min(7);
+            let n = self.data.read(&mut buf[..limit])?;
             Ok(n)
         }
     }
     struct Broken { data: std::io::Cursor<Vec<u8>> }
     impl Read for Broken {
         fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-            let n = self.data.read(&mut buf[..buf.len().min(7)])?;
+            let limit = buf.len().min(7);
+            let n = self.data.read(&mut buf[..limit])?;
             if n == 0 { return Err(std::io::Error::other("connection reset")); }
             Ok(n)
         }

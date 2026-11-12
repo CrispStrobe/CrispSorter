@@ -63,9 +63,9 @@ pub fn paddle_language_for_name(name: &str) -> OcrRecLang {
 mod sessions {
     use super::super::context_cache::CachedContext;
     use std::sync::{Mutex, OnceLock};
-    pub static DET: OnceLock<Mutex<Option<CachedContext<usls::models::vision::DB>>>> = OnceLock::new();
-    pub static REC: OnceLock<Mutex<Option<CachedContext<usls::models::vision::SVTR>>>> = OnceLock::new();
-    pub static TABLE: OnceLock<Mutex<Option<CachedContext<usls::models::vision::SLANet>>>> = OnceLock::new();
+    pub static DET: OnceLock<Mutex<Option<CachedContext<usls::Runtime<usls::models::vision::DB>>>>> = OnceLock::new();
+    pub static REC: OnceLock<Mutex<Option<CachedContext<usls::Runtime<usls::models::vision::SVTR>>>>> = OnceLock::new();
+    pub static TABLE: OnceLock<Mutex<Option<CachedContext<usls::Runtime<usls::models::vision::SLANet>>>>> = OnceLock::new();
 }
 
 /// Read a usls vocabulary (one class per line) from a local file.
@@ -273,7 +273,7 @@ pub fn ocr_with_tables(path: &Path, rec_lang: OcrRecLang) -> Result<ExtractedDoc
         }
         Ok(None) => {} // No table detected
         Err(e) => {
-            tracing::warn!("SLANet table detection failed (non-fatal): {e}");
+            log::warn!("SLANet table detection failed (non-fatal): {e}");
         }
     }
 
