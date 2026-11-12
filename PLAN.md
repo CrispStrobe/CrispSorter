@@ -1,5 +1,30 @@
 # CrispSorter — Development Plan
 
+## Source-bound Android crop gate evidence — 12 November 2026
+
+[Manual Android run 43298111978](https://github.com/CrispStrobe/CrispSorter/actions/runs/43298111978)
+completed successfully at dedicated candidate `0dbb1e69797f01dab819dfe59487564b5634c9db`
+with immutable CrispEmbed v0.17.19 source `c364feb974b91e14cbf328c6949f3df36e89ce81`.
+Its [sanitized receipt](tests/results/ocr-mobile-ui/android-cc-crop-gate-20261112.json)
+records 11/11 real app checks, independent model hashes, three recognition
+requests and save/reload with unchanged project defaults and original files.
+The omitted-gate single-column control passes. Default whole-page two-column
+CER remains **0.502857**, above the unchanged 0.25 ceiling; explicit opt-in uses
+nine CC crops and passes at **0.022857**, with four left/four right lines ordered.
+The output still loses text: `Second floor ready.` becomes `cond floor ready.`.
+This result does not establish CC completeness or justify default promotion.
+Column native elapsed time increases from 20,734 to 34,296 ms; observed process
+high-water RSS is 921,276 KiB, without a repeated-page capacity claim.
+
+The APK remains remote with source/build/runtime and raw-response hashes sealed
+in the receipt. Earlier 33-step pre-gate export/picker/recovery evidence remains
+separate. The receipt maps tested blobs to main `87cf0b44`: OCR production blobs
+match, while the dedicated harness/workflow and unrelated later main receipt/
+drive/Cargo changes differ. It does not qualify the full merged main APK. No
+runtime pin, version, default, workflow or code change accompanies this handoff;
+physical devices, representative corpus quality and complete-page coverage remain
+open. The separate native gutter candidate is not evaluated by this app-crop run.
+
 ## Non-Unix receipt durability admission — 12 November 2026
 
 [Receipt run 43303387822](https://github.com/CrispStrobe/CrispSorter/actions/runs/43303387822)

@@ -1,0 +1,300 @@
+{
+  "schema": "crispsorter-android-cc-crop-gate-evidence-v1",
+  "workflow_run": {
+    "url": "https://github.com/CrispStrobe/CrispSorter/actions/runs/43298111978",
+    "conclusion": "success",
+    "tested_commit": "0dbb1e69797f01dab819dfe59487564b5634c9db",
+    "tested_tree": "3b8a3e329299a3d1c0d8a200b6a0a561a6a52dfa",
+    "workflow_source": "https://github.com/CrispStrobe/CrispSorter/blob/0dbb1e69797f01dab819dfe59487564b5634c9db/.github/workflows/ocr-mobile-native.yml",
+    "target": "android-x86_64",
+    "profile": "experimental_app_cc_crop_gate_delta"
+  },
+  "runtime": {
+    "version": "0.17.19",
+    "source_commit": "c364feb974b91e14cbf328c6949f3df36e89ce81",
+    "ggml_commit": "3a27b6c665b191cb230be367db5c52d81dd3e2ac",
+    "app_pin_changed": false,
+    "experimental_native_gutters_used": false
+  },
+  "artifact": {
+    "id": 13984862310,
+    "name": "ocr-mobile-android-x86_64",
+    "service_declared_zip_sha256": "16b809b1eb16c640571be103c2f77b40f16719b92b420e95beb8b7a5559a7145",
+    "zip_bytes": 145997760,
+    "apk_sha256": "0fb2d7c5f8ee734eb62ff671133ea74da2f2cd1edb3c0c6595b1125599461d85",
+    "apk_bytes": 515535399,
+    "apk_abis": [
+      "x86_64"
+    ],
+    "apk_retained_remote": true,
+    "verification_scope": "Service artifact digest recorded; selected small ZIP members independently extracted with CRC verification. Whole APK/archive was not downloaded."
+  },
+  "identity": {
+    "application_source_clean": true,
+    "tracked_source_clean": false,
+    "generated_tracked_files": [
+      {
+        "path": "static/licenses.json",
+        "sha256": "603e5da3e8d4c4f9e63077a6bbe413eb1128b44c833d3433095b57eed5e2ed68"
+      }
+    ],
+    "generated_exception": "Only regenerated static/licenses.json differs; production source proof and packaged native mapped sections passed existing validation.",
+    "paired_runtime_mapped_sections_match": true,
+    "same_installed_apk_hash": true
+  },
+  "checks": {
+    "passed": 11,
+    "failed": 0,
+    "steps": [
+      "validate synthetic inputs and exact application build",
+      "attach to the running application WebView through its own debug socket",
+      "require the native mobile OCR profile and a fresh model store",
+      "explicitly install the baseline through the application HTTPS/SHA installer",
+      "independently hash every installed baseline artifact in private app storage",
+      "import the synthetic PNG through the real Tauri binary IPC",
+      "verify the current default whole-page single-column control",
+      "import the unchanged authored column fixture for the app gate delta",
+      "preserve the expected current-default column quality failure",
+      "verify only the explicit app crop profile against unchanged quality gates",
+      "persist and reload the opt-in result without changing project defaults"
+    ],
+    "recognition_commands": 3,
+    "settings_differ_only_by_explicit_gate": true,
+    "save_reload_with_unchanged_project_defaults": true,
+    "both_original_managed_asset_digests_unchanged": true,
+    "same_application_process": true,
+    "cleanup_errors": []
+  },
+  "quality": {
+    "fixture_id": "english-two-columns",
+    "fixture_png_sha256": "f404697c7cd511545be60b64a66e62687b281078661d0c6387fa79f0acbb4be4",
+    "spec_sha256": "7d76bb157f4ccb350f0c9cb8e42aae87f323cc4323203c010c0ca76cf9d9232e",
+    "unicode_cer_ceiling": 0.25,
+    "thresholds_changed": false,
+    "cases": {
+      "gate-default-single-column": {
+        "experimental_cc_column_crops": false,
+        "regions": 3,
+        "crop_count": 0,
+        "native_elapsed_ms": 351,
+        "decoded_lines": [
+          "CRISP MOBILE OCR",
+          "Document 2048",
+          "Total 125.00"
+        ],
+        "unicode_cer": 0.0,
+        "quality_status": "passed"
+      },
+      "gate-default-two-columns": {
+        "experimental_cc_column_crops": false,
+        "regions": 5,
+        "crop_count": 0,
+        "native_elapsed_ms": 20734,
+        "decoded_lines": [
+          "TECHNICAL INSPECTION RECORD",
+          "ALPHAREPORT @  OMEGA NOTES",
+          "Inspection complete.  Second floor ready.",
+          "Three valves checked. \u00a9=  Four seals replaced.",
+          "Total 125.00 EUR Next visit 2026-12-01"
+        ],
+        "unicode_cer": 0.5028571428571429,
+        "quality_status": "expected_failure"
+      },
+      "gate-opt-in-two-columns": {
+        "experimental_cc_column_crops": true,
+        "regions": 9,
+        "crop_count": 9,
+        "native_elapsed_ms": 34296,
+        "decoded_lines": [
+          "TECHNICAL INSPECTION RECORD",
+          "ALPHA REPORT",
+          "Inspection complete",
+          "Three valves checked.",
+          "Total 125.00 EUR",
+          "OMEGA NOTE",
+          "cond floor ready.",
+          "Four seals replaced.",
+          "Next visit 2026-12-01"
+        ],
+        "unicode_cer": 0.022857142857142857,
+        "quality_status": "passed",
+        "required_tokens_preserved": [
+          "ALPHA",
+          "OMEGA"
+        ],
+        "columns": {
+          "left": 4,
+          "right": 4,
+          "left_before_right": true
+        }
+      }
+    },
+    "known_text_omission": {
+      "expected": "Second floor ready.",
+      "opt_in_observed": "cond floor ready.",
+      "meaning": "The fixture quality gate passes despite lost text; CC page completeness remains unqualified."
+    }
+  },
+  "memory": {
+    "sample_count": 16,
+    "sampled_peak_rss_kib": 912064,
+    "process_high_water_rss_kib": 921276,
+    "sampled_peak_pss_kib": 922297,
+    "interpretation": "PSS/RSS are discrete samples. VmHWM is the kernel process high-water mark. This is an observed bounded fixture run, not a device capacity or production workload claim."
+  },
+  "handoff": {
+    "main_commit": "87cf0b447e7b94d1c464e8cb0ee5e1af6bb5d221",
+    "full_main_app_device_qualified": false,
+    "source_mapping": [
+      {
+        "path": "src-tauri/src/ocr_workspace.rs",
+        "tested_blob": "8082808bc949b44f4c156dd0aa40989bc1709fc9",
+        "handoff_main_blob": "8082808bc949b44f4c156dd0aa40989bc1709fc9",
+        "identical": true
+      },
+      {
+        "path": "src-tauri/src/extractors/mod.rs",
+        "tested_blob": "efccfac8e03763f9199f25cdb3a1ec6b898e17d6",
+        "handoff_main_blob": "efccfac8e03763f9199f25cdb3a1ec6b898e17d6",
+        "identical": true
+      },
+      {
+        "path": "src-tauri/src/extractors/ocr_crispembed.rs",
+        "tested_blob": "1884bdb742509ef0fd98002b2ca91b7a274a34b0",
+        "handoff_main_blob": "1884bdb742509ef0fd98002b2ca91b7a274a34b0",
+        "identical": true
+      },
+      {
+        "path": "src-tauri/src/ocr_reading_order.rs",
+        "tested_blob": "7a241d5da085a0c484747a75c8a895e8193f182f",
+        "handoff_main_blob": "7a241d5da085a0c484747a75c8a895e8193f182f",
+        "identical": true
+      },
+      {
+        "path": "src-tauri/src/ocr_word_evidence.rs",
+        "tested_blob": "9af6107bca936fdd1b3d978683ff3e7a0396dcd6",
+        "handoff_main_blob": "9af6107bca936fdd1b3d978683ff3e7a0396dcd6",
+        "identical": true
+      },
+      {
+        "path": "src-tauri/src/cli/mod.rs",
+        "tested_blob": "9109aedddd4c55a8f89cc579ea615bcf5ac782ca",
+        "handoff_main_blob": "9109aedddd4c55a8f89cc579ea615bcf5ac782ca",
+        "identical": true
+      },
+      {
+        "path": "src-tauri/Cargo.toml",
+        "tested_blob": "87c80c5cded051319e6f4b7f2a3b6a42ba736351",
+        "handoff_main_blob": "feff5be20b3655b5528815f72c56d75da086afed",
+        "identical": false
+      },
+      {
+        "path": ".github/workflows/ocr-mobile-native.yml",
+        "tested_blob": "dc2ff9d879cc3565495cafa73cb972d1f17b51e8",
+        "handoff_main_blob": "29263669d312d435150fbfd144c3835d2899c6ea",
+        "identical": false
+      },
+      {
+        "path": "scripts/mobile_ocr_webview_smoke.mjs",
+        "tested_blob": "7004ff7115bc5a41d214c231a42cc78eb11b7e71",
+        "handoff_main_blob": "a1cab3d185d1ede196bf7faa3c377881aa963907",
+        "identical": false
+      },
+      {
+        "path": "scripts/mobile_ocr_probe_utils.mjs",
+        "tested_blob": "840f5f9d7589d6570db453502ea8b16ed80776bf",
+        "handoff_main_blob": "007259798a9eb9fc77a4da98bb31cfdfcb572233",
+        "identical": false
+      },
+      {
+        "path": "scripts/mobile_ocr_quality.mjs",
+        "tested_blob": "12b31fbf11893bf44fe581f144d0898ef1c51c1c",
+        "handoff_main_blob": "12b31fbf11893bf44fe581f144d0898ef1c51c1c",
+        "identical": true
+      },
+      {
+        "path": "scripts/ocr_mobile_build_receipt.py",
+        "tested_blob": "a777aefcb2419cb4f54a99194338bfe496566753",
+        "handoff_main_blob": "a777aefcb2419cb4f54a99194338bfe496566753",
+        "identical": true
+      },
+      {
+        "path": "scripts/ocr-mobile-runtime-lock.json",
+        "tested_blob": "27ed7cbc41ce0ca489fbb896ebaae4495be6697c",
+        "handoff_main_blob": "27ed7cbc41ce0ca489fbb896ebaae4495be6697c",
+        "identical": true
+      },
+      {
+        "path": "tools/android-startup-probe/run_retained_flow.sh",
+        "tested_blob": "160d0d3d6ab1718195e4d84c75db56e2c19b8e38",
+        "handoff_main_blob": "b4bbfbdab4c2264b3237f8407e946a30d4847320",
+        "identical": false
+      }
+    ],
+    "other_main_app_rust_changes": [
+      "src-tauri/Cargo.toml",
+      "src-tauri/src/drives/filesystem.rs",
+      "src-tauri/src/drives/internxt_native_drive.rs",
+      "src-tauri/src/drives/mod.rs",
+      "src-tauri/src/drives/tauri_commands.rs",
+      "src-tauri/src/drives/trash_receipts.rs",
+      "src-tauri/src/lib.rs"
+    ]
+  },
+  "prior_evidence": {
+    "url": "https://github.com/CrispStrobe/CrispSorter/actions/runs/43293853454",
+    "tested_commit": "87f5181f3a9e0e1b82010b3dd7c86403a8cc1d5f",
+    "passed_steps": 33,
+    "scope": "Earlier pre-gate APK export/repeated-recognition/cleanup/document-picker evidence retained separately; not repeated or qualified at this source."
+  },
+  "raw_reports": [
+    {
+      "artifact_member": "ocr-mobile-app/build-receipt.json",
+      "bytes": 16832,
+      "sha256": "9410e09f1b2d4e21251ff2daf53e060d8f1604a4a04e82ceed0fbeda7fa8d307"
+    },
+    {
+      "artifact_member": "ocr-mobile-runtime/runtime-build.json",
+      "bytes": 4181,
+      "sha256": "8afb281f33594a564d3b204d41e0c465de05c0e265b136722cc57383d24006db"
+    },
+    {
+      "artifact_member": "ocr-mobile-inputs/inputs.json",
+      "bytes": 7889,
+      "sha256": "55f69534f214c1ca6a78989f9213a81a69b6d3dbf566dd94e989b6a3ecea481b"
+    },
+    {
+      "artifact_member": "retained-startup/receipt.json",
+      "bytes": 571,
+      "sha256": "37c62c0332cd9db2eb5d20fff26f0337d2b544327c356474ae31665e5f10322d"
+    },
+    {
+      "artifact_member": "retained-app-flow/receipt.json",
+      "bytes": 28033,
+      "sha256": "70b56854e350d05aa6e44a10a4c12f394f25c097efb82b10c81b6feef9d71eab"
+    },
+    {
+      "artifact_member": "retained-app-flow/recognition-gate-default-single-column.json",
+      "bytes": 9705,
+      "sha256": "c53f4749a31effdca61d5e9f1f47adaaafabe7831ba8a302eed515ab199ac815"
+    },
+    {
+      "artifact_member": "retained-app-flow/recognition-gate-default-two-columns.json",
+      "bytes": 20484,
+      "sha256": "893c39f35ab7de5d9f28a84ea313a17a4ac30e15195d2e1955cacb4b1961664a"
+    },
+    {
+      "artifact_member": "retained-app-flow/recognition-gate-opt-in-two-columns.json",
+      "bytes": 64293,
+      "sha256": "37a8919eecf362c8ee2fa6a3cde492978a7371572985f0c98d86e6e1d4d2b7e9"
+    }
+  ],
+  "limits": [
+    "Synthetic fixture on API35 x86_64 emulator; no physical device/camera or representative corpus qualification.",
+    "Default whole-page two-column quality remains failing; no default promotion or runtime release/repin.",
+    "Opt-in crop coverage remains incomplete and native elapsed time rose from 20,734 ms to 34,296 ms for the column fixture.",
+    "No repeated-page, export, document-picker or recovery checks repeated in this 11-step delta.",
+    "Native-gutter candidate is separate and not qualified by app crop results.",
+    "Exact source is the dedicated candidate; source mapping cannot qualify unrelated later main changes."
+  ]
+}
