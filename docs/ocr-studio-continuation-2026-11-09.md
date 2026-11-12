@@ -213,10 +213,10 @@ verification, not a native recognition pass. The combined helper controls at
   receipt and investigate any later failure; earlier model verification and
   startup are partial evidence only. Repeat affected native checks when the
   production source changes.
-* Resolve the intermittent Windows Tantivy index repair access-denied failure
-  using a bounded Windows reproduction and operation-level evidence. Preserve
-  pending-repair journal durability; a later passing diagnostic does not erase
-  the reproduced failure. Run the relevant Windows tests on the eventual fix.
+* Windows journal replay after a failed metadata publication was repaired and
+  passed targeted injected-failure tests on Windows. The original intermittent
+  access-denied trigger remains undiagnosed; use bounded operation-level evidence
+  to investigate it and preserve pending-repair journal durability.
 * Run the source-pinned app benchmark on the representative real-scan corpus,
   with pinned models, failure-penalized quality, resource measurements and
   strict GPU execution. Wait for any already-running equivalent job to finish

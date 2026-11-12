@@ -143,10 +143,10 @@ accept either representation. Legacy JSON byte arrays are limited to 1 MiB;
 the normal base64 and raw paths retain the 32 MiB input limit. The maximum
 size is a validation limit, not a measured device-memory guarantee.
 
-The preceding emulator run reached the real app and verified installed model
-hashes, but failed at image IPC before this fix. Rebuild the Android x86_64
-app from the current source and run the retained full WebView flow; do not
-reuse the older APK or count the failed attempt as a pass. The mobile native
+The rebuilt Android x86_64 emulator run verified installed model hashes and
+imported an image through the fixed IPC, then failed a sandbox-path assertion.
+The harness now validates device-proven aliases. Run the retained full WebView
+flow using the newly pinned APK; do not count the failed attempt as a pass. The mobile native
 workflow supports a single-target manual run (Android x86_64 by default),
 while push runs retain the complete target matrix. Record its source revision,
 artifact hash, actual import, recognition, export and recovery results before

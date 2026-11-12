@@ -85,6 +85,25 @@ export function drivePathFromSearchUri(uri: string): { driveId: string; remotePa
     }
 }
 
+/** Serialize a decoded provider path without changing literal percent sequences. */
+export function driveSearchUri(driveId: string, remotePath: string): string {
+    const encodedPath = normalizeDrivePath(remotePath).split('/').map(encodeURIComponent).join('/');
+    return `crisp+drive://${driveId}${encodedPath}`;
+}
+
+/** Update duplicate provenance by decoded identity, including older URI spellings. */
+export function relocateDriveSearchUri(
+    uri: string,
+    driveId: string,
+    source: string,
+    destination: string,
+): string {
+    const parsed = drivePathFromSearchUri(uri);
+    return parsed?.driveId === driveId && normalizeDrivePath(parsed.remotePath) === normalizeDrivePath(source)
+        ? driveSearchUri(driveId, destination)
+        : uri;
+}
+
 export function pathBaseName(path: string): string {
     return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 }

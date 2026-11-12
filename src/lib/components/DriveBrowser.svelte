@@ -5,6 +5,8 @@
     import { ChevronRight, Copy, Folder, FolderPlus, Loader2, RefreshCw, Search, Trash2 } from 'lucide-svelte';
     import {
         availableDriveActions,
+        drivePathFromSearchUri,
+        relocateDriveSearchUri,
         joinDrivePath,
         normalizeDrivePath,
         parentDrivePath,
@@ -204,15 +206,10 @@
 
     async function openDuplicateItem(itemPath: string) {
         if (itemPath.startsWith('crisp+drive://')) {
-            const rest = itemPath.slice('crisp+drive://'.length);
-            const slash = rest.indexOf('/');
-            if (slash > 0) {
-                requestBrowserContext(cloudDrivePanel(
-                    rest.slice(0, slash),
-                    decodeURIComponent(rest.slice(slash)),
-                ));
-                return;
-            }
+            const parts = duplicateDriveParts(itemPath);
+            if (parts) requestBrowserContext(cloudDrivePanel(parts.driveId, parts.path));
+            else error = 'Could not open duplicate: invalid cloud location.';
+            return;
         }
         try { await openPath(itemPath); }
         catch (e) { error = `Could not open duplicate: ${String(e)}`; }
@@ -224,15 +221,8 @@
     }
 
     function duplicateDriveParts(itemPath: string): { driveId: string; path: string } | null {
-        if (!itemPath.startsWith('crisp+drive://')) return null;
-        const rest = itemPath.slice('crisp+drive://'.length);
-        const slash = rest.indexOf('/');
-        if (slash < 0) return null;
-        try {
-            return { driveId: rest.slice(0, slash), path: normalizeDrivePath(decodeURIComponent(rest.slice(slash))) };
-        } catch {
-            return null;
-        }
+        const parts = drivePathFromSearchUri(itemPath);
+        return parts ? { driveId: parts.driveId, path: normalizeDrivePath(parts.remotePath) } : null;
     }
 
     async function mutateCloudDuplicate(itemPath: string, operation: 'move' | 'delete'): Promise<void> {
@@ -267,7 +257,7 @@
                 const items = operation === 'delete'
                     ? rightPanel.source.items.filter((item) => item.path !== itemPath)
                     : rightPanel.source.items.map((item) => item.path === itemPath
-                        ? { ...item, path: `crisp+drive://${parts.driveId}${destinationPath}` }
+                        ? { ...item, path: relocateDriveSearchUri(item.path, parts.driveId, parts.path, destinationPath!) }
                         : item);
                 rightPanel = { ...rightPanel, source: { ...rightPanel.source, items } };
             }
@@ -294,8 +284,10 @@
         duplicateMutationBusy = last.to;
         try {
             await invoke('drive_move_path', { driveId: last.driveId, source: last.to, destination: last.from });
-            const current = panel.items.map((item) => item.path === `crisp+drive://${last.driveId}${last.to}`
-                ? { ...item, path: `crisp+drive://${last.driveId}${last.from}` } : item);
+            const current = panel.items.map((item) => ({
+                ...item,
+                path: relocateDriveSearchUri(item.path, last.driveId, last.to!, last.from),
+            }));
             rightPanel = { ...rightPanel!, source: { ...panel, items: current } };
             duplicateMutationAudit = [...duplicateMutationAudit, {
                 ...last,
