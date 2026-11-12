@@ -204,7 +204,7 @@ pub fn ocr_with_tables(path: &Path, rec_lang: OcrRecLang) -> Result<ExtractedDoc
         }
         Ok(None) => {} // No table detected
         Err(e) => {
-            tracing::warn!("SLANet table detection failed (non-fatal): {e}");
+            log::warn!("SLANet table detection failed (non-fatal): {e}");
         }
     }
 

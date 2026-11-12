@@ -69,6 +69,19 @@ class Wiring(unittest.TestCase):
             for rel in re.findall(r'"([^"]+)"', files):
                 self.assertTrue((BENCH / rel).is_file(), rel)
 
+    def test_ovis_comparison_is_explicit_and_gpu_fails_closed(self):
+        engines = {e["id"]: e for e in json.loads((BENCH / "engines.json").read_text())["engines"]}
+        for name in ("ovisocr2_cpu", "ovisocr2_cpu_legacy", "ovisocr2_gpu"):
+            arm = engines[name]
+            self.assertFalse(arm["default"])
+            self.assertEqual(arm["engine"], "unified")
+            self.assertEqual(arm["args"], ["--model", "ovisocr2-f16", "--cleanup=false"])
+            for gate in ("CRISPEMBED_QWEN35_OCR", "CRISPEMBED_OVISOCR2_FRONTEND", "CRISPEMBED_OVISOCR2_INFERENCE"):
+                self.assertEqual(arm["env"][gate], "1")
+        self.assertEqual(engines["ovisocr2_cpu_legacy"]["env"]["CRISPEMBED_QWEN35_OCR_GRAPH_DECODER"], "0")
+        self.assertEqual(engines["ovisocr2_gpu"]["env"]["CRISPEMBED_QWEN35_OCR_GPU_STRICT"], "1")
+        self.assertEqual(engines["ovisocr2_gpu"]["devices"], ["gpu"])
+
     def test_kpush_rejects_short_sha(self):
         r = subprocess.run([sys.executable, str(BENCH / "kaggle/kpush.py"), "--run-id", "r1", "--binary-sha", "abc",
                             "--dry-run", tempfile.gettempdir()], capture_output=True, text=True)

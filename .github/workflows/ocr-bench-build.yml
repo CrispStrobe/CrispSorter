@@ -100,6 +100,19 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: Install pinned ONNX Runtime for the Ubuntu 22.04 build
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/onnxruntime-linux-x64-1.23.2.tgz"
+          curl -fL --retry 5 --retry-all-errors -o "$archive" https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-x64-1.23.2.tgz
+          echo '1fa4dcaef22f6f7d5cd81b28c2800414350c10116f5fdd46a2160082551c5f9b  '"$archive" | sha256sum -c -
+          tar -xzf "$archive" -C "$RUNNER_TEMP"
+          ort="$RUNNER_TEMP/onnxruntime-linux-x64-1.23.2"
+          cp "$ort/LICENSE" "$ort/ONNXRUNTIME-LICENSE"
+          echo "ORT_LIB_LOCATION=$ort/lib" >> "$GITHUB_ENV"
+          echo 'ORT_PREFER_DYNAMIC_LINK=1' >> "$GITHUB_ENV"
+
       - name: Download + verify CrispEmbed runtimes
         working-directory: repos/CrispSorter
         shell: bash
@@ -163,9 +176,10 @@ jobs:
       - name: Smoke-test the binary (help only; no model downloads)
         working-directory: repos/CrispSorter
         run: |
-          LD_LIBRARY_PATH=../CrispEmbed/build target/release/crispsorter --help | head -40
-          LD_LIBRARY_PATH=../CrispEmbed/build target/release/crispsorter ocr --help | head -20
-          LD_LIBRARY_PATH=../CrispEmbed/build target/release/crispsorter -f json version
+          export LD_LIBRARY_PATH="../CrispEmbed/build:$ORT_LIB_LOCATION"
+          target/release/crispsorter --help | head -40
+          target/release/crispsorter ocr --help | head -20
+          target/release/crispsorter -f json version
 
       - name: Package cpu + cuda
         working-directory: repos/CrispSorter
@@ -176,7 +190,9 @@ jobs:
           echo "GIT_SHA=$sha" >> "$GITHUB_ENV"
           common=(--binary target/release/crispsorter --git-sha "$sha" --git-ref "${{ github.ref }}"
                   --features "${{ inputs.features }}" --crispembed-ref "${{ env.CRISPEMBED_REF }}"
-                  --crispembed-commit "${{ env.CRISPEMBED_COMMIT }}" --out ../dist)
+                  --crispembed-commit "${{ env.CRISPEMBED_COMMIT }}" --out ../dist
+                  --extra-lib "$ORT_LIB_LOCATION/libonnxruntime.so.1"
+                  --extra-license "$RUNNER_TEMP/onnxruntime-linux-x64-1.23.2/ONNXRUNTIME-LICENSE")
           python3 bench/ocr/package_build.py "${common[@]}" --variant cpu \
             --crispembed-archive ../ce-assets/crispembed-linux-x86_64.tar.gz --crispembed-asset crispembed-linux-x86_64.tar.gz
           python3 bench/ocr/package_build.py "${common[@]}" --variant cuda \

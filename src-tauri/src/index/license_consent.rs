@@ -285,6 +285,9 @@ pub fn license_for_registry_name(name: &str) -> ModelLicense {
         | "internvl2-2b"
         | "layout-heron"
         | "lightonocr"
+        // OvisOCR2 and its pinned Qwen3.5 base chain are Apache-2.0; see
+        // CrispEmbed's audited models/cards/ovisocr2-card.template.md.
+        | "ovisocr2-f16"
         | "lilt-base"
         | "lilt-funsd"
         | "lilt-funsd-f32"
@@ -604,6 +607,7 @@ mod tests {
         assert!(!license_for_registry_name("gliner-deberta").requires_consent());
         assert!(!license_for_registry_name("bge-m3").requires_consent());
         assert!(!license_for_registry_name("pixie-rune-v1").requires_consent());
+        assert!(matches!(license_for_registry_name("ovisocr2-f16"), ModelLicense::Permissive));
     }
 
     #[test]

@@ -146,6 +146,9 @@ mod search_export_contract;
 #[cfg(test)]
 mod migration_contract;
 
+#[cfg(test)]
+mod windows_fts_contract;
+
 pub mod images {pub mod exif {include!(concat!(env!("OUT_DIR"),"/image_metadata.rs"));} pub mod vit_embed {
     pub fn embed_image(_: &std::path::Path) -> anyhow::Result<Vec<f32>> { anyhow::bail!("Image models are unavailable") }
 } }

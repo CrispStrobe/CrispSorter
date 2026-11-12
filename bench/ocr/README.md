@@ -87,6 +87,19 @@ Each unit JSON records the exact argv, requested/effective settings, input sha25
 truth sha256, binary sha256 + git sha, scorer sha256, host, licence acceptance, timing,
 memory, GPU and the full recognised text (so it can be re-scored later).
 
+## Optional OvisOCR2 comparison
+
+The explicit `ovisocr2_cpu`, `ovisocr2_cpu_legacy`, and `ovisocr2_gpu` arms use
+CrispEmbed 0.17.19's pinned Apache-2.0 OvisOCR2 F16 model through the app's
+`unified` GGUF route. They are excluded from `default`, require the listed
+experimental native gates, and disable cleanup so the same input reaches each
+arm. The legacy CPU arm disables the graph decoder and threaded attention; the
+GPU arm requires the native strict-GPU gate so CPU fallback is not a GPU result.
+Use the same frozen pages, runtime lock and model hash for all arms, retain every
+failure and timeout, and compare both text/quality and resource measurements.
+Upstream's 11-case parity does not establish app-level or general OCR quality.
+The GPU comparison must run on an actual supported GPU worker.
+
 ## Store layout (`cstr/crispsorter-ocr-bench`)
 
 ```
