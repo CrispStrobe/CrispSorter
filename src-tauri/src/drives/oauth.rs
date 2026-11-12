@@ -13,6 +13,11 @@ use std::net::TcpListener;
 use std::thread;
 
 use super::secret::{self, DriveCredentials};
+use crate::sync::proxy::{build_blocking_client_with_options, ProxyConfig};
+
+fn oauth_client(proxy: &ProxyConfig) -> Result<reqwest::blocking::Client> {
+    build_blocking_client_with_options(proxy, Some(std::time::Duration::from_secs(60)), false)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provider {
@@ -56,8 +61,12 @@ fn form_body(fields: &[(&str, &str)]) -> String {
         .join("&")
 }
 
-fn token_request(endpoint: &str, body: String) -> Result<serde_json::Value> {
-    reqwest::blocking::Client::new()
+fn token_request(
+    client: &reqwest::blocking::Client,
+    endpoint: &str,
+    body: String,
+) -> Result<serde_json::Value> {
+    client
         .post(endpoint)
         .header(
             reqwest::header::CONTENT_TYPE,
@@ -151,7 +160,9 @@ fn parse_callback_query(query: &str) -> Result<CallbackQuery> {
             "code" if callback.code.is_none() => callback.code = Some(value),
             "state" if callback.state.is_none() => callback.state = Some(value),
             "error" if callback.error.is_none() => callback.error = Some(value),
-            "code" | "state" | "error" => return Err(anyhow!("duplicate OAuth callback parameter")),
+            "code" | "state" | "error" => {
+                return Err(anyhow!("duplicate OAuth callback parameter"))
+            }
             _ => {}
         }
     }
@@ -162,7 +173,10 @@ fn pkce_challenge(verifier: &str) -> String {
     URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
 }
 
-fn validated_callback_code<'a>(callback: &'a CallbackQuery, expected_state: &str) -> Result<&'a str> {
+fn validated_callback_code<'a>(
+    callback: &'a CallbackQuery,
+    expected_state: &str,
+) -> Result<&'a str> {
     if callback.error.is_some() {
         return Err(anyhow!("OAuth callback returned an error"));
     }
@@ -177,6 +191,7 @@ fn validated_callback_code<'a>(callback: &'a CallbackQuery, expected_state: &str
 }
 
 fn refresh_at(
+    client: &reqwest::blocking::Client,
     endpoint: &str,
     credentials: &DriveCredentials,
 ) -> Result<DriveCredentials> {
@@ -191,6 +206,7 @@ fn refresh_at(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| anyhow!("no public OAuth client ID is stored"))?;
     let response = token_request(
+        client,
         endpoint,
         form_body(&[
             ("client_id", client_id),
@@ -205,7 +221,10 @@ fn refresh_at(
         .ok_or_else(|| anyhow!("OAuth refresh response did not contain an access token"))?;
     let mut updated = credentials.clone();
     updated.access_token = Some(access.to_owned());
-    if let Some(new_refresh) = response.get("refresh_token").and_then(|value| value.as_str()) {
+    if let Some(new_refresh) = response
+        .get("refresh_token")
+        .and_then(|value| value.as_str())
+    {
         if !new_refresh.is_empty() {
             updated.refresh_token = Some(new_refresh.to_owned());
         }
@@ -214,14 +233,20 @@ fn refresh_at(
 }
 
 pub fn refresh(provider: Provider, drive_id: &str) -> Result<()> {
+    refresh_with_proxy(provider, drive_id, &ProxyConfig::default())
+}
+
+/// Refresh through the same explicit proxy and TLS policy as drive requests.
+pub fn refresh_with_proxy(provider: Provider, drive_id: &str, proxy: &ProxyConfig) -> Result<()> {
+    let client = oauth_client(proxy)?;
     let credentials = secret::get_credentials(drive_id)?
         .ok_or_else(|| anyhow!("no OAuth credentials are stored"))?;
-    let updated = refresh_at(token_endpoint(provider), &credentials)?;
+    let updated = refresh_at(&client, token_endpoint(provider), &credentials)?;
     secret::set_credentials(drive_id, &updated)
 }
 
-fn revoke_at(endpoint: &str, token: &str) -> Result<()> {
-    let response = reqwest::blocking::Client::new()
+fn revoke_at(client: &reqwest::blocking::Client, endpoint: &str, token: &str) -> Result<()> {
+    let response = client
         .post(endpoint)
         .header(
             reqwest::header::CONTENT_TYPE,
@@ -240,6 +265,10 @@ fn revoke_at(endpoint: &str, token: &str) -> Result<()> {
 /// Microsoft identity platform has no equivalent token-revocation API, so
 /// this clears local credentials and leaves provider-side logout to the user.
 pub fn revoke(provider: Provider, drive_id: &str) -> Result<()> {
+    revoke_with_proxy(provider, drive_id, &ProxyConfig::default())
+}
+
+pub fn revoke_with_proxy(provider: Provider, drive_id: &str, proxy: &ProxyConfig) -> Result<()> {
     let credentials = secret::get_credentials(drive_id)?.unwrap_or_default();
     if provider == Provider::Google {
         if let Some(token) = credentials
@@ -247,19 +276,34 @@ pub fn revoke(provider: Provider, drive_id: &str) -> Result<()> {
             .as_deref()
             .or(credentials.access_token.as_deref())
         {
-            revoke_at("https://oauth2.googleapis.com/revoke", token)?;
+            revoke_at(
+                &oauth_client(proxy)?,
+                "https://oauth2.googleapis.com/revoke",
+                token,
+            )?;
         }
         secret::delete_credentials(drive_id)
     } else {
-        secret::delete_credentials(drive_id)
-            .context("clearing Microsoft OAuth credentials locally")
+        secret::delete_credentials(drive_id).context("clearing Microsoft OAuth credentials locally")
     }
 }
 
 pub fn start(drive_id: String, provider: Provider, client_id: String) -> Result<StartResult> {
+    start_with_proxy(drive_id, provider, client_id, &ProxyConfig::default())
+}
+
+/// Capture a validated client before opening the callback listener. Proxy
+/// credentials remain inside the client, never in StartResult or callback logs.
+pub fn start_with_proxy(
+    drive_id: String,
+    provider: Provider,
+    client_id: String,
+    proxy: &ProxyConfig,
+) -> Result<StartResult> {
     if client_id.trim().is_empty() {
         return Err(anyhow!("OAuth client ID is required"));
     }
+    let client = oauth_client(proxy)?;
     let listener =
         TcpListener::bind(("127.0.0.1", 0)).context("binding OAuth loopback callback")?;
     let port = listener.local_addr()?.port();
@@ -279,11 +323,13 @@ pub fn start(drive_id: String, provider: Provider, client_id: String) -> Result<
         };
         // Started only once the browser calls back, so an abandoned login
         // never leaves a dangling receipt. Codes, tokens and URLs stay out.
-        let log = crate::operation_log::OperationLog::start("storage.drive.oauth_callback",
+        let log = crate::operation_log::OperationLog::start(
+            "storage.drive.oauth_callback",
             serde_json::json!({"backend": match provider {
                 Provider::Google => "google_drive",
                 Provider::Microsoft => "onedrive",
-            }}));
+            }}),
+        );
         let mut request = [0u8; 8192];
         let Ok(size) = stream.read(&mut request) else {
             log.fail("oauth_callback_unreadable");
@@ -305,8 +351,9 @@ pub fn start(drive_id: String, provider: Provider, client_id: String) -> Result<
         {
             Ok(code) => {
                 log.step("token_exchange", serde_json::Value::Null);
-                match exchange(
-                    provider,
+                match exchange_at(
+                    &client,
+                    token_endpoint(provider),
                     &client_id,
                     &callback_redirect_uri,
                     &verifier,
@@ -343,6 +390,7 @@ pub fn start(drive_id: String, provider: Provider, client_id: String) -> Result<
 }
 
 fn exchange_at(
+    client: &reqwest::blocking::Client,
     endpoint: &str,
     client_id: &str,
     redirect_uri: &str,
@@ -351,6 +399,7 @@ fn exchange_at(
     drive_id: &str,
 ) -> Result<()> {
     let response = token_request(
+        client,
         endpoint,
         form_body(&[
             ("client_id", client_id),
@@ -378,28 +427,14 @@ fn exchange_at(
     secret::set_credentials(drive_id, &DriveCredentials { ..credentials })
 }
 
-fn exchange(
-    provider: Provider,
-    client_id: &str,
-    redirect_uri: &str,
-    verifier: &str,
-    code: &str,
-    drive_id: &str,
-) -> Result<()> {
-    exchange_at(
-        token_endpoint(provider),
-        client_id,
-        redirect_uri,
-        verifier,
-        code,
-        drive_id,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use mockito::Server;
+
+    fn test_client() -> reqwest::blocking::Client {
+        oauth_client(&ProxyConfig::default()).unwrap()
+    }
 
     #[test]
     fn public_provider_and_escape_are_deterministic() {
@@ -468,7 +503,12 @@ mod tests {
             access_token: Some("expired".into()),
             ..Default::default()
         };
-        let updated = refresh_at(&format!("{}/token", server.url()), &credentials).unwrap();
+        let updated = refresh_at(
+            &test_client(),
+            &format!("{}/token", server.url()),
+            &credentials,
+        )
+        .unwrap();
         assert_eq!(updated.access_token.as_deref(), Some("new"));
         assert_eq!(updated.refresh_token.as_deref(), Some("rotated"));
         request.assert();
@@ -487,7 +527,12 @@ mod tests {
             refresh_token: Some("keep-me".into()),
             ..Default::default()
         };
-        let updated = refresh_at(&format!("{}/token", server.url()), &credentials).unwrap();
+        let updated = refresh_at(
+            &test_client(),
+            &format!("{}/token", server.url()),
+            &credentials,
+        )
+        .unwrap();
         assert_eq!(updated.access_token.as_deref(), Some("new"));
         assert_eq!(updated.refresh_token.as_deref(), Some("keep-me"));
         request.assert();
@@ -496,12 +541,23 @@ mod tests {
     #[test]
     fn malformed_refresh_response_is_rejected() {
         let mut server = Server::new();
-        let request = server.mock("POST", "/token").with_status(200)
-            .with_body(r#"{"token":"wrong-field"}"#).create();
+        let request = server
+            .mock("POST", "/token")
+            .with_status(200)
+            .with_body(r#"{"token":"wrong-field"}"#)
+            .create();
         let credentials = DriveCredentials {
-            client_id: Some("public".into()), refresh_token: Some("old".into()), ..Default::default()
+            client_id: Some("public".into()),
+            refresh_token: Some("old".into()),
+            ..Default::default()
         };
-        let error = refresh_at(&format!("{}/token", server.url()), &credentials).unwrap_err().to_string();
+        let error = refresh_at(
+            &test_client(),
+            &format!("{}/token", server.url()),
+            &credentials,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(error.contains("did not contain an access token"));
         request.assert();
     }
@@ -523,6 +579,7 @@ mod tests {
             .create();
 
         exchange_at(
+            &test_client(),
             &format!("{}/token", server.url()),
             "public",
             "http://127.0.0.1:1234/oauth/callback",
@@ -542,14 +599,29 @@ mod tests {
     #[test]
     fn revoke_request_is_hermetic_and_rejects_provider_failure() {
         let mut server = Server::new();
-        let request = server.mock("POST", "/revoke")
+        let request = server
+            .mock("POST", "/revoke")
             .match_body(mockito::Matcher::Exact("token=access-token".into()))
-            .with_status(200).create();
-        revoke_at(&format!("{}/revoke", server.url()), "access-token").unwrap();
+            .with_status(200)
+            .create();
+        revoke_at(
+            &test_client(),
+            &format!("{}/revoke", server.url()),
+            "access-token",
+        )
+        .unwrap();
         request.assert();
 
-        let failure = server.mock("POST", "/revoke-fail").with_status(401).create();
-        assert!(revoke_at(&format!("{}/revoke-fail", server.url()), "access-token").is_err());
+        let failure = server
+            .mock("POST", "/revoke-fail")
+            .with_status(401)
+            .create();
+        assert!(revoke_at(
+            &test_client(),
+            &format!("{}/revoke-fail", server.url()),
+            "access-token"
+        )
+        .is_err());
         failure.assert();
     }
 
@@ -559,9 +631,152 @@ mod tests {
             client_id: Some("public".into()),
             ..Default::default()
         };
-        let error = refresh_at("http://127.0.0.1:1", &credentials)
+        let error = refresh_at(&test_client(), "http://127.0.0.1:1", &credentials)
             .unwrap_err()
             .to_string();
         assert!(error.contains("refresh token"));
+    }
+
+    #[test]
+    fn explicit_proxy_routes_exchange_refresh_and_revoke_with_credentials() {
+        use std::time::{Duration, Instant};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let proxy = ProxyConfig {
+            url: Some(format!("http://{}", listener.local_addr().unwrap())),
+            username: Some("fixture-user".into()),
+            password: Some("fixture-password".into()),
+        };
+        let server = thread::spawn(move || {
+            let mut requests = Vec::new();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while requests.len() < 3 {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(connection) => connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "proxy fixture timed out");
+                        thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(error) => panic!("proxy fixture accept: {error}"),
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut bytes = Vec::new();
+                loop {
+                    let mut buffer = [0u8; 2048];
+                    let count = stream.read(&mut buffer).unwrap();
+                    assert!(count > 0);
+                    bytes.extend_from_slice(&buffer[..count]);
+                    if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&bytes[..end]);
+                        let length = headers
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().unwrap())
+                            })
+                            .unwrap();
+                        if bytes.len() >= end + 4 + length {
+                            break;
+                        }
+                    }
+                }
+                requests.push(String::from_utf8(bytes).unwrap());
+                let body = r#"{"access_token":"fixture-access","refresh_token":"fixture-refresh"}"#;
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+            requests
+        });
+        let client = oauth_client(&proxy).unwrap();
+        secret::install_mock_for_tests();
+        let drive_id = "oauth-proxy-exchange";
+        exchange_at(
+            &client,
+            "http://oauth.invalid/token",
+            "public",
+            "http://127.0.0.1/callback",
+            "verifier",
+            "code",
+            drive_id,
+        )
+        .unwrap();
+        let credentials = secret::get_credentials(drive_id).unwrap().unwrap();
+        assert_eq!(credentials.access_token.as_deref(), Some("fixture-access"));
+        refresh_at(&client, "http://oauth.invalid/refresh", &credentials).unwrap();
+        revoke_at(&client, "http://oauth.invalid/revoke", "fixture-access").unwrap();
+        for (request, endpoint) in server
+            .join()
+            .unwrap()
+            .iter()
+            .zip(["token", "refresh", "revoke"])
+        {
+            assert!(request.starts_with(&format!(
+                "POST http://oauth.invalid/{endpoint} HTTP/1.1\r\n"
+            )));
+            assert!(request
+                .to_ascii_lowercase()
+                .contains("proxy-authorization: basic zml4dhvyzs11c2vyomzpehr1cmutcgfzc3dvcmq="));
+            assert!(request
+                .to_ascii_lowercase()
+                .contains("content-type: application/x-www-form-urlencoded"));
+        }
+        secret::delete_credentials(drive_id).unwrap();
+    }
+
+    #[test]
+    fn invalid_proxy_is_rejected_before_start_and_refresh() {
+        let proxy = ProxyConfig {
+            password: Some("fixture-secret".into()),
+            ..Default::default()
+        };
+        assert!(start_with_proxy(
+            "invalid-proxy".into(),
+            Provider::Google,
+            "public".into(),
+            &proxy
+        )
+        .is_err());
+        assert!(refresh_with_proxy(Provider::Google, "invalid-proxy", &proxy).is_err());
+    }
+
+    #[test]
+    fn failed_proxy_preserves_credentials_and_microsoft_revoke_is_local() {
+        secret::install_mock_for_tests();
+        let drive_id = "oauth-proxy-failure";
+        let credentials = DriveCredentials {
+            client_id: Some("public".into()),
+            access_token: Some("old-access".into()),
+            refresh_token: Some("old-refresh".into()),
+            ..Default::default()
+        };
+        secret::set_credentials(drive_id, &credentials).unwrap();
+        let proxy = ProxyConfig {
+            url: Some("http://127.0.0.1:1".into()),
+            ..Default::default()
+        };
+        assert!(refresh_with_proxy(Provider::Google, drive_id, &proxy).is_err());
+        assert_eq!(
+            secret::get_credentials(drive_id).unwrap().unwrap(),
+            credentials
+        );
+        assert!(revoke_with_proxy(Provider::Google, drive_id, &proxy).is_err());
+        assert_eq!(
+            secret::get_credentials(drive_id).unwrap().unwrap(),
+            credentials
+        );
+        let invalid = ProxyConfig {
+            password: Some("unused-fixture-secret".into()),
+            ..Default::default()
+        };
+        revoke_with_proxy(Provider::Microsoft, drive_id, &invalid).unwrap();
+        assert!(secret::get_credentials(drive_id).unwrap().is_none());
     }
 }

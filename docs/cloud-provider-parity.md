@@ -61,13 +61,63 @@ trait used by CrispSorter.
   use the validated install-time host and explicit user consent; it must not
   accept a per-request arbitrary URL.
 * Certificate pin policy validation is not certificate pin enforcement. The
-  built-in pin sets and rotation checks fail closed on malformed policy, but
+  built-in pin sets and rotation checks fail closed on malformed policy.
+  Host selection compares whole DNS labels, including the regional S3
+  patterns; each wildcard consumes one nonempty label. URL authorities and
+  malformed names cannot select a policy. The source-bound
+  `tests/cert-pin-contract` validates this selection and pin data, but
   the actual verifier/client-construction work remains a separate security
   item in `PLAN.md`.
 * A provider capability is a promise. If a backend cannot safely implement an
   operation, its capability is false and the trait returns an explicit error.
   This is preferable to discovering a late HTTP failure after the user has
   started a destructive workflow.
+
+### Certificate pin enforcement boundary: remaining design
+
+The current client boundary validates pin policy data; it does not pin a TLS
+handshake. Reqwest's optional response `TlsInfo` exposes the peer's **leaf**
+certificate after the HTTP response. It cannot identify the authenticated root
+trust anchor or stop an OAuth token/body from being sent to an unpinned peer.
+Checking that response, or accepting any pinned certificate supplied in a
+server's unverified chain, would not implement the root-SPKI policy in `PLAN.md`.
+
+Enforcement needs a handshake verifier that first preserves ordinary chain,
+hostname, validity-time and signature verification, then checks the SPKI of the
+trust anchor actually selected by that verification. The two root pins need
+independent freshness/rotation qualification before enabling this policy. The
+enabled native-TLS/rustls backends and effective backend selection,
+explicit/environment proxy handling,
+redirected hostnames, local WebDAV TLS exceptions, and SDK-owned Filen/Internxt
+clients each need an explicit integration decision. A pin mismatch must reject
+before HTTP credentials or bodies are transmitted; no trust fallback may hide it.
+An accepted backup root should produce a content-free rotation warning.
+
+Required hermetic TLS gates include trusted-primary and trusted-backup roots,
+an ordinarily trusted but unpinned root, an untrusted/expired/wrong-host chain,
+cross-signing and unrelated pinned certificates in a presented chain, redirect
+and proxy CONNECT paths, and confirmation that rejected handshakes deliver no
+HTTP authorization or body bytes. No such verifier or TLS qualification is
+claimed by the pin-policy or OAuth proxy contracts.
+
+An unconnected rustls foundation now lives in `sync/root_pin_verifier.rs` and
+`tests/root-pin-contract`. It restricts WebPKI's root store to already-trusted
+primary/backup SPKI anchors before verification, retaining each anchor's subject
+and name constraints. It delegates certificate and TLS1.2/1.3 signature checks to
+standard WebPKI/rustls logic and rejects hostnames outside its pin policy. It is
+not declared in the app's module tree, installed in any HTTP client, or used by
+provider SDKs. Its isolated fixture tests do not qualify shipped pins, platform
+trust stores, revocation, cross-signing, redirects, proxies or app integration.
+Actual production TLS pin enforcement therefore remains unimplemented.
+
+Google/Microsoft OAuth token exchange, refresh and Google revocation now use the
+same shared proxy/client policy as drive requests, with a 60-second timeout.
+Tauri passes persisted proxy settings and the keychain password; login captures
+the validated client before opening the callback listener. Blocking HTTP/keychain
+operations run off the async command executor. Invalid settings fail before the
+login listener or token exchange starts, and failed refresh/revocation retains
+stored credentials. Microsoft revocation remains a local clear operation. This
+does not configure the external browser's proxy or enable certificate pinning.
 
 ## Transfer and failure behavior
 
@@ -100,6 +150,78 @@ Their legacy `reversible_trash` capability remains false. Explicit existing
 delete APIs are unchanged. Google Drive explicit path-based restore still uses
 unique live ancestors and a trashed leaf; legacy duplicate path-only history
 never enables restore. Use the provider app to restore existing native trash.
+
+### Newest-wins metadata safety
+
+Pair comparison marks an existing file for manual review when the remote
+modification time is unknown, or when timestamps match but sizes differ. A
+newest-wins push rejects the entire plan before transfers if any such conflict
+exists. Returning a partial plan would let a later upload advance the watermark
+past an unresolved file. Zero timestamps also require review: the local scanner
+uses zero for unavailable or pre-epoch modification times, so a genuine Unix-
+epoch timestamp cannot be distinguished from missing metadata. Unknown-time files
+remain in incremental plans even after a newer watermark. Epoch-zero files
+need an explicit policy; representable negative timestamps can still be ordered.
+Explicit local/remote conflict decisions retain their existing behavior. The CLI pair comparison shares these decisions; CLI push still
+requires its explicit local-wins policy.
+
+For file-manager move/copy against an existing destination, newest-wins permits
+replacement only when both timestamps are known and the source is strictly
+newer. Unknown, zero or equal timestamps preserve the destination. These checks do
+not add provider conditional writes: source or destination changes after a
+comparison, failed destination lookups, retry/offline replay, and provider cache
+freshness remain separate transaction/CAS work. Equal size and timestamp still
+mean metadata-unchanged, not verified content equality; timestamp precision and
+clock skew can also hide differences. Keep-both and durable per-file manual
+resolution remain open.
+
+### Sync pull path boundary
+
+GUI and CLI sync inventory validate provider names before stat or recursive
+descent. Empty names, dot components, slashes, backslashes, NULs and exact
+duplicate names are rejected rather than mapped to a different file. Unicode,
+spaces and literal percent sequences are preserved. Windows additionally
+rejects device names, alternate-data-stream/drive spellings, invalid characters
+and trailing-dot/space aliases. POSIX filenames such as `file:notes` remain
+supported on POSIX; names that cannot be represented safely on the local
+platform fail explicitly. Filesystem-specific case/Unicode-normalization
+collisions are not resolved by this validation.
+
+Before each queued pull, the configured local root must already exist and is
+canonicalized as the authority; an explicitly configured root symlink may name
+that authority. Descendant directory and leaf symlinks, dangling links and
+nonregular leaf targets are rejected. Missing ordinary subdirectories may be
+created beneath the canonical root. Both GUI and CLI use the same destination
+check. Tests exercise the real inventory/path functions with a provider double,
+temporary local directories and Unix symlinks.
+
+This preflight does not use descriptor-relative filesystem operations. Another
+process can replace a checked directory after validation, including while a
+download is queued or retried. Race-safe traversal/publication requires anchored
+directory handles and platform-specific APIs; this change does not claim that
+TOCTOU protection, atomic multi-file pull or provider CAS.
+
+### Bounded, complete sync inventory
+
+Sync inventory uses an iterative depth-first task stack rather than recursive
+calls. It preserves provider listing order, filter behavior and file-stat order.
+Production scans allow 64 nested directory levels, 10,000 directories including
+the root, and 100,000 listed entries across the scan. Directories and filtered-out
+files count toward the entry budget. Cyclic provider trees and provider-followed
+directory aliases therefore fail with an explicit budget error instead of exhausting
+the application call stack or walking indefinitely.
+
+New rows remain private until the complete scan succeeds. Provider stat/listing
+failures, invalid names and exhausted budgets leave the caller's existing output
+unchanged; callers propagate the error before transfers or watermark publication.
+The limits do not constrain the initial allocation inside a provider's `list_dir`
+implementation, provide a consistent remote snapshot, or replace that client's
+request timeout/pagination policy. These changes do not close the destination
+path-swap TOCTOU window described above.
+
+Cycle coverage includes a provider double over a real Unix directory-symlink
+cycle. That fixture explicitly follows the link; LocalDrive's own listing
+metadata does not expose directory symlinks as directories.
 
 ### Durable duplicate trash: Internxt receipt slice
 

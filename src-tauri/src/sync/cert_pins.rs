@@ -28,7 +28,7 @@ pub struct PinSet {
     pub provider: String,
     /// Domain patterns this pin set applies to (e.g. "*.googleapis.com").
     pub domains: Vec<String>,
-    /// SHA-256 hashes of the root CA SPKI (hex-encoded).
+    /// SHA-256 hashes of the root CA SPKI (standard base64).
     /// First entry is the primary; second is backup.
     pub pins: Vec<String>,
 }
@@ -57,7 +57,10 @@ impl PinSet {
             anyhow::ensure!(decoded.len() == 32, "pin must decode to a SHA-256 digest");
         }
         for domain in &self.domains {
-            anyhow::ensure!(!domain.trim().is_empty(), "pin domain is empty");
+            anyhow::ensure!(
+                dns_labels(domain, true).is_some(),
+                "invalid pin domain pattern"
+            );
         }
         Ok(())
     }
@@ -118,6 +121,7 @@ pub fn builtin_pin_sets() -> Vec<PinSet> {
                 "*.s3.amazonaws.com".into(),
                 "s3.amazonaws.com".into(),
                 "*.s3.*.amazonaws.com".into(),
+                "s3.*.amazonaws.com".into(),
             ],
             pins: vec![
                 // Amazon Root CA 1
@@ -144,10 +148,9 @@ pub fn validate_builtin_pin_sets() -> anyhow::Result<()> {
 
 /// Find the pin set that matches a given hostname.
 pub fn find_pin_set<'a>(hostname: &str, pin_sets: &'a [PinSet]) -> Option<&'a PinSet> {
-    let hostname = hostname.trim_end_matches('.').to_ascii_lowercase();
     for ps in pin_sets {
         for domain in &ps.domains {
-            if domain_matches(domain, &hostname) {
+            if domain_matches(domain, hostname) {
                 return Some(ps);
             }
         }
@@ -155,23 +158,49 @@ pub fn find_pin_set<'a>(hostname: &str, pin_sets: &'a [PinSet]) -> Option<&'a Pi
     None
 }
 
-/// Simple wildcard domain matcher.
-/// Handles `*.example.com` matching `foo.example.com` but not
-/// `foo.bar.example.com` or `example.com` itself.
-fn domain_matches(pattern: &str, hostname: &str) -> bool {
-    let pattern = pattern.trim_end_matches('.').to_ascii_lowercase();
-    let hostname = hostname.trim_end_matches('.').to_ascii_lowercase();
-    if let Some(suffix) = pattern.strip_prefix("*.") {
-        // Wildcard: hostname must have exactly one label before the suffix.
-        if let Some(rest) = hostname.strip_suffix(suffix) {
-            // rest should be "label." (one label + the dot)
-            rest.ends_with('.') && !rest[..rest.len() - 1].contains('.')
-        } else {
-            false
-        }
-    } else {
-        pattern.eq_ignore_ascii_case(&hostname)
+/// Validate DNS names rather than URL authorities. A wildcard occupies exactly
+/// one complete label; the final two labels must be literal in a policy pattern.
+/// Accept one optional DNS root dot, but never empty labels or IP literals.
+fn dns_labels(value: &str, pattern: bool) -> Option<Vec<&str>> {
+    let value = value.strip_suffix('.').unwrap_or(value);
+    if value.is_empty() || value.len() > 253 || value.parse::<std::net::IpAddr>().is_ok() {
+        return None;
     }
+    let labels: Vec<_> = value.split('.').collect();
+    if labels.len() < 2 {
+        return None;
+    }
+    for (index, label) in labels.iter().enumerate() {
+        if pattern && *label == "*" && index + 2 < labels.len() {
+            continue;
+        }
+        let bytes = label.as_bytes();
+        if bytes.is_empty()
+            || bytes.len() > 63
+            || !bytes[0].is_ascii_alphanumeric()
+            || !bytes[bytes.len() - 1].is_ascii_alphanumeric()
+            || !bytes
+                .iter()
+                .all(|c| c.is_ascii_alphanumeric() || *c == b'-')
+        {
+            return None;
+        }
+    }
+    Some(labels)
+}
+
+/// Compare whole DNS labels. Regional S3 patterns can contain more than one
+/// wildcard; each still consumes exactly one nonempty label, never a suffix.
+fn domain_matches(pattern: &str, hostname: &str) -> bool {
+    let (Some(pattern), Some(hostname)) = (dns_labels(pattern, true), dns_labels(hostname, false))
+    else {
+        return false;
+    };
+    pattern.len() == hostname.len()
+        && pattern
+            .iter()
+            .zip(hostname)
+            .all(|(pattern, host)| *pattern == "*" || pattern.eq_ignore_ascii_case(host))
 }
 
 /// Verify that a certificate's SPKI hash matches a pin set.
@@ -303,5 +332,89 @@ mod tests {
         let sets = builtin_pin_sets();
         assert!(find_pin_set("WWW.GOOGLEAPIS.COM.", &sets).is_some());
         assert!(find_pin_set("Googleapis.com.", &sets).is_none());
+    }
+
+    #[test]
+    fn regional_s3_policy_consumes_exactly_one_label_per_wildcard() {
+        let sets = builtin_pin_sets();
+        for host in [
+            "bucket.s3.amazonaws.com",
+            "s3.amazonaws.com",
+            "bucket.s3.eu-west-1.amazonaws.com",
+            "s3.eu-west-1.amazonaws.com",
+            "BUCKET.S3.EU-WEST-1.AMAZONAWS.COM.",
+        ] {
+            assert_eq!(
+                find_pin_set(host, &sets).unwrap().provider,
+                "Amazon/S3",
+                "{host}"
+            );
+        }
+        for host in [
+            "a.b.s3.eu-west-1.amazonaws.com",
+            "bucket.s3.a.b.amazonaws.com",
+            "bucket.s3.eu-west-1.amazonaws.com.attacker.test",
+            "bucket.s3evil.eu-west-1.amazonaws.com",
+            "bucket.s3..amazonaws.com",
+            ".s3.eu-west-1.amazonaws.com",
+            "s3.amazonaws.com..",
+        ] {
+            assert!(find_pin_set(host, &sets).is_none(), "{host}");
+        }
+    }
+
+    #[test]
+    fn malformed_authorities_and_domains_never_select_a_policy() {
+        let sets = builtin_pin_sets();
+        for host in [
+            ".googleapis.com",
+            "*.googleapis.com",
+            "www.googleapis.com:443",
+            "https://www.googleapis.com",
+            "www.googleapis.com/path",
+            "www.googleapis.com..",
+            "www.googleapis.com\n",
+            " www.googleapis.com",
+            "-www.googleapis.com",
+            "www-.googleapis.com",
+            "w_w.googleapis.com",
+            "☃.googleapis.com",
+            "127.0.0.1",
+        ] {
+            assert!(find_pin_set(host, &sets).is_none(), "{host}");
+        }
+        assert!(!domain_matches(
+            "*.example.com",
+            &format!("{}.example.com", "a".repeat(64))
+        ));
+        assert!(!domain_matches("*.example.com", "example.com"));
+        assert!(domain_matches("*.example.com", "xn--bcher-kva.example.com"));
+    }
+
+    #[test]
+    fn invalid_domain_patterns_fail_validation_instead_of_silently_missing() {
+        let valid = builtin_pin_sets().remove(0);
+        for pattern in [
+            "",
+            " ",
+            "*",
+            "*.com",
+            "example.*",
+            "ex*ample.com",
+            "https://example.com",
+            "example.com:443",
+            "example..com",
+            "example.com..",
+            "-example.com",
+            "example-.com",
+            "127.0.0.1",
+        ] {
+            let mut invalid = valid.clone();
+            invalid.domains = vec![pattern.into()];
+            assert!(invalid.validate().is_err(), "{pattern}");
+        }
+        let mut regional = valid;
+        regional.domains = vec!["*.s3.*.amazonaws.com".into()];
+        assert!(regional.validate().is_ok());
     }
 }

@@ -80,6 +80,11 @@ class BuildTests(unittest.TestCase):
             simulator_args = mobile.configure_args('android-x86_64', Path('/source'), Path('/out'), ndk)
             self.assertIn('-DANDROID_ABI=x86_64', simulator_args)
             self.assertNotIn('-DANDROID_ABI=arm64-v8a', simulator_args)
+            for flag in ('-DANDROID_NATIVE_API_LEVEL=24', '-DANDROID_STL=c++_static',
+                         '-DCRISPEMBED_BUILD_SHARED=ON', '-DGGML_NATIVE=OFF',
+                         '-DCRISPEMBED_NATIVE=OFF', '-DGGML_METAL=OFF',
+                         '-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON'):
+                self.assertIn(flag, simulator_args)
             armv7_args = mobile.configure_args('android-armv7', Path('/source'), Path('/out'), ndk)
             self.assertIn('-DANDROID_ABI=armeabi-v7a', armv7_args)
             self.assertIn('-DANDROID_NATIVE_API_LEVEL=24', armv7_args)

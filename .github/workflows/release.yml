@@ -14,16 +14,25 @@ on:
         description: 'Run the macOS App Store job (build cloud-only sandbox .pkg, sign, validate). Upload to ASC only if publish is also ON.'
         type: boolean
         default: false
-      platform:
-        description: 'Build all platforms, or retry one desktop platform without restarting the others. Single-platform retries never publish.'
+      mobile_profile:
+        description: 'standard omits native OCR; public ocr remains blocked. Use android_ocr_draft or ios_ocr_draft for unpublished signed build preparation, or OCR mobile native integration for qualification.'
         type: choice
-        options: [all, windows, macos, testflight, testflight_resume, certificate_audit]
+        options: [standard, ocr]
+        default: standard
+      platform:
+        description: 'Build all platforms, retry one desktop, or prepare one signed OCR draft as an unqualified workflow artifact. OCR draft selectors require publish=false and mac_appstore=false; they never upload to ASC or a release.'
+        type: choice
+        options: [all, windows, macos, testflight, testflight_resume, certificate_audit, android_ocr_draft, ios_ocr_draft]
         default: all
 
 # ── Sibling-repo version pins (single source of truth) ──────────────
 # Bumping CRISPEMBED_REF / CRISPASR_REF / CRISPDOCX_REF here updates
 # all jobs at once — no more 3-place edits.
 env:
+  CRISPSORTER_MOBILE_RELEASE_PROFILE: ${{ (inputs.platform == 'android_ocr_draft' || inputs.platform == 'ios_ocr_draft') && 'ocr-draft' || inputs.mobile_profile || 'standard' }}
+  CRISPSORTER_RELEASE_SELECTOR: ${{ inputs.platform || 'all' }}
+  CRISPSORTER_RELEASE_PUBLISH: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
+  CRISPSORTER_RELEASE_MAC_APPSTORE: ${{ inputs.mac_appstore || false }}
   # Python's stdout on a Windows runner is the console code page (cp1252),
   # so any inline `python -c` that prints file content dies on the first
   # non-ASCII character. The rewrite step prints slices of Cargo.toml,
@@ -111,6 +120,8 @@ jobs:
       IPA_FILE: CrispSorter_0.15.0_ios-arm64.ipa
     steps:
       - uses: actions/checkout@v4
+      - name: Check requested mobile release profile
+        run: python3 scripts/check_mobile_release_profile.py
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -121,6 +132,7 @@ jobs:
           set -euo pipefail
           gh release download "v$IPA_VERSION" --repo "$GITHUB_REPOSITORY" --pattern "$IPA_FILE"
           echo "$IPA_SHA256  $IPA_FILE" | shasum -a 256 -c -
+          python3 scripts/check_testflight_ipa.py --ipa "$IPA_FILE" --version "$IPA_VERSION" --sha256 "$IPA_SHA256"
           unzip -q "$IPA_FILE" -d "$RUNNER_TEMP/ipa"
           APP=$(find "$RUNNER_TEMP/ipa/Payload" -maxdepth 1 -name '*.app' -type d -print -quit)
           test -n "$APP" && test -f "$APP/embedded.mobileprovision"
@@ -162,17 +174,22 @@ jobs:
           python scripts/testflight_distribute.py --platform IOS --mode internal --version "$BUILD_NUMBER" --uploaded-after "$UPLOADED_AFTER" --wait-minutes 35 --notes 'Test library search, cited chat, document review, and mobile navigation.'
 
   release-draft-preflight:
-    if: ${{ github.event_name != 'workflow_dispatch' || (!inputs.mac_appstore && (inputs.platform == 'all' || inputs.platform == 'windows' || inputs.platform == 'macos')) }}
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'android_ocr_draft' || inputs.platform == 'ios_ocr_draft' || (!inputs.mac_appstore && (inputs.platform == 'all' || inputs.platform == 'windows' || inputs.platform == 'macos')) }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - name: Check requested mobile release profile
+        if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'android_ocr_draft' || inputs.platform == 'ios_ocr_draft'
+        run: python3 scripts/check_mobile_release_profile.py
       - name: Require a draft release before uploading artifacts
+        if: env.CRISPSORTER_MOBILE_RELEASE_PROFILE != 'ocr-draft'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          python3 scripts/check_release_versions.py
           VERSION=$(python3 -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')
           TAG="v$VERSION"
           if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF_NAME" != "$TAG" ]; then
@@ -1054,7 +1071,10 @@ jobs:
 
   release-android:
     needs: release-draft-preflight
-    if: ${{ github.event_name != 'workflow_dispatch' || (!inputs.mac_appstore && inputs.platform == 'all') }}
+    if: ${{ github.event_name != 'workflow_dispatch' || (!inputs.mac_appstore && (inputs.platform == 'all' || (inputs.platform == 'android_ocr_draft' && !inputs.publish))) }}
+    defaults:
+      run:
+        working-directory: repos/CrispSorter
     permissions:
       contents: write
     runs-on: ubuntu-24.04
@@ -1062,6 +1082,8 @@ jobs:
       PROTOC: /usr/bin/protoc
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: repos/CrispSorter
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -1070,31 +1092,26 @@ jobs:
         with:
           repository: ${{ env.CRISPEMBED_REPO }}
           ref: ${{ env.CRISPEMBED_COMMIT }}
-          path: _sibling/CrispEmbed
+          path: repos/CrispEmbed
+          submodules: recursive
       - name: Check out sibling CrispASR
         uses: actions/checkout@v4
         with:
           repository: ${{ env.CRISPASR_REPO }}
           ref: ${{ env.CRISPASR_REF }}
-          path: _sibling/CrispASR
+          path: repos/CrispASR
       - name: Check out sibling crisp-docx
         uses: actions/checkout@v4
         with:
           repository: ${{ env.CRISPDOCX_REPO }}
           ref: ${{ env.CRISPDOCX_REF }}
-          path: _sibling/crisp-docx
+          path: repos/crisp-docx
 
-      - name: Rewrite sibling path deps for CI layout
+      - name: Validate clean committed sibling layout
         run: |
-          python3 -c "
-          import re, pathlib
-          p = pathlib.Path('src-tauri/Cargo.toml')
-          s = p.read_text(encoding='utf-8')
-          s = re.sub(r'path\s*=\s*\"\\.\\./\\.\\./CrispEmbed/([\\w-]+)\"', r'path = \"../_sibling/CrispEmbed/\1\"', s)
-          s = re.sub(r'path\s*=\s*\"\\.\\./\\.\\./CrispASR/([\\w-]+)\"', r'path = \"../_sibling/CrispASR/\1\"', s)
-          s = re.sub(r'path\s*=\s*\"\\.\\./\\.\\./crisp-docx/crates/([\\w-]+)\"', r'path = \"../_sibling/crisp-docx/crates/\1\"', s)
-          p.write_text(s, encoding='utf-8')
-          "
+          python3 scripts/check_mobile_release_layout.py \
+            --embed-commit "${{ env.CRISPEMBED_COMMIT }}" \
+            --asr-ref "${{ env.CRISPASR_REF }}" --docx-ref "${{ env.CRISPDOCX_REF }}"
 
       - name: Install system deps
         run: |
@@ -1124,7 +1141,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: '. -> target'
+          workspaces: 'repos/CrispSorter -> target'
           key: android-arm64
           cache-on-failure: 'true'
 
@@ -1135,8 +1152,44 @@ jobs:
       - name: Install npm deps
         run: npm ci
 
+      - name: Require retained Android identity for the signed OCR draft
+        if: env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
+        env:
+          RETAINED_ANDROID_KEY: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          RETAINED_ANDROID_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          RETAINED_ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          RETAINED_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in RETAINED_ANDROID_KEY RETAINED_ANDROID_ALIAS RETAINED_ANDROID_STORE_PASSWORD RETAINED_ANDROID_KEY_PASSWORD; do
+            [[ -n "${!name}" ]] || { echo "::error::Missing retained Android signing configuration"; exit 1; }
+          done
+      - name: Configure bounded OCR draft native tools
+        if: env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y -qq cmake ninja-build pkg-config binutils
+          sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.2.12479018'
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+      - name: Prepare production-pinned signed OCR draft
+        if: env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
+        run: |
+          python3 scripts/prepare_signed_mobile_ocr_draft.py --target android-arm64 \
+            --output "$RUNNER_TEMP/signed-mobile-ocr-draft" --embed-commit "${{ env.CRISPEMBED_COMMIT }}" \
+            --asr-ref "${{ env.CRISPASR_REF }}" --docx-ref "${{ env.CRISPDOCX_REF }}" \
+            --protoc "$(command -v protoc)" --ndk "$ANDROID_NDK_HOME"
+      - name: Record locked native OCR draft licenses
+        if: env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
+        run: node scripts/native_license_inventory.mjs prepare --output "$LICENSES_CARGO_METADATA"
       - name: Init Android project
-        run: npx tauri android init
+        run: |
+          if [[ "$CRISPSORTER_MOBILE_RELEASE_PROFILE" == ocr-draft ]]; then
+            npx tauri android init --ci --config src-tauri/tauri.ocr-mobile.conf.json
+            CRISPEMBED_BUILD_DIR="$CRISPEMBED_SYS_LIB_DIR" bash scripts/bundle_android_native_libs.sh --abi arm64-v8a --require-crispembed
+            cp "$OCR_ORT_ROOT/lib/libonnxruntime.so" src-tauri/gen/android/app/src/main/jniLibs/arm64-v8a/libonnxruntime.so
+          else
+            npx tauri android init
+          fi
 
       - name: Create bin placeholder
         run: mkdir -p src-tauri/bin && touch src-tauri/bin/.gitkeep
@@ -1155,7 +1208,12 @@ jobs:
             ln -sf "$NDK_BIN/llvm-$tool" "$NDK_BIN/aarch64-linux-android-$tool"
           done
           export PATH="$NDK_BIN:$PATH"
-          npx tauri android build --target aarch64
+          if [[ "$CRISPSORTER_MOBILE_RELEASE_PROFILE" == ocr-draft ]]; then
+            npx tauri android build --target aarch64 --features ocr-mobile --apk --ci --config src-tauri/tauri.ocr-mobile.conf.json
+            node scripts/native_license_inventory.mjs verify
+          else
+            npx tauri android build --target aarch64
+          fi
 
       - name: Sign and verify Android APK
         env:
@@ -1174,6 +1232,9 @@ jobs:
             export ANDROID_KEYSTORE="$RUNNER_TEMP/android-release.jks"
             printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$ANDROID_KEYSTORE"
             DEST="CrispSorter_${VERSION}_android-aarch64.apk"
+            if [[ "$CRISPSORTER_MOBILE_RELEASE_PROFILE" == ocr-draft ]]; then
+              DEST="$OCR_DRAFT_ROOT/CrispSorter_${VERSION}_android-arm64-ocr-draft.apk"
+            fi
             python scripts/sign_android_apk.py "${APKS[0]}" "$DEST"
           else
             [[ "$RELEASE_PUBLISH" != true ]] || { echo '::error::Production Android signing secrets are required to publish'; exit 1; }
@@ -1184,6 +1245,7 @@ jobs:
           echo "ANDROID_RELEASE_APK=$DEST" >> "$GITHUB_ENV"
 
       - name: Upload APK to release
+        if: env.CRISPSORTER_MOBILE_RELEASE_PROFILE != 'ocr-draft'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -1207,6 +1269,7 @@ jobs:
           echo "✓ Uploaded $ANDROID_RELEASE_APK"
 
       - name: Inspect Android artifact and attach checksum receipt
+        if: env.CRISPSORTER_MOBILE_RELEASE_PROFILE != 'ocr-draft'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -1215,6 +1278,20 @@ jobs:
           VERSION=$(jq -r .version src-tauri/tauri.conf.json)
           gh release upload "v$VERSION" "CrispSorter_${VERSION}_android-arm64.receipt.json" "CrispSorter_${VERSION}_android-arm64.sha256" --clobber
 
+      - name: Verify final signed Android OCR draft provenance
+        if: env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
+        run: |
+          python3 scripts/record_signed_mobile_ocr_draft.py --target android-arm64 \
+            --staging "$OCR_DRAFT_ROOT" --artifact "$ANDROID_RELEASE_APK"
+      - name: Retain signed OCR draft as explicitly unqualified build evidence
+        if: always() && env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-ocr-draft-android-arm64-unqualified
+          path: ${{ runner.temp }}/signed-mobile-ocr-draft/artifact
+          if-no-files-found: warn
+          retention-days: 14
+
   # ── iOS aarch64 IPA ──────────────────────────────────────────────────────
   # Builds the Tauri iOS app on a macOS runner with Xcode.
   # When the APPSTORE_API_KEY_P8 repo secret is set (base64 of the .p8),
@@ -1222,7 +1299,10 @@ jobs:
   # TestFlight upload. Otherwise falls back to an unsigned .app.
   release-ios:
     needs: release-draft-preflight
-    if: ${{ github.event_name != 'workflow_dispatch' || (!inputs.mac_appstore && inputs.platform == 'all') }}
+    if: ${{ github.event_name != 'workflow_dispatch' || (!inputs.mac_appstore && (inputs.platform == 'all' || (inputs.platform == 'ios_ocr_draft' && !inputs.publish))) }}
+    defaults:
+      run:
+        working-directory: repos/CrispSorter
     permissions:
       contents: write
     # macos-15 ships Xcode 16, needed because Tauri CLI 2.10's `ios init`
@@ -1235,6 +1315,8 @@ jobs:
       HAS_SIGNING_KEY: ${{ secrets.APPSTORE_API_KEY_P8 != '' && 'true' || '' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: repos/CrispSorter
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -1243,19 +1325,20 @@ jobs:
         with:
           repository: ${{ env.CRISPEMBED_REPO }}
           ref: ${{ env.CRISPEMBED_COMMIT }}
-          path: _sibling/CrispEmbed
+          path: repos/CrispEmbed
+          submodules: recursive
       - name: Check out sibling CrispASR
         uses: actions/checkout@v4
         with:
           repository: ${{ env.CRISPASR_REPO }}
           ref: ${{ env.CRISPASR_REF }}
-          path: _sibling/CrispASR
+          path: repos/CrispASR
       - name: Check out sibling crisp-docx
         uses: actions/checkout@v4
         with:
           repository: ${{ env.CRISPDOCX_REPO }}
           ref: ${{ env.CRISPDOCX_REF }}
-          path: _sibling/crisp-docx
+          path: repos/crisp-docx
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -1263,7 +1346,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: '. -> target'
+          workspaces: 'repos/CrispSorter -> target'
           key: ios-arm64
           cache-on-failure: 'true'
 
@@ -1299,21 +1382,36 @@ jobs:
       - name: Install npm deps
         run: npm ci
 
-      - name: Rewrite sibling path deps for CI layout
+      - name: Validate clean committed sibling layout
         run: |
-          python3 -c "
-          import re, pathlib
-          p = pathlib.Path('src-tauri/Cargo.toml')
-          s = p.read_text(encoding='utf-8')
-          s = re.sub(r'path\s*=\s*\"\\.\\./\\.\\./CrispEmbed/([\\w-]+)\"', r'path = \"../_sibling/CrispEmbed/\1\"', s)
-          s = re.sub(r'path\s*=\s*\"\\.\\./\\.\\./CrispASR/([\\w-]+)\"', r'path = \"../_sibling/CrispASR/\1\"', s)
-          s = re.sub(r'path\s*=\s*\"\\.\\./\\.\\./crisp-docx/crates/([\\w-]+)\"', r'path = \"../_sibling/crisp-docx/crates/\1\"', s)
-          p.write_text(s, encoding='utf-8')
-          "
+          python3 scripts/check_mobile_release_layout.py \
+            --embed-commit "${{ env.CRISPEMBED_COMMIT }}" \
+            --asr-ref "${{ env.CRISPASR_REF }}" --docx-ref "${{ env.CRISPDOCX_REF }}"
 
       - name: Install protoc
         run: brew install protobuf
 
+      - name: Require retained iOS identity for the signed OCR draft
+        if: env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
+        env:
+          RETAINED_IOS_KEY: ${{ secrets.IOS_DIST_P12 }}
+          RETAINED_IOS_PASSWORD: ${{ secrets.IOS_DIST_P12_PASSWORD }}
+          RETAINED_IOS_PROFILE: ${{ secrets.ASC_PROFILE_BASE64 }}
+        run: |
+          set -euo pipefail
+          [[ -n "$HAS_SIGNING_KEY" && -n "$RETAINED_IOS_KEY" && -n "$RETAINED_IOS_PASSWORD" && -n "$RETAINED_IOS_PROFILE" ]] || { echo '::error::Retained iOS signing configuration is required for the OCR draft'; exit 1; }
+          if ! command -v xcodegen >/dev/null; then brew install xcodegen; fi
+          if ! command -v ninja >/dev/null; then brew install ninja; fi
+      - name: Prepare production-pinned signed OCR draft
+        if: env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
+        run: |
+          python3 scripts/prepare_signed_mobile_ocr_draft.py --target ios-arm64 \
+            --output "$RUNNER_TEMP/signed-mobile-ocr-draft" --embed-commit "${{ env.CRISPEMBED_COMMIT }}" \
+            --asr-ref "${{ env.CRISPASR_REF }}" --docx-ref "${{ env.CRISPDOCX_REF }}" \
+            --protoc "$(command -v protoc)"
+      - name: Record locked native OCR draft licenses
+        if: env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
+        run: node scripts/native_license_inventory.mjs prepare --output "$LICENSES_CARGO_METADATA"
       - name: Decode App Store Connect API key
         if: ${{ env.HAS_SIGNING_KEY }}
         run: |
@@ -1360,7 +1458,14 @@ jobs:
           echo "installed profile UUID $UUID"
 
       - name: Init iOS project
-        run: npx tauri ios init
+        run: |
+          if [[ "$CRISPSORTER_MOBILE_RELEASE_PROFILE" == ocr-draft ]]; then
+            npx tauri ios init --ci --config src-tauri/tauri.ocr-mobile.conf.json
+            python3 scripts/prepare_ocr_ios_project.py src-tauri/gen/apple/project.yml \
+              --ort-framework "$OCR_ORT_ROOT/onnxruntime.xcframework/ios-arm64/onnxruntime.framework/onnxruntime"
+          else
+            npx tauri ios init
+          fi
 
       - name: Inject PrivacyInfo.xcprivacy into iOS project
         run: |
@@ -1494,7 +1599,12 @@ jobs:
           # carries no provisioning profile. We want the .xcarchive only, and
           # sign it ourselves with -exportArchive below.
           echo "=== tauri ios build (unsigned archive) ==="
-          npx tauri ios build --export-method app-store-connect 2>&1 | tail -60 || true
+          if [[ "$CRISPSORTER_MOBILE_RELEASE_PROFILE" == ocr-draft ]]; then
+            npx tauri ios build --target aarch64 --features ocr-mobile --config src-tauri/tauri.ocr-mobile.conf.json --export-method app-store-connect 2>&1 | tail -60 || true
+            node scripts/native_license_inventory.mjs verify
+          else
+            npx tauri ios build --export-method app-store-connect 2>&1 | tail -60 || true
+          fi
 
           # Discard whatever Tauri exported. This used to be `if [ -z "$IPA" ]`
           # — export manually *only* when Tauri produced nothing — on the
@@ -1572,13 +1682,15 @@ jobs:
           fi
 
       - name: Validate + upload IPA to App Store Connect
-        if: ${{ env.HAS_SIGNING_KEY && (github.event_name != 'workflow_dispatch' || inputs.publish) }}
+        if: ${{ env.CRISPSORTER_MOBILE_RELEASE_PROFILE != 'ocr-draft' && env.HAS_SIGNING_KEY && (github.event_name != 'workflow_dispatch' || inputs.publish) }}
         run: |
           set -euo pipefail
           IPA="${IPA:-}"
           # Fail loud — a green run must never mean "uploaded nothing".
           [ -n "$IPA" ] && [ -f "$IPA" ] \
             || { echo "::error::no signed IPA to upload (build step should have failed first)"; exit 1; }
+          VERSION=$(python3 -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')
+          python3 scripts/check_testflight_ipa.py --ipa "$IPA" --version "$VERSION"
           # Read the actual CFBundle* from the IPA so altool's cross-check matches.
           APP=$(unzip -Z1 "$IPA" | grep -oE '^Payload/[^/]+\.app' | head -1)
           unzip -oq "$IPA" "$APP/Info.plist" -d "$RUNNER_TEMP/ipaplist"
@@ -1613,7 +1725,7 @@ jobs:
       # already be App Store Connect team members (`GET /v1/users` lists who
       # is eligible), so no tester emails are passed here.
       - name: Distribute to TestFlight (iOS, internal only)
-        if: env.IPA_UPLOADED == 'true'
+        if: env.CRISPSORTER_MOBILE_RELEASE_PROFILE != 'ocr-draft' && env.IPA_UPLOADED == 'true'
         env:
           ASC_KEY_ID: ${{ env.APPLE_API_KEY_ID }}
           ASC_ISSUER_ID: ${{ env.APPLE_API_ISSUER_ID }}
@@ -1630,6 +1742,7 @@ jobs:
             --notes "iOS build from CI."
 
       - name: Upload IPA to GitHub release
+        if: env.CRISPSORTER_MOBILE_RELEASE_PROFILE != 'ocr-draft'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -1658,6 +1771,7 @@ jobs:
           fi
 
       - name: Inspect iOS artifact and attach checksum receipt
+        if: env.CRISPSORTER_MOBILE_RELEASE_PROFILE != 'ocr-draft'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -1665,6 +1779,20 @@ jobs:
           python3 scripts/verify_release_artifacts.py --platform ios-arm64
           VERSION=$(jq -r .version src-tauri/tauri.conf.json)
           gh release upload "v$VERSION" "CrispSorter_${VERSION}_ios-arm64.receipt.json" "CrispSorter_${VERSION}_ios-arm64.sha256" --clobber
+
+      - name: Verify final signed iOS OCR draft provenance
+        if: env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
+        run: |
+          python3 scripts/record_signed_mobile_ocr_draft.py --target ios-arm64 \
+            --staging "$OCR_DRAFT_ROOT" --artifact "$IPA"
+      - name: Retain signed OCR draft as explicitly unqualified build evidence
+        if: always() && env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-ocr-draft-ios-arm64-unqualified
+          path: ${{ runner.temp }}/signed-mobile-ocr-draft/artifact
+          if-no-files-found: warn
+          retention-days: 14
 
   # ── macOS App Store (.pkg) — cloud-only sandbox variant ─────────────────────
   # Manually dispatched (mac_appstore=true). Builds the no-desktop sandbox build
@@ -1679,7 +1807,7 @@ jobs:
     # skipped it entirely, so a tagged release produced no App Store build
     # and therefore nothing for the macOS TestFlight step to distribute —
     # silently, since a skipped job is not a failed one.
-    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mac_appstore)
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mac_appstore && inputs.platform != 'android_ocr_draft' && inputs.platform != 'ios_ocr_draft')
             || startsWith(github.ref, 'refs/tags/v') }}
     permissions:
       contents: write

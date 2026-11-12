@@ -27,6 +27,10 @@ pub fn app_log(level: &str, message: String) {
 }
 pub mod drives {
     pub use super::{filesystem::*, registry::*};
+    // SMB does not expose durable trash receipts; retain the shared trait boundary.
+    pub mod trash_receipts {
+        pub trait ReceiptTrash {}
+    }
     pub mod secret {
         use anyhow::Result;
         use serde::{Deserialize, Serialize};

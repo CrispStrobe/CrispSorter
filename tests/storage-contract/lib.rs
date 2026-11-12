@@ -9,6 +9,26 @@ pub mod transfer_queue;
 #[path = "../../src-tauri/src/operation_log.rs"]
 pub mod operation_log;
 
+#[path = "../../src-tauri/src/sync/conflict.rs"]
+pub mod sync_conflict_production;
+#[path = "../../src-tauri/src/sync/paths.rs"]
+pub mod sync_paths_production;
+#[path = "../../src-tauri/src/sync/inventory.rs"]
+pub mod sync_inventory_production;
+pub mod sync {
+    pub use crate::sync_paths_production as paths;
+    pub use crate::sync_inventory_production as inventory;
+    pub use crate::sync_conflict_production as conflict;
+    pub mod pairs {
+        include!(concat!(env!("OUT_DIR"), "/pair_conflicts.rs"));
+    }
+}
+mod file_conflicts {
+    include!(concat!(env!("OUT_DIR"), "/mutation_conflicts.rs"));
+}
+#[cfg(test)]
+mod file_conflict_tests;
+
 static EVENTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
 pub fn app_log(_level: &str, message: impl Into<String>) {

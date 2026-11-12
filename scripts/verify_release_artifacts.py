@@ -195,6 +195,19 @@ def inspect_package(platform, artifact, destination):
     return result
 
 
+def dependency_checkouts(root):
+    """Use nested desktop or external mobile siblings without altering sources."""
+    result = {}
+    for name in ['CrispEmbed', 'CrispASR', 'crisp-docx']:
+        nested = root / '_sibling' / name
+        external = root.parent / name
+        if nested.is_dir():
+            result[name] = nested
+        elif external.is_dir():
+            result[name] = external
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--platform', required=True, choices=['linux-x86_64', 'windows-x86_64', 'macos-arm64', 'android-arm64', 'ios-arm64'])
@@ -223,9 +236,12 @@ def main():
                'version': json.loads((root / 'src-tauri/tauri.conf.json').read_text())['version'],
                'runtime_lock': json.loads((root / 'scripts/crispembed-runtime-lock.json').read_text()),
                'native_crispembed_included': args.platform in ['linux-x86_64', 'windows-x86_64', 'macos-arm64'], 'artifacts': []}
+    if args.platform in ['android-arm64', 'ios-arm64']:
+        from check_mobile_release_profile import profile
+        receipt['mobile_release_profile'] = profile()
     receipt['toolchains'] = {tool: subprocess.check_output([tool, '--version'], text=True).strip() for tool in ['rustc', 'cargo', 'node']}
-    receipt['dependency_sources'] = {name: subprocess.check_output(['git', '-C', str(root / '_sibling' / name), 'rev-parse', 'HEAD'], text=True).strip()
-                                     for name in ['CrispEmbed', 'CrispASR', 'crisp-docx'] if (root / '_sibling' / name).is_dir()}
+    receipt['dependency_sources'] = {name: subprocess.check_output(['git', '-C', str(path), 'rev-parse', 'HEAD'], text=True).strip()
+                                     for name, path in dependency_checkouts(root).items()}
     with hide_build_libraries(root):
         for artifact in artifacts:
             entry = {'filename': artifact.name, 'bytes': artifact.stat().st_size, 'sha256': sha(artifact)}

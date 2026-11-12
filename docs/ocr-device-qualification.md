@@ -241,3 +241,176 @@ changes. It is evidence for the tested candidate and those identical OCR blobs,
 not a device qualification of a full main APK. Keep the app crop gate off by
 default, retain the immutable runtime pin and unchanged quality thresholds, and
 keep native gutter qualification separate.
+
+## Signed mobile release profile and integration handoff
+
+The current `release.yml` Android and iOS Tauri commands omit
+`--features ocr-mobile`; Cargo defaults are empty. They do not run the paired
+native/ORT preparation used by the qualification lane. These are ordinary
+**standard** mobile builds. Source-bound receipts now explicitly record
+`mobile_release_profile`, including that this recipe does not include native
+OCR and that OCR qualification is not established. This statement describes the
+release recipe; package identity/signature inspection does not establish device
+behavior or recognition quality.
+
+A manual release may explicitly request `mobile_profile: ocr`. That request
+currently fails closed before the all-platform build or retained-IPA download.
+No input silently enables an unintegrated feature. Standard releases, desktop
+retries and standard TestFlight remain available, including the existing exact
+IPA/build/cutoff verification and intentional resume refusal. No new human
+approval or admission file is required. This guard does not promote the
+experimental crop option or an experimental native runtime.
+
+The remaining integration is concrete:
+
+1. Preserve the immutable production runtime lock. The current release pin is
+   CrispEmbed v0.17.19 at the matching locked source/ggml commits, and published
+   archives already exist; an unchanged baseline does not require releasing
+   CrispEmbed main. A new candidate requires its own qualification and immutable
+   archives before moving release/CI pins and hash locks together. Keep source
+   overrides for unpublished experiments separate.
+2. Reuse `build_mobile_crispembed.py`, `prepare_mobile_ort.py` and
+   `prepare_ocr_cargo_env.py` with the exact intended lock; initialize native
+   submodules recursively. Stage native receipt and license notices. Android
+   needs `bundle_android_native_libs.sh --require-crispembed`, the exact ORT
+   library, and `ocr-mobile` in the Tauri build. iOS needs the mobile config,
+   `prepare_ocr_ios_project.py` with the device ORT framework and `ocr-mobile`
+   before the existing manual signing/export route. Simulator linkage is a
+   reference recipe, not a passed signed device build.
+3. Use the clean sibling checkout layout described below and require lock
+   agreement before copying qualification steps. Keep the existing source
+   identity guard; do not reset files to conceal build inputs.
+4. Bind the final signed APK and exported iOS app to the native and ORT code/data
+   with the existing build/provenance validators. Record the signed IPA archive
+   hash separately from its app manifest. Then replace the unsupported-profile
+   refusal with objective final-artifact provenance checks; a requested OCR
+   profile must still fail if native code, receipt, target, source or ORT does
+   not match. A filename, feature flag or successful build alone is insufficient.
+5. Execute the named application cases on the exact artifacts before claiming
+   their behavior or quality. Current default-off Android behavior, the failing
+   two-column case, signed iOS OCR-device integration and broader device/camera
+   limits retain their existing evidence gates. Prior experimental-crop and
+   simulator results cannot qualify another artifact/profile.
+
+For bounded unpublished preparation use the existing target-selectable
+`ocr-mobile-native.yml` lane, one target at a time. It already prepares runtime,
+ORT, forced Cargo paths, notices and build identity. A separate signed OCR draft
+recipe is intentionally not enabled until the native staging and device
+provenance issues above are resolved. Local changes to the guard and receipts
+are preparation only; no new platform build or execution result is implied.
+
+For ordinary current-source artifacts, select a version/draft target bound to
+that source before building: the retained v0.15.0 packages and receipts bind an
+older commit and cannot be reused as current-source proof. Existing Android and
+App Store signing secrets are available by name; their presence is not a fresh
+signing test. Direct-download Windows production signing and macOS Developer ID
+secrets remain absent, so those platforms can produce explicitly unsigned drafts
+but public desktop publication remains blocked by its existing signing gate.
+
+## Clean-source preparation for signed mobile builds
+
+Android and iOS release jobs now check out the application and its dependencies
+as sibling repositories below `repos/`: `CrispSorter`, `CrispEmbed`, `CrispASR`
+and `crisp-docx`. This matches the committed Cargo path dependencies. Their
+shell working directory is the application checkout; Rust cache workspace paths
+are updated to match. Build, signing and upload commands retain their existing
+relative paths. No tracked Cargo manifest rewrite is needed. Other release jobs
+retain their existing checkout layout and recipe.
+
+`check_mobile_release_layout.py` validates the clean application source with the
+existing source-identity guard, exact release runtime/ggml checkout, clean pinned
+ASR/docx checkouts and all seven committed sibling Cargo paths. It prints the
+source/tree/manifest/dependency identity without changing them. The native
+checkout initializes submodules recursively. Standard builds do not require an
+independent experimental mobile lock to match the production lock. Future OCR
+preparation must additionally pass `--require-ocr-lock` before using the existing
+OCR build/provenance recipe. Final release receipts discover these external
+sibling commits, while preserving nested sibling discovery for desktop jobs.
+
+This resolves the tracked Cargo-path rewrite conflict. It does not enable OCR,
+change native/runtime pins, execute a platform build or weaken the source receipt
+guard. The fixture test creates real Git sibling repositories and uses offline,
+locked Cargo metadata to check all seven dependencies resolve while the
+application manifest/lock/source remain clean; this does not compile code.
+
+To complete a signed OCR-capable **draft** recipe next:
+
+1. Reuse this clean checkout layout and require production/mobile lock agreement.
+   Stage native build, pinned ORT, forced Cargo environment, notices and the
+   `ocr-mobile` profile using the existing preparation helpers. Keep experimental
+   source overrides out of this production-pin recipe.
+2. Apply Android native bundling and device iOS framework/project preparation
+   before the existing signing/archive/export steps. Keep the first OCR-capable
+   draft path unpublished and separate from automatic TestFlight upload; retain
+   exact failures and generated build records.
+3. Run the existing final-artifact native/ORT provenance validator before placing
+   additional untracked files in the application root. Android signed output can
+   stay in `RUNNER_TEMP`; iOS export already lives below ignored `build/`.
+   Keep receipts outside the source tree until the clean-source check completes.
+   Do not broaden Git ignores or reset manifests/lockfiles to conceal changes.
+4. Preserve the original committed Cargo.lock. If dependency resolution changes
+   it, stop and reconcile/commit that change before rebuilding; the source guard
+   must continue rejecting a changed dependency lock. The generated license
+   inventory remains the existing explicitly recorded exception.
+5. Bind the signed APK/exported app and signed IPA hash to the build records, then
+   execute the applicable application/quality cases on those exact artifacts.
+   Only replace an unsupported OCR-profile refusal with objective checks after
+   those build/provenance paths exist. A passed preparation test is neither a
+   signed platform build nor an application/quality qualification result.
+
+## Production-pinned signed OCR drafts (prepared, not executed)
+
+The Release workflow now has two explicit manual selectors:
+`android_ocr_draft` and `ios_ocr_draft`. Each runs only its named mobile job,
+requires `publish=false` and `mac_appstore=false`, and retains a workflow artifact
+named `signed-ocr-draft-TARGET-unqualified`. Public `mobile_profile: ocr` remains
+unsupported. The selectors do not create/alter a GitHub release, upload to App
+Store Connect, assign TestFlight groups or invoke the desktop matrix. Invalid
+publish/App Store combinations fail the draft preflight; they cannot divert the
+request into a separate Mac App Store build. Existing standard builds and
+TestFlight retain their own behavior.
+
+`prepare_signed_mobile_ocr_draft.py` requires the committed production and
+mobile runtime locks to select the same source/ggml identity and validates the
+clean sibling layout with `--require-ocr-lock`. There is no candidate source,
+lock or artifact override. It builds the existing production-source native
+runtime with two jobs, stages the pinned official ORT through the existing
+archive/header/library/notice checks, forces runtime/protoc/ORT Cargo paths,
+stages native/ORT notices and records preparation identity outside application
+source. Native license metadata is collected from the locked exact target/feature
+graph. Android adds the qualification recipe's 16 KiB native linker settings and
+native/ORT libraries; iOS adds the mobile configuration and exact device ORT
+framework before the existing archive-unsigned/manual-sign-at-export procedure.
+The new route requires the retained signing configuration; it cannot silently
+fall back to a development Android key or unsigned iOS app.
+
+`record_signed_mobile_ocr_draft.py` independently rechecks the Android APK
+signature/production signing record or the provisioned iOS app signature, then
+runs the existing final-app native/ORT code/data and notice provenance recorder.
+It requires the same prepared application/runtime identity and binds the final
+signed APK/IPA bytes to the app-build receipt. Only after every validation and
+metadata copy succeeds does it write `signed-draft.json` with
+`validation_status: passed`. This is a **provenance** result, never device or OCR
+quality qualification. Binary names and artifact names remain explicitly
+unqualified even on success. A failure retains the binary with that label and
+`failure.json`, raises the error, and omits the success marker; partial output
+must not be interpreted as verified. The artifact retention path is an explicit
+allowlist of signed package and build records, never keychains, P12/P8 material
+or provisioning secret directories.
+
+This implementation has only focused mocked preparation/provenance and selector
+safety tests. No new native build, platform signing, upload or device execution
+was performed to prepare it. In particular, linking/stripping behavior of the
+signed iOS OCR-device app is not yet verified; required native symbol/provenance
+checks fail rather than being bypassed if export strips needed evidence.
+
+Next, run one selector at a time on the exact committed source when platform
+work is authorized. Inspect the retained build/provenance result and original
+failure logs before running application cases. The iOS artifact is not in
+TestFlight; uploading an OCR-capable IPA requires a later explicitly scoped
+source/hash-bound route after its actual build and application evidence exist.
+Current-default Android recognition, the two-column case, representative corpus,
+physical camera/provider behavior and signed iOS application execution retain
+the separate qualification requirements above. This draft implementation does
+not move runtime pins, turn on experimental crop behavior or remove the public
+OCR profile refusal.

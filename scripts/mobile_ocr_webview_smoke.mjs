@@ -38,6 +38,7 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { verifyAndroidSandbox, canonicalAppPath, isWithinAppRoot, probeOptions, processMemory, summarizeMemory, textErrorRate, validateBuildSource, validatePackagedAndroidLibraries } from './mobile_ocr_probe_utils.mjs';
 import { assessQualityFixture } from './mobile_ocr_quality.mjs';
+import { checkCandidateOcrBoundary } from './mobile_ocr_candidate_boundary.mjs';
 
 const PACKAGE = 'com.crispstrobe.crispsorter';
 const PLAYWRIGHT_VERSION = '1.62.1';
@@ -424,7 +425,7 @@ async function main() {
         await fs.writeFile(path.join(output, 'native-build-receipt.json'), runtime);
         receipt.source.native_build_receipt_sha256 = digest(runtime);
       }
-      return { bytes, inputs, quality };
+      return { bytes, inputs, quality, candidateRuntime: build.candidate_reuse != null };
     }, 120_000);
 
     await step('attach to the running application WebView through its own debug socket', async () => {
@@ -601,6 +602,37 @@ async function main() {
       receipt.saved_settings = loaded.project.recognitionSettings;
       return loaded;
     });
+
+    if (prepared.candidateRuntime) {
+      await step('reject native candidate recognition failure and preserve a valid blank through the real app wrapper', async () => {
+        receipt.candidate_boundary = await checkCandidateOcrBoundary({
+          pagePath: original.image_path, baselineConfig: saved.project.recognitionSettings.config,
+          recognize: args => invoke('ocr_workspace_recognize', args, 90_000),
+          retain: (name, observation) => fs.writeFile(path.join(output, name), JSON.stringify(observation, null, 2) + '\n'),
+          importBlank: async () => {
+            const base64 = await bounded(page.evaluate(() => {
+              const canvas = document.createElement('canvas');
+              canvas.width = 512; canvas.height = 256;
+              const context = canvas.getContext('2d');
+              if (!context) throw new Error('Blank fixture canvas is unavailable.');
+              context.fillStyle = '#ffffff'; context.fillRect(0, 0, canvas.width, canvas.height);
+              return canvas.toDataURL('image/png').split(',')[1];
+            }), budget(10_000, 'create bounded white raster'), 'create bounded white raster');
+            const bytes = Buffer.from(base64, 'base64');
+            assert(bytes.length > 32 && bytes.length <= 64 * 1024, 'White raster exceeds its bounded fixture size.');
+            await fs.writeFile(path.join(output, 'candidate-white-raster.png'), bytes);
+            const imported = await importBytes('ocr_workspace_import_image', bytes,
+              { name: 'Candidate white raster.png', requestId: randomUUID() }, 30_000);
+            assert.equal(imported.pages.length, 1);
+            const asset = validateAsset(imported.pages[0], appData);
+            assert.equal(asset.width, 512); assert.equal(asset.height, 256);
+            assert.equal(await privateDigest(archivedPath(imported)), digest(bytes));
+            return asset;
+          },
+        });
+        receipt.candidate_boundary.verified_baseline_models = receipt.verified_models;
+      }, 220_000);
+    }
 
     const recognized = [];
     for (let index = 0; index < 2; index++) {

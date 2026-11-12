@@ -10,9 +10,9 @@ on:
         type: string
         default: scripts/crispembed-runtime-lock.json
       target:
-        description: 'Original three targets, or only the separate 32-bit Android candidate'
+        description: 'Original three targets, or one separate Android candidate'
         type: choice
-        options: [all, android-armv7]
+        options: [all, android-armv7, android-x86_64]
         default: all
 
 permissions:
@@ -26,6 +26,8 @@ jobs:
         include: >-
           ${{ fromJSON(inputs.target == 'android-armv7'
             && '[{"runner":"ubuntu-24.04","target":"android-armv7"}]'
+            || inputs.target == 'android-x86_64'
+            && '[{"runner":"ubuntu-24.04","target":"android-x86_64"}]'
             || '[{"runner":"ubuntu-24.04","target":"android-arm64"},{"runner":"macos-15","target":"ios-arm64"},{"runner":"macos-15","target":"ios-sim-arm64"}]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
@@ -72,6 +74,7 @@ jobs:
             case '${{ matrix.target }}' in
               android-arm64) compiler=aarch64-linux-android24-clang ;;
               android-armv7) compiler=armv7a-linux-androideabi24-clang ;;
+              android-x86_64) compiler=x86_64-linux-android24-clang ;;
               *) echo 'Unsupported Android qualification compiler' >&2; exit 1 ;;
             esac
             cc="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/$compiler"

@@ -1,5 +1,19 @@
 # CrispSorter — Development Plan
 
+## Signed OCR draft build route prepared — 12 November 2026
+
+Release now has explicit manual Android/iOS OCR draft selectors, restricted to
+publish=false and mac_appstore=false. They reuse clean committed sibling sources,
+stage the existing production-pin native runtime and pinned ORT, build the
+ocr-mobile feature with exact license metadata, require retained signing, and
+verify final signed artifact/app native/ORT provenance before emitting a success
+record. Only explicitly unqualified workflow artifacts are retained; drafts
+cannot upload to ASC/TestFlight or GitHub releases. Failed provenance remains a
+failed job with unqualified binary/failure evidence and no success marker.
+Public OCR remains refused and no candidate source is promoted. These are
+prepared source changes with mocked checks, not a platform build/signing result.
+See [draft controls and remaining execution gates](docs/ocr-device-qualification.md#production-pinned-signed-ocr-drafts-prepared-not-executed).
+
 ## Source-bound Android crop gate evidence — 12 November 2026
 
 [Manual Android run 43298111978](https://github.com/CrispStrobe/CrispSorter/actions/runs/43298111978)
@@ -24,6 +38,29 @@ drive/Cargo changes differ. It does not qualify the full merged main APK. No
 runtime pin, version, default, workflow or code change accompanies this handoff;
 physical devices, representative corpus quality and complete-page coverage remain
 open. The separate native gutter candidate is not evaluated by this app-crop run.
+
+## Explicit signed mobile release profiles — 12 November 2026
+
+The ordinary Android/iOS release recipe omits `ocr-mobile`, paired native runtime
+and pinned ORT preparation. Its successful build is a standard mobile artifact,
+not evidence that native OCR is included or qualified. Release receipts now say
+so explicitly. The optional `mobile_profile: ocr` request fails before expensive
+builds or retained-IPA upload until that signed recipe and provenance integration
+exists; the default standard build, publication and authorized TestFlight route
+remain available. No new manual approval record or experimental runtime is added.
+See [the concrete integration handoff](docs/ocr-device-qualification.md#signed-mobile-release-profile-and-integration-handoff).
+
+## Clean-source signed mobile preparation — 12 November 2026
+
+Mobile release checkouts now use committed sibling Cargo paths without editing
+tracked manifests. A fail-closed layout/source/pin validator and external-sibling
+receipt discovery prepare the signed recipe for existing native OCR provenance
+checks. Real Git fixtures and offline locked Cargo metadata verify dependency
+resolution and unchanged application source; no native/platform build was run.
+Standard recipe/features, signing/upload behavior and concurrency are unchanged.
+The [draft OCR integration handoff](docs/ocr-device-qualification.md#clean-source-preparation-for-signed-mobile-builds)
+records native/ORT staging, device framework setup, artifact placement and
+lockfile checks still needed before any signed OCR draft or qualification claim.
 
 ## Non-Unix receipt durability admission — 12 November 2026
 
@@ -1883,6 +1920,18 @@ no pinning.  Low effort, meaningful security improvement.
   - [x] Every shared proxy/client construction validates the shipped
     two-pin rotation policy before creating a cloud HTTP client; malformed
     built-in pin data therefore fails closed. ✅ 2026-08-01
+  - [ ] Install and qualify a pre-request handshake verifier of the authenticated
+    root SPKI. Response leaf-certificate inspection is insufficient. Backend,
+    trust-anchor, proxy/redirect and negative-TLS gates are scoped in
+    `docs/cloud-provider-parity.md`; enforcement remains unimplemented.
+  - [x] Add an isolated rustls foundation that restricts ordinary WebPKI to
+    caller-trusted primary/backup SPKI anchors and preserves root constraints
+    and TLS signature checks. Complete-SPKI reconstruction is checked against
+    independent fixed OpenSSL exports and root name-constraint fixtures. The
+    source remains outside the app module/client tree; no production request
+    is pinned by this work. All 21 source-bound and in-memory TLS controls pass
+    against the app-locked TLS versions. Platform roots/pins, revocation, cross-signing,
+    proxy/redirect and actual constructor integration remain open gates.
 - [ ] **Pin rotation strategy.**  Pin the *root* CA, not the leaf
   cert (roots rotate on a multi-year cadence).  Include 2 pins per
   provider (current + backup) to survive a CA migration.  Log a
@@ -1894,6 +1943,13 @@ no pinning.  Low effort, meaningful security improvement.
   - [x] Pin-set validation now rejects malformed base64 digests, duplicate
     primary/backup pins, missing domains, and incomplete rotations; hostname
     selection normalizes case and trailing dots.
+  - [x] DNS-label policy selection now supports the shipped regional S3
+    wildcard pattern and regional service endpoints. Each wildcard consumes
+    exactly one nonempty label; malformed authorities, domains and patterns
+    fail closed. A lightweight source-bound contract covers the production
+    policy module. This does not enable TLS handshake pin enforcement: root
+    SPKI/validated-chain verification, current pin qualification, backup-pin
+    warnings and constructor integration remain unchecked above.
 
 #### Priority 8 — HTTP/SOCKS5 proxy support
 
@@ -3457,6 +3513,11 @@ a transfer without leaving the search/catalog workflow.
     advertise listing/stat, collecting filtered remote paths, sizes, and
     modification times without download or mutation. This is the metadata
     input for the remaining conflict-policy resolver. ✅ 2026-08-01
+    - [x] Inventory is now iterative with explicit depth/directory/entry budgets,
+      preserving depth-first order and filters. Cycles and provider failures
+      cannot publish partial rows; source-bound cycle/budget/error fixtures and
+      a real Unix symlink-cycle test cover this boundary. Provider per-listing
+      allocation, consistent snapshots and destination TOCTOU remain separate.
   - [x] Added pure metadata comparison and `sync_pair_compare`, classifying
     local-only, remote-only, unchanged, and divergent paths under explicit
     newest/local/remote/keep-both/manual policies without mutating either side.
@@ -3471,6 +3532,12 @@ a transfer without leaving the search/catalog workflow.
   - [x] CLI parity now exposes `sync pair pull <id> [--dry-run]` with the
     same remote-wins guard, inventory cutoff, shared queue, and local-write
     behavior. ✅ 2026-08-01
+  - [x] Shared GUI/CLI pull path preflight rejects provider traversal/separator
+    names, ambiguous exact duplicates and existing local symlink escapes before
+    transfer submission. Unicode names remain exact; Windows-unsafe names fail
+    explicitly. Focused source-bound inventory/filesystem tests cover those
+    boundaries. Descriptor-based TOCTOU protection, filesystem-specific case
+    collisions and multi-file transaction safety remain open.
   - [x] File-manager move/copy commands now consume the persisted policy (or
     an explicit override): newest-wins compares provider timestamps,
     local-wins skips, remote-wins proceeds, keep-both chooses a collision-safe
@@ -3484,6 +3551,14 @@ a transfer without leaving the search/catalog workflow.
   - [ ] Add per-file newest-wins, keep-both, and manual resolution for sync
     pairs; newest-wins local push now skips remote-newer files using remote
     metadata, while keep-both/manual remain explicitly guarded.
+    - [x] Fail closed on ambiguous newest-wins metadata: unknown remote times
+      (including the local zero sentinel) and equal-time/different-size pairs
+      require review, and reject the whole
+      push plan before any transfer can advance its watermark. Existing-file
+      move/copy replacement now requires two known, strictly ordered times.
+      Source-bound decision tests cover missing/equal timestamps and explicit
+      overrides. Provider CAS, lookup-error/absence handling, retry/replay
+      preconditions and content-hash verification remain separate work.
   - [x] Manual cloud-backup conflicts now expose an explicit local preview
     action when the queued path is an absolute filesystem path; provider and
     relative remote paths remain guarded. ✅ 2026-08-01
@@ -3701,6 +3776,15 @@ a transfer without leaving the search/catalog workflow.
   - [x] Native Filen and Internxt clients now accept explicit proxy policy at
     session construction, reject malformed proxy credentials before requests,
     and keep proxy secrets in memory only.
+  - [x] Google/Microsoft OAuth exchange, refresh and Google revoke now receive
+    the shared persisted proxy policy. Invalid configuration rejects login
+    before its callback listener starts; failed network operations retain
+    credentials, and Microsoft local revocation remains independent of proxy
+    availability. OAuth operations use blocking workers and a bounded request
+    timeout. This shares policy construction, not TLS pin enforcement.
+    `tests/oauth-proxy-contract` passed 41 source-bound, loopback HTTP and
+    command-wiring controls; full Tauri, native keychain and live proxy/provider
+    integration remain unqualified.
   - [x] Persisted proxy settings and the keychain-backed password now flow
     through Tauri cloud-backup construction and health probes.
   - [x] Native Filen/Internxt Tauri adapters now retain that policy and pass

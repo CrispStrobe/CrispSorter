@@ -304,6 +304,72 @@ provider-backed move tests on actual devices.
 The locked iOS `libcrispembed-static.a` also lacks the separately linked core
 and ggml closure. `scripts/build_mobile_crispembed.py` prepares source-pinned
 Android, iOS device, and iOS simulator builds without unpinned sibling sources.
+The manual `mobile-crispembed-qualification.yml` workflow accepts
+`target: android-x86_64` to build only an Android emulator candidate and link its
+OCR C API probe with the NDK's `x86_64-linux-android24-clang`. The default `all`
+still selects only Android ARM64 and the two iOS ARM64 targets; `android-armv7`
+remains a separate candidate. Choose a repository-committed `runtime_lock`
+(default `scripts/crispembed-runtime-lock.json`, or
+`scripts/ocr-mobile-runtime-lock.json` for paired OCR bindings). The workflow
+validates the committed lock before checkout and retains the library, notices,
+source/build receipts, ELF inspection, and linked probe for 14 days under
+`crispembed-mobile-candidate-android-x86_64`. It builds and links only; emulator
+execution and complete-app qualification require the separate paired OCR lane.
+
+For the error-propagation candidate, manually dispatch
+`ocr-mobile-native.yml` with `target: android-x86_64` and
+`candidate_runtime: true`. This checks out the exact source in the committed
+`scripts/ocr-mobile-error-propagation-candidate-lock.json` and reuses artifact
+`13985650215` from successful build/link run `43307953414`. The committed
+`scripts/ocr-mobile-candidate-artifact-lock.json` binds the producing workflow
+commit, archive SHA-256, and every library, notice, lock, receipt, and probe file.
+The staging helper verifies safe extraction, the clean source/submodule pins,
+notice bytes against source, and the Android dependency closure. A missing,
+expired, or mismatched artifact fails the candidate lane without rebuilding.
+The archive expires on 2026-11-26; a later replacement requires a newly reviewed
+artifact pin. Default dispatches and pushes continue building the original OCR
+runtime. Existing workflow concurrency remains in force.
+
+The candidate lane runs the existing Android app build and emulator gates. Its
+application build receipt records the explicit committed runtime lock and
+`candidate-reuse.json`, rechecks the pinned staged files, and retains existing
+packaged ELF, ONNX Runtime, notice, and source validation. The receipt tool's
+optional `--runtime-lock` accepts only a repository-contained lock with exact
+committed bytes; omitting it retains the production OCR lock. Preparing this
+route does not establish a successful app build or executed emulator result.
+The emulator runner forwards the selected lock and source through
+`OCR_MOBILE_RUNTIME_LOCK` and `OCR_MOBILE_RUNTIME_SOURCE`. Before the app-command
+consumer starts, its launcher validates that lock against the application and
+runtime receipts, including the lock hash, source/submodule identities and
+runtime receipt hash. Local invocations without these variables use the
+production OCR lock and reject candidate receipts.
+
+The candidate app-command lane additionally defines a bounded error/empty check
+through the real WebView IPC, rebuilt Rust wrapper, and native pipeline. After
+the normal baseline installation, it deliberately configures the installed,
+hash-verified `dbnet-det` detector as an incompatible `unified` recognizer with
+permissive numeric acceptance gates. Passing requires the exact Rust
+pipeline-run failure message produced by the native NULL-full-text sentinel;
+an earlier model/configuration rejection, timeout, or successful empty response
+fails the gate. It retains the raw response/rejection before asserting.
+It then imports a generated white 512×256 PNG through the app and recognizes it
+using the existing DBNet/Tesseract English baseline, requiring zero regions,
+the native empty text string, and a native review snapshot. The PNG and complete
+returned diagnostics are retained. This adds no model download and only runs
+when the validated app receipt contains candidate reuse provenance.
+
+A passed candidate run would establish that this native initialization failure
+reaches the rebuilt application's error boundary and that this Tesseract blank
+remains a valid empty response. The white raster is not positive decoded OCR;
+the existing text fixtures establish their own Tesseract recognition behavior.
+These controls do not exercise Ovis/Qwen3.5 decoded output or its image patch
+bound, failure after successful VLM initialization, EOS-only VLM text, recovery
+in the same native context, prior-result clearing, or multi-stage success/blank fallback.
+Those cases need separate native/model-specific and rebuilt-consumer execution.
+Malformed PDF, missing-file/model, and policy errors elsewhere in the lane do
+not establish that they crossed the native recognition boundary. This route is
+prepared; no candidate app or boundary execution result is claimed here.
+
 The [build/link qualification](https://github.com/CrispStrobe/CrispSorter/actions/runs/40875226935)
 completed successfully for Android ARM64, iOS ARM64, and iOS ARM64 simulator.
 That older run built native libraries and linked probes; it did not execute
@@ -323,9 +389,27 @@ path requires the original cutoff explicitly. These checks validate artifact
 identity and signing evidence, not physical-device behavior.
 
 The existing v0.15.0 draft and internal TestFlight build were produced from an
-earlier source revision. After the current source is qualified, prepare a new
-version and source-bound draft, build each supported platform, verify its
-receipts, and upload the new iOS build before reporting current-source
-TestFlight coverage. Windows Authenticode and macOS Developer ID credentials
+earlier source revision. The next source preparation uses 0.15.1 consistently in
+the frontend, Tauri config, app Cargo manifest and both lockfiles. The release
+preflight now checks those declarations before creating or changing a draft.
+The independent workspace default and registry dependencies retain their own
+versions. This preparation creates no tag, draft, binary or App Store upload;
+the final integrated commit must be the new draft's exact source target.
+
+The IPA upload identity check requires one provisioned application, the expected
+bundle ID and version, a nonempty executable, and an exact numeric build number.
+The retained upload route also requires its existing pinned SHA-256; it remains
+available for that 0.15.0 artifact when its checks pass. Normal iOS uploads check
+the archive against the current source version before contacting App Store
+Connect. These archive checks supplement signing and source-bound receipts;
+they do not prove that an artifact was built from a given commit or executed on
+a device, and they introduce no approval requirement.
+
+Current-source completion still requires new binaries for Linux, Windows, macOS,
+Android and iOS, their matching source/version/hash receipts and required signing
+evidence, and a newly uploaded iOS build selected by its exact build number and
+upload cutoff. A retained upload route can use the new IPA only after its exact
+version/hash are available from that source-bound artifact; the existing old
+IPA cannot establish new-source TestFlight coverage. Windows Authenticode and macOS Developer ID credentials
 are still required for signed desktop publication; see
 [desktop signing](desktop-signing.md).

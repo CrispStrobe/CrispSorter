@@ -94,7 +94,8 @@ pub fn compare_plans(
                 (Some(_), None) => SyncComparisonAction::LocalOnly,
                 (Some(local), Some(remote))
                     if local.size == remote.size
-                        && Some(local.mtime_unix) == remote.mtime_unix =>
+                        && Some(local.mtime_unix) == remote.mtime_unix
+                        && (policy != super::conflict::ConflictPolicy::NewestWins || local.mtime_unix != 0) =>
                 {
                     SyncComparisonAction::Unchanged
                 }
@@ -104,10 +105,15 @@ pub fn compare_plans(
                     super::conflict::ConflictPolicy::KeepBoth => SyncComparisonAction::KeepBoth,
                     super::conflict::ConflictPolicy::Manual => SyncComparisonAction::ManualReview,
                     super::conflict::ConflictPolicy::NewestWins => {
-                        if local.mtime_unix >= remote.mtime_unix.unwrap_or(i64::MIN) {
-                            SyncComparisonAction::UseLocal
-                        } else {
-                            SyncComparisonAction::UseRemote
+                        match (local.mtime_unix, remote.mtime_unix) {
+                            // The local scanner uses zero when modification time
+                            // is unavailable or cannot be represented since epoch.
+                            (0, _) | (_, None) | (_, Some(0)) => SyncComparisonAction::ManualReview,
+                            (local_time, Some(remote_time)) if local_time > remote_time => SyncComparisonAction::UseLocal,
+                            (local_time, Some(remote_time)) if local_time < remote_time => SyncComparisonAction::UseRemote,
+                            // Unknown time or divergent sizes in the same timestamp
+                            // bucket cannot establish which file is newer.
+                            _ => SyncComparisonAction::ManualReview,
                         }
                     }
                 },
@@ -121,18 +127,25 @@ pub fn compare_plans(
 /// Select the local entries that are safe to upload under a local-oriented
 /// conflict policy. Remote-only and remote-newer entries are deliberately
 /// excluded; this helper never deletes or overwrites remote data by itself.
+/// Ambiguous newest-wins conflicts reject the batch before transfers, so a later
+/// upload cannot advance the watermark past an unresolved file.
 pub fn local_push_plan(
     local: &[SyncPlanEntry],
     remote: &[SyncRemoteEntry],
     policy: super::conflict::ConflictPolicy,
-) -> Vec<SyncPlanEntry> {
-    compare_plans(local, remote, policy)
-        .into_iter()
+) -> Result<Vec<SyncPlanEntry>> {
+    let comparison = compare_plans(local, remote, policy);
+    if policy == super::conflict::ConflictPolicy::NewestWins {
+        let ambiguous = comparison.iter().filter(|entry| entry.action == SyncComparisonAction::ManualReview).count();
+        anyhow::ensure!(ambiguous == 0,
+            "newest-wins cannot order {ambiguous} file conflict(s) with missing or equal timestamps; compare the pair and choose an explicit resolution");
+    }
+    Ok(comparison.into_iter()
         .filter_map(|entry| match entry.action {
             SyncComparisonAction::LocalOnly | SyncComparisonAction::UseLocal => entry.local,
             _ => None,
         })
-        .collect()
+        .collect())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -167,10 +180,12 @@ pub fn plan_local(pair: &SyncPair) -> Result<Vec<SyncPlanEntry>> {
 /// A watermark of zero intentionally selects every matching file on the
 /// first push. Inclusive comparison avoids missing edits that occur within
 /// the same second; equal-timestamp files may be safely rechecked.
+/// Unknown times (zero) must always be rechecked, rather than stranded behind
+/// a completed watermark before the conflict policy can inspect them.
 pub fn plan_local_since(pair: &SyncPair) -> Result<Vec<SyncPlanEntry>> {
     Ok(plan_local(pair)?
         .into_iter()
-        .filter(|entry| entry.mtime_unix >= pair.watermark)
+        .filter(|entry| entry.mtime_unix == 0 || entry.mtime_unix >= pair.watermark)
         .collect())
 }
 
@@ -620,7 +635,7 @@ mod tests {
             SyncRemoteEntry { relative_path: "local-newer.txt".into(), size: 3, mtime_unix: Some(10) },
             SyncRemoteEntry { relative_path: "remote-newer.txt".into(), size: 3, mtime_unix: Some(20) },
         ];
-        let plan = local_push_plan(&local, &remote, crate::sync::conflict::ConflictPolicy::NewestWins);
+        let plan = local_push_plan(&local, &remote, crate::sync::conflict::ConflictPolicy::NewestWins).unwrap();
         assert_eq!(plan.iter().map(|entry| entry.relative_path.as_str()).collect::<Vec<_>>(), vec!["local-newer.txt", "local-only.txt"]);
     }
 }

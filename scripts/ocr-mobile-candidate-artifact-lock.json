@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "repository": "CrispStrobe/CrispSorter",
+  "run_id": 43307953414,
+  "run_attempt": 1,
+  "workflow_source_commit": "d31f280241109ee691d6dcc19d4d138f17ea6314",
+  "workflow_path": ".github/workflows/mobile-crispembed-qualification.yml",
+  "artifact_id": 13985650215,
+  "artifact_name": "crispembed-mobile-candidate-android-x86_64",
+  "archive_sha256": "247300b4532ff59f9b77169a8f0d557afa9b6f81b3040e0ef5b29e214c872e44",
+  "runtime_lock": "scripts/ocr-mobile-error-propagation-candidate-lock.json",
+  "target": "android-x86_64",
+  "files": {
+    "crispembed-mobile/lib/libcrispembed.so": {
+      "bytes": 123621824,
+      "sha256": "fd09fefd113d26e11915f9d330a5a605294464582947e6aa8a9646d654c7ba1e"
+    },
+    "crispembed-mobile/notices/SheenBidi-LICENSE.txt": {
+      "bytes": 11358,
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    "crispembed-mobile/notices/NOTICE.sheenbidi": {
+      "bytes": 423,
+      "sha256": "66d555f0f993491cbe01bf539e087038d049df70d1ffcb002ec1dd3e56f0033c"
+    },
+    "crispembed-mobile/notices/SheenBidi-UPSTREAM.md": {
+      "bytes": 925,
+      "sha256": "47862cacbad69704313bf4bfe8f71e02e5779c928dd023aa86969c790b43b04b"
+    },
+    "crispembed-mobile/notices/crispembed-Apache-2.0.txt": {
+      "bytes": 11358,
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    "crispembed-mobile/notices/crispembed-NOTICE.marker.txt": {
+      "bytes": 4175,
+      "sha256": "f4bb1277697be95bac2ded2126f1a89e13c9c1b12db71d9549f3f00fe9c05d50"
+    },
+    "crispembed-mobile/notices/crispembed-LICENSE.txt": {
+      "bytes": 4739,
+      "sha256": "a70d0ab5fb2dbab83d1a63071776891e6dfc7ba6e3063b3940c21274c1225a3e"
+    },
+    "crispembed-mobile/notices/crispembed-NOTICE.teleocr.txt": {
+      "bytes": 3213,
+      "sha256": "839a413b743d1aa53e415774982065c1c195db1c96d82265f76dd5395970af1b"
+    },
+    "crispembed-mobile/notices/crispembed-oxr-LICENSE.txt": {
+      "bytes": 6588,
+      "sha256": "4577df88e499926976b390c4ea3992cc91baa9ebac29386f35b557bd3cb4a662"
+    },
+    "crispembed-mobile/notices/crispembed-oxr-NOTICE.txt": {
+      "bytes": 1091,
+      "sha256": "34720c2d4f57ccd47509d22d27b38ba2cff9c04df0e0ab594020b1b73db192ac"
+    },
+    "crispembed-mobile/notices/ggml-LICENSE.txt": {
+      "bytes": 1078,
+      "sha256": "94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d"
+    },
+    "crispembed-mobile/runtime-build.json": {
+      "bytes": 4181,
+      "sha256": "49c034be44f0509da1c2f74f147b71d92907a8a8b8276e2b82f05e4a3323e3b7"
+    },
+    "crispembed-mobile/source-lock.json": {
+      "bytes": 650,
+      "sha256": "52709087f648b6a538b77a5ad6f18bd4e5f32e435fde4d3009f07c324b52ff5f"
+    },
+    "crispembed-mobile/link-probe-elf.txt": {
+      "bytes": 3045,
+      "sha256": "0615c253ceb8ce8732f67c035844e54eef271a52c5a28de4a766bef9cd7afcc9"
+    },
+    "ocr-link-probe": {
+      "bytes": 6544,
+      "sha256": "be431d58984a3994220accd49b2f4473f5d2b297c93b76c0a5651aeb02a96e68"
+    }
+  }
+}

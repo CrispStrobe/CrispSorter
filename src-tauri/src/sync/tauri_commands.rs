@@ -378,34 +378,7 @@ pub async fn sync_pair_compare(
     result
 }
 
-pub(crate) fn inventory_remote(
-    drive: &dyn crate::drives::CloudDrive,
-    directory: &std::path::Path,
-    relative_prefix: &str,
-    includes: &[String],
-    excludes: &[String],
-    out: &mut Vec<super::pairs::SyncRemoteEntry>,
-) -> anyhow::Result<()> {
-    for entry in drive.list_dir(directory)? {
-        let relative = if relative_prefix.is_empty() {
-            entry.name.clone()
-        } else {
-            format!("{relative_prefix}/{}", entry.name)
-        };
-        let child = directory.join(&entry.name);
-        if entry.is_dir {
-            inventory_remote(drive, &child, &relative, includes, excludes, out)?;
-        } else if super::pairs::filter_matches(&relative, includes, excludes) {
-            let mtime_unix = drive.stat(&child)?.mtime_unix;
-            out.push(super::pairs::SyncRemoteEntry {
-                relative_path: relative,
-                size: entry.size.unwrap_or(0),
-                mtime_unix,
-            });
-        }
-    }
-    Ok(())
-}
+pub(crate) use super::inventory::inventory_remote;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SyncPairPushResult {
@@ -481,7 +454,8 @@ pub async fn sync_pair_pull(
     let mut watermark = pair.watermark;
     for entry in &remote {
         let remote_path = std::path::PathBuf::from(format!("{}/{}", pair.remote_root.trim_end_matches('/'), entry.relative_path));
-        let local_path = std::path::Path::new(&pair.local_root).join(&entry.relative_path);
+        let local_path = super::paths::local_pull_destination(std::path::Path::new(&pair.local_root), &entry.relative_path)
+            .map_err(|error| error.to_string())?;
         let transfer = state.transfer_queue.clone().submit_drive_download_to_file(
             pair.drive_id.clone(), drive.clone(), remote_path, local_path, Some(entry.size),
         );
@@ -540,6 +514,7 @@ pub async fn sync_pair_push(
     let plan = if conflict_policy == Some(super::conflict::ConflictPolicy::NewestWins) {
         let remote = sync_pair_remote_plan(state.clone(), id.clone()).await?;
         super::pairs::local_push_plan(&plan, &remote, super::conflict::ConflictPolicy::NewestWins)
+            .map_err(|error| error.to_string())?
     } else {
         plan
     };

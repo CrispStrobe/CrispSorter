@@ -2,9 +2,9 @@
 
 The current immutable runtime remains CrispEmbed **v0.17.19**, source
 `c364feb974b91e14cbf328c6949f3df36e89ce81`. It can turn a native Ovis image
-admission failure into successful empty OCR. This document prepares a consumer
-update; it does not change that runtime, qualify a release, or fix admission of
-large images.
+admission failure into successful empty OCR. This document tracks a candidate
+consumer update; the production runtime remains unchanged and no release or
+real-page OCR quality claim has been qualified.
 
 ## Reuse the merged runtime fix
 
@@ -106,9 +106,10 @@ propagation.
 The original source-pinned panel requested eight pages. One image failed its
 pinned SHA check identically on CPU and GPU and was skipped in every arm. Retain
 that omission and the seven admitted pages; restore the originally pinned bytes
-or review a replacement as a new corpus revision. Do not silently replace the
-expected hash. The download receipts establish a reproducible mismatch, not its
-cause.
+or review a replacement as a new corpus revision. Two later independent read-only
+fetches recovered bytes matching the original pinned hash; stage and verify those
+exact bytes before any corrected run. Do not silently replace the expected hash.
+The earlier download receipts establish a reproducible mismatch, not its cause.
 
 All 21 Ovis records reported empty success despite producing no text. Preserve
 their CER/WER of 1 and word recall of 0, and retain the baseline failure penalties.
@@ -133,8 +134,8 @@ receipts and multiple columns. Tiling needs verified reading order, overlap
 deduplication and coordinates mapped back into the prepared-image space before
 review or searchable export. Retain original images and record the applied
 transform. Measure accuracy and end-to-end latency on admitted images before any
-default change. No resize, tiling, larger patch bound or quality claim is part of
-this update plan.
+default change. The opt-in resize candidate described below remains unqualified;
+no tiling, larger patch bound or quality claim is part of this update.
 
 ## Mobile candidate build evidence
 
@@ -149,7 +150,180 @@ The retained candidate builds for [Android arm64](https://github.com/CrispStrobe
 and [Android armv7](https://github.com/CrispStrobe/CrispSorter/actions/runs/43302786120)
 have passed build/link. Their retained libraries, source receipts and notice
 hashes were independently verified; the armv7 link probe also reports the ARM
-architecture. The iOS jobs and desktop candidate builds remain pending. These
-are candidate libraries, not finished application binaries, runtime error-path
-tests, or physical-device qualification. Artifacts expire after 14 days; keep
-verified copies outside Git until a reviewed release packages them.
+architecture. The iOS arm64 and simulator arm64 candidate build/link jobs also passed; their
+libraries, source receipts and notice hashes were independently verified.
+These are candidate libraries, not finished application binaries, application
+runtime error-path tests, or physical-device qualification. Artifacts expire after
+14 days; keep verified copies outside Git until a reviewed release packages them.
+
+The [unpublished desktop candidate run](https://github.com/CrispStrobe/CrispEmbed/actions/runs/43302121233)
+passed the four CPU archive builds: Linux x86_64 and arm64, Windows x86_64,
+and macOS arm64. Its manifest identifies the same runtime source as the mobile
+candidate and separately identifies the workflow revision. The four retained
+archives were independently checked against the manifest's archive hashes and
+sizes. GPU variants were intentionally skipped; archive builds and hashes do
+not establish app integration, runtime error handling, or OCR quality.
+
+An explicit resize budget of `1024 * 256 = 262144` pixels, using the existing
+square-root budget calculation and floor-to-32 dimensions, proposes **384 by
+640**, or **960 patches**. This retains only **9.24%** of the original pixels;
+admission is not evidence that small text remains readable. The final dimensions
+need rechecking through the native rounding and minimum-pixel rules. Do not
+change the model metadata or globally lower its declared maximum pixels to
+introduce an app preparation option.
+
+The existing default-off 2048-patch native experiment is also insufficient for
+10,400 patches, and is explicitly unqualified: six composed arms in its retained
+boundary audit fail numerical checks. Enabling that gate is not a substitute for
+a checked resize candidate.
+
+### Why a scalar resize insertion is insufficient
+
+The existing app contract is **prepared-image pixels**. `prepare_ocr_page` may
+normalize orientation, dewarp, restore, upscale, crop or deskew before OCR. Its
+`PreparedOcrPage` retains a `cleanup_scale` dimension ratio, not an invertible
+transform history. In particular, that ratio cannot invert translation, rotation
+or nonlinear dewarping into archived original pixels. `ocr_regions_for_review`
+deliberately disables repeated native cleanup and rejects a native snapshot that
+declares invalid input coordinates. Structured export uses the prepared image as
+its searchable image layer. Workspace zone/layout recognition adds separate crop
+translations. Review regions, optional word evidence and raw native snapshots
+also have distinct geometry/provenance fields.
+
+Consequently, putting resize into shared preparation would change the displayed
+and searchable image layer; scaling only the outer region boxes would leave
+other geometry and provenance inconsistent. A review-only implementation would
+leave plain text, detailed regions, worker and layout paths with different input
+policies. No behavior change is made by this inspection.
+
+A safe first implementation needs a shared recognition-input guard below those
+entry points. It must retain the original/prepared image for display and export,
+own a separate temporary recognition raster, and carry named coordinate spaces
+plus exact input/output dimensions and independent x/y scales. If the requirement
+is archived original pixels, first reject every nonidentity existing preparation
+transform until a complete inverse chain is available. Native snapshots should
+remain immutable in a clearly named recognition-input coordinate space, with an
+explicit transform to app geometry; never relabel unmodified snapshots as
+original-image geometry.
+
+Restrict the first candidate to a verified Ovis2 profile with a single stage,
+router/layout/zone/cleanup/repair disabled and explicit opt-in. A path substring
+or the generic `unified` engine name does not prove a model's metadata profile.
+Reject unknown profiles, Ovis3, mixed-stage fallback, unsupported transform
+combinations and unavailable geometry provenance. Refuse invalid/zero dimensions,
+overflow, excessive source dimensions/pixels/aspect ratio, a target outside the
+patch/minimum-pixel bounds, nonfinite or out-of-bounds returned geometry, and any
+unmapped nested word geometry. Report effective dimensions/scales and the
+experimental quality warning in diagnostics. Defaults and original assets remain
+unchanged.
+
+Before wiring that guard, focused model-free tests should cover ties-to-even at
+16/48 modulo 64, 1024-patch equality and one-step-over refusal, minimum-pixel
+upscaling after target calculation, extreme aspect ratios, dimension overflow,
+identity/no-op input, unequal x/y scale factors, full-page and fractional boxes,
+word boxes and invalid native coordinates. Integration controls must additionally
+prove image-layer preservation, native snapshot coordinate provenance, worker
+serialization, crop translations, and refusal of transforms without inverses.
+Those contracts cannot be established by testing a target-size calculator alone.
+
+### Prepared-image candidate handoff
+
+The subsequent candidate preserves the app's established **prepared-image**
+contract, rather than attempting archived-original coordinates. Set
+`CRISPSORTER_OVIS_RESIZE_INPUT=1` explicitly to opt in; unset, empty, `0`, `false`,
+`off` and `no` leave it disabled. This is an experimental execution option, not a
+quality recommendation or a new default. It does not enable the unqualified
+native 2048-patch path.
+
+`run_prepared_pipeline` is the shared execution boundary for document text,
+detailed regions, structured-render regions and review; isolated workers call
+those same entry points. It permits only a single `unified` stage selecting the
+known `ovisocr2-f16` registry alias, without source routing or native cleanup.
+Custom paths, other unified model aliases, multiple-stage fallback and unavailable
+native geometry diagnostics are refused. Other engine families retain their
+existing input behavior. The existing model manager and native profile checks
+remain authoritative; this preparation code does not qualify arbitrary GGUFs.
+
+For oversized admitted source dimensions, the guard owns a separate temporary
+PNG. It verifies both decoded source dimensions and the actual written PNG's
+dimensions against the checked plan. Named temporary files retain private file
+permissions and their guards remove them on success and every returned error.
+The source/prepared path is never written, substituted as the display asset or
+used as the inference copy's storage location.
+
+Native snapshots must explicitly assert valid input coordinates. Every returned
+region box must have finite, nonnegative coordinates and lie within the inference
+image before independent x/y inverse scaling. The app's returned region boxes
+are mapped to the input prepared image; workspace crop/zone callers can then
+apply their existing local-to-page translations. Native snapshots remain raw and
+are explicitly labeled `inference_input_pixels` in the added diagnostics, with
+the transform dimensions and scales. Unknown nested native word evidence is
+refused rather than silently relabeled. No word geometry is synthesized.
+
+Review diagnostics and operation events identify the explicit opt-in, whether a
+resize occurred, effective prepared/inference dimensions, scale factors and the
+returned prepared-image coordinate space. Review adds an unqualified-quality
+warning. No-op opted-in inputs also require valid native diagnostics and geometry;
+absence of resize does not waive those provenance checks.
+
+Four dependency-free arithmetic tests passed locally before the shared-host load
+restriction: pinned rounding/patch edges and native minimum resizing, real-page
+dimension planning and unequal-axis geometry, invalid dimension/coordinate
+refusals, and explicit gate spellings. The subsequent PNG and shared-boundary
+wiring has received source review only. Full app feature compilation,
+native-schema compatibility, temporary-file lifecycle, crop/zone integration and
+packaged consumer execution remain **unverified**; no inference or hosted job was
+launched. Keep this candidate out of release/default claims until those checks
+run against compatible immutable assets. The old locked runtime's native-error
+status loss remains a separate unresolved shipping dependency.
+
+
+### Source-bound execution contract follow-up
+
+[The narrow contract](../tests/ovis-input-contract/README.md) now extracts and
+compiles the actual shared execution helper and all four changed conversion paths
+against production app/config/document/review/word/renderer types and the exact
+locked CrispEmbed wrapper result types and method signatures. Only native
+execution/cache and log sinks are fixtures; no native model is loaded.
+
+Both diagnostics feature states pass **6/6 tests** with one compilation job and
+serial tests. The diagnostics-off run verifies default conversions do not request
+snapshots and opted-in resize refuses before native execution. The diagnostics-on
+run exercises real PNG decoding/resizing/writing, inverse region mapping across
+all four paths, no-op inputs, raw snapshot coordinate retention, explicit opt-in
+metadata, unchanged source bytes, private temporary permissions and cleanup after
+success or each tested refusal/native failure. Unsupported recipes, missing/bad
+snapshots, nested word evidence and invalid boxes are refused. Five included
+arithmetic controls cover rounding/admission, independent-axis mapping, bad
+inputs, explicit gate spellings and tiny positive boxes that collapse in f32.
+
+The follow-up fixes two review findings: non-review callers only capture a native
+snapshot when the resize option is active, preserving the previous disabled
+path's snapshot work, and language is queried only for consumers that use it;
+mapped f32 boxes receive a second finite/positive-area/bounds check after endpoint arithmetic. Full app/package compilation, actual native
+schema/error behavior, worker/crop integration and OCR quality remain unqualified.
+This contract does not satisfy immutable runtime release or consumer gates.
+
+The [packaged desktop consumer run](https://github.com/CrispStrobe/CrispEmbed/actions/runs/43309558037)
+passed the model-free native and Rust failure/legacy-empty controls on Linux
+x86_64, Linux arm64 and macOS arm64 using the verified candidate archives. The
+Windows job failed before loading the archive because its checkout line endings
+did not match the committed controller bytes; it is not a Windows runtime
+result. A follow-up checkout and exact Windows packaged-header line-ending fix
+is under review in [PR 230](https://github.com/CrispStrobe/CrispEmbed/pull/230);
+the [Windows-only rerun](https://github.com/CrispStrobe/CrispEmbed/actions/runs/43313165931)
+passed its native C controls but its Rust control failed before execution because
+Cargo selected a non-MSVC `link.exe`. After the Windows-only linker correction,
+[the targeted rerun](https://github.com/CrispStrobe/CrispEmbed/actions/runs/43316615562)
+passed the packaged native and Rust model-free failure and legacy-empty controls.
+The source/archive/header checks remained in place, and the result receipt was
+retained. [PR 230](https://github.com/CrispStrobe/CrispEmbed/pull/230) is merged. None of these controls
+establishes decoded OCR, a positively recognized blank page, CrispSorter
+application behavior or GPU execution.
+
+The [Android x86_64 candidate app run](https://github.com/CrispStrobe/CrispSorter/actions/runs/43313212722)
+was building the app at this update. It reuses the verified candidate runtime and exercises
+the app IPC native-failure and white-raster blank controls. Until it completes,
+these controls have only source review and response-validator tests; even a pass
+will not establish Ovis inference, same-context recovery or physical-device
+behavior.
