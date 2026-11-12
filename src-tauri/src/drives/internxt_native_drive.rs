@@ -86,10 +86,12 @@ fn resolve_folder(
 ) -> Result<String> {
     let mut folder_uuid = session.root_folder_id.clone();
     for component in path.components() {
-        let component = component.as_os_str().to_string_lossy();
-        if component.is_empty() || component == "." || component == "/" {
+        // Only normal segments name folders: the root is `/` on Unix but
+        // `\` (plus a drive prefix) on Windows.
+        let std::path::Component::Normal(component) = component else {
             continue;
-        }
+        };
+        let component = component.to_string_lossy();
         let find = |items: Vec<NativeItem>| {
             items
                 .into_iter()

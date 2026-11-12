@@ -104,10 +104,12 @@ fn ensure_folder(
 ) -> Result<String> {
     let mut uuid = session.root_folder_uuid.clone();
     for part in path.components() {
-        let part = part.as_os_str().to_string_lossy();
-        if part.is_empty() || part == "." || part == "/" {
+        // Only normal segments name folders: the root is `/` on Unix but
+        // `\` (plus a drive prefix) on Windows.
+        let std::path::Component::Normal(part) = part else {
             continue;
-        }
+        };
+        let part = part.to_string_lossy();
         let find = |items: Vec<NativeItem>| {
             items
                 .into_iter()

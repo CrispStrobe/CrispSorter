@@ -1303,10 +1303,12 @@ impl FilenNativeClient {
         };
         let mut current = root;
         for component in path.components() {
-            let part = component.as_os_str().to_string_lossy();
-            if part.is_empty() || part == "." || part == "/" {
+            // Only normal segments name folders: the root is `/` on Unix but
+            // `\` (plus a drive prefix) on Windows.
+            let std::path::Component::Normal(part) = component else {
                 continue;
-            }
+            };
+            let part = part.to_string_lossy();
             current = self
                 .list_folder(&current.uuid)?
                 .into_iter()

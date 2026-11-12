@@ -65,3 +65,5 @@ re-syncing; do not drop them silently.
 2. Update the revision in this file, `provider-conformance.yml`, `ci.yml` and
    `docs/STORAGE_ENGINE_ARCHITECTURE.md`.
 3. Run `cargo test -p crisp-internxt --lib` and the provider-conformance workflow.
+
+- **Windows root paths** (2026-11-12): `resolve_path` walks only `Component::Normal` segments. Upstream skips only `/`, so on Windows the root component `\` was looked up as a folder name and every absolute path failed. Send this upstream.
