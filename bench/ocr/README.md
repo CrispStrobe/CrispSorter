@@ -206,7 +206,9 @@ wrapper): `runner.py run --store dir:/tmp/bench-store ...` then
 
 A source-pinned eight-page comparison at application revision `82c5da324043`
 processed seven pages per arm; the remaining page failed its pinned input hash
-on every attempt and must be restored or explicitly re-reviewed before repinning.
+on every attempt. Later independent read-only fetches recovered the exact
+original pinned bytes; stage those bytes and verify the pin before rerunning.
+No replacement or repin is needed.
 The Ovis CPU/current, CPU/legacy and strict-GPU arms returned empty text for
 all seven processed pages. Direct native diagnostics identify rejection before
 inference because those images exceeded the native patch bound; the app
