@@ -144,3 +144,12 @@ retain the built libraries, so those results establish build/link compatibility
 only and cannot supply runtime assets. Subsequent qualification runs retain the
 candidate libraries, native notices and source-bound build receipts for 14 days.
 They still do not establish application behavior or physical-device OCR.
+
+The retained candidate builds for [Android arm64](https://github.com/CrispStrobe/CrispSorter/actions/runs/43302210129)
+and [Android armv7](https://github.com/CrispStrobe/CrispSorter/actions/runs/43302786120)
+have passed build/link. Their retained libraries, source receipts and notice
+hashes were independently verified; the armv7 link probe also reports the ARM
+architecture. The iOS jobs and desktop candidate builds remain pending. These
+are candidate libraries, not finished application binaries, runtime error-path
+tests, or physical-device qualification. Artifacts expire after 14 days; keep
+verified copies outside Git until a reviewed release packages them.
