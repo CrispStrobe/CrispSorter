@@ -163,3 +163,143 @@ candidate and separately identifies the workflow revision. The four retained
 archives were independently checked against the manifest's archive hashes and
 sizes. GPU variants were intentionally skipped; archive builds and hashes do
 not establish app integration, runtime error handling, or OCR quality.
+
+An explicit resize budget of `1024 * 256 = 262144` pixels, using the existing
+square-root budget calculation and floor-to-32 dimensions, proposes **384 by
+640**, or **960 patches**. This retains only **9.24%** of the original pixels;
+admission is not evidence that small text remains readable. The final dimensions
+need rechecking through the native rounding and minimum-pixel rules. Do not
+change the model metadata or globally lower its declared maximum pixels to
+introduce an app preparation option.
+
+The existing default-off 2048-patch native experiment is also insufficient for
+10,400 patches, and is explicitly unqualified: six composed arms in its retained
+boundary audit fail numerical checks. Enabling that gate is not a substitute for
+a checked resize candidate.
+
+### Why a scalar resize insertion is insufficient
+
+The existing app contract is **prepared-image pixels**. `prepare_ocr_page` may
+normalize orientation, dewarp, restore, upscale, crop or deskew before OCR. Its
+`PreparedOcrPage` retains a `cleanup_scale` dimension ratio, not an invertible
+transform history. In particular, that ratio cannot invert translation, rotation
+or nonlinear dewarping into archived original pixels. `ocr_regions_for_review`
+deliberately disables repeated native cleanup and rejects a native snapshot that
+declares invalid input coordinates. Structured export uses the prepared image as
+its searchable image layer. Workspace zone/layout recognition adds separate crop
+translations. Review regions, optional word evidence and raw native snapshots
+also have distinct geometry/provenance fields.
+
+Consequently, putting resize into shared preparation would change the displayed
+and searchable image layer; scaling only the outer region boxes would leave
+other geometry and provenance inconsistent. A review-only implementation would
+leave plain text, detailed regions, worker and layout paths with different input
+policies. No behavior change is made by this inspection.
+
+A safe first implementation needs a shared recognition-input guard below those
+entry points. It must retain the original/prepared image for display and export,
+own a separate temporary recognition raster, and carry named coordinate spaces
+plus exact input/output dimensions and independent x/y scales. If the requirement
+is archived original pixels, first reject every nonidentity existing preparation
+transform until a complete inverse chain is available. Native snapshots should
+remain immutable in a clearly named recognition-input coordinate space, with an
+explicit transform to app geometry; never relabel unmodified snapshots as
+original-image geometry.
+
+Restrict the first candidate to a verified Ovis2 profile with a single stage,
+router/layout/zone/cleanup/repair disabled and explicit opt-in. A path substring
+or the generic `unified` engine name does not prove a model's metadata profile.
+Reject unknown profiles, Ovis3, mixed-stage fallback, unsupported transform
+combinations and unavailable geometry provenance. Refuse invalid/zero dimensions,
+overflow, excessive source dimensions/pixels/aspect ratio, a target outside the
+patch/minimum-pixel bounds, nonfinite or out-of-bounds returned geometry, and any
+unmapped nested word geometry. Report effective dimensions/scales and the
+experimental quality warning in diagnostics. Defaults and original assets remain
+unchanged.
+
+Before wiring that guard, focused model-free tests should cover ties-to-even at
+16/48 modulo 64, 1024-patch equality and one-step-over refusal, minimum-pixel
+upscaling after target calculation, extreme aspect ratios, dimension overflow,
+identity/no-op input, unequal x/y scale factors, full-page and fractional boxes,
+word boxes and invalid native coordinates. Integration controls must additionally
+prove image-layer preservation, native snapshot coordinate provenance, worker
+serialization, crop translations, and refusal of transforms without inverses.
+Those contracts cannot be established by testing a target-size calculator alone.
+
+### Prepared-image candidate handoff
+
+The subsequent candidate preserves the app's established **prepared-image**
+contract, rather than attempting archived-original coordinates. Set
+`CRISPSORTER_OVIS_RESIZE_INPUT=1` explicitly to opt in; unset, empty, `0`, `false`,
+`off` and `no` leave it disabled. This is an experimental execution option, not a
+quality recommendation or a new default. It does not enable the unqualified
+native 2048-patch path.
+
+`run_prepared_pipeline` is the shared execution boundary for document text,
+detailed regions, structured-render regions and review; isolated workers call
+those same entry points. It permits only a single `unified` stage selecting the
+known `ovisocr2-f16` registry alias, without source routing or native cleanup.
+Custom paths, other unified model aliases, multiple-stage fallback and unavailable
+native geometry diagnostics are refused. Other engine families retain their
+existing input behavior. The existing model manager and native profile checks
+remain authoritative; this preparation code does not qualify arbitrary GGUFs.
+
+For oversized admitted source dimensions, the guard owns a separate temporary
+PNG. It verifies both decoded source dimensions and the actual written PNG's
+dimensions against the checked plan. Named temporary files retain private file
+permissions and their guards remove them on success and every returned error.
+The source/prepared path is never written, substituted as the display asset or
+used as the inference copy's storage location.
+
+Native snapshots must explicitly assert valid input coordinates. Every returned
+region box must have finite, nonnegative coordinates and lie within the inference
+image before independent x/y inverse scaling. The app's returned region boxes
+are mapped to the input prepared image; workspace crop/zone callers can then
+apply their existing local-to-page translations. Native snapshots remain raw and
+are explicitly labeled `inference_input_pixels` in the added diagnostics, with
+the transform dimensions and scales. Unknown nested native word evidence is
+refused rather than silently relabeled. No word geometry is synthesized.
+
+Review diagnostics and operation events identify the explicit opt-in, whether a
+resize occurred, effective prepared/inference dimensions, scale factors and the
+returned prepared-image coordinate space. Review adds an unqualified-quality
+warning. No-op opted-in inputs also require valid native diagnostics and geometry;
+absence of resize does not waive those provenance checks.
+
+Four dependency-free arithmetic tests passed locally before the shared-host load
+restriction: pinned rounding/patch edges and native minimum resizing, real-page
+dimension planning and unequal-axis geometry, invalid dimension/coordinate
+refusals, and explicit gate spellings. The subsequent PNG and shared-boundary
+wiring has received source review only. Full app feature compilation,
+native-schema compatibility, temporary-file lifecycle, crop/zone integration and
+packaged consumer execution remain **unverified**; no inference or hosted job was
+launched. Keep this candidate out of release/default claims until those checks
+run against compatible immutable assets. The old locked runtime's native-error
+status loss remains a separate unresolved shipping dependency.
+
+
+### Source-bound execution contract follow-up
+
+[The narrow contract](../tests/ovis-input-contract/README.md) now extracts and
+compiles the actual shared execution helper and all four changed conversion paths
+against production app/config/document/review/word/renderer types and the exact
+locked CrispEmbed wrapper result types and method signatures. Only native
+execution/cache and log sinks are fixtures; no native model is loaded.
+
+Both diagnostics feature states pass **6/6 tests** with one compilation job and
+serial tests. The diagnostics-off run verifies default conversions do not request
+snapshots and opted-in resize refuses before native execution. The diagnostics-on
+run exercises real PNG decoding/resizing/writing, inverse region mapping across
+all four paths, no-op inputs, raw snapshot coordinate retention, explicit opt-in
+metadata, unchanged source bytes, private temporary permissions and cleanup after
+success or each tested refusal/native failure. Unsupported recipes, missing/bad
+snapshots, nested word evidence and invalid boxes are refused. Five included
+arithmetic controls cover rounding/admission, independent-axis mapping, bad
+inputs, explicit gate spellings and tiny positive boxes that collapse in f32.
+
+The follow-up fixes two review findings: non-review callers only capture a native
+snapshot when the resize option is active, preserving the previous disabled
+path's snapshot work, and language is queried only for consumers that use it;
+mapped f32 boxes receive a second finite/positive-area/bounds check after endpoint arithmetic. Full app/package compilation, actual native
+schema/error behavior, worker/crop integration and OCR quality remain unqualified.
+This contract does not satisfy immutable runtime release or consumer gates.

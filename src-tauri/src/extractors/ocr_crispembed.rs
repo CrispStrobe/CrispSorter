@@ -754,6 +754,74 @@ fn with_ocr_pipeline<T>(
     result
 }
 
+/// One execution boundary for document, detailed, render and review callers.
+/// An opt-in inference copy never replaces the caller's prepared/display image.
+#[cfg(feature = "crispembed")]
+fn run_prepared_pipeline(path: &Path, cfg: &super::OcrPipelineConfig, capture_review: bool, capture_language: bool) -> Result<(
+    crispembed::OcrPipelineResult, Option<String>, Option<serde_json::Value>, Option<super::ovis_input::InputScale>,
+)> {
+    let opted_in = super::ovis_input::gate(std::env::var("CRISPSORTER_OVIS_RESIZE_INPUT").ok().as_deref());
+    let unified = cfg.engine.as_deref() == Some("unified") || cfg.stages.iter().any(|s| s.engine == "unified");
+    let mut temporary = None;
+    let mut scale = None;
+    if opted_in && unified {
+        anyhow::ensure!(!cfg.router && cfg.stages.len() == 1,
+            "Experimental Ovis resize requires one explicit stage without routing");
+        let stage = &cfg.stages[0];
+        anyhow::ensure!(stage.engine == "unified" && stage.det_model.as_deref() == Some("ovisocr2-f16")
+            && stage.source_type == "auto" && !stage.cleanup.enabled && !stage.cleanup.denoise,
+            "Experimental Ovis resize requires the ovisocr2-f16 alias and a cleanup-free unified stage");
+        let (w,h) = image::image_dimensions(path).context("Read Ovis prepared-image dimensions")?;
+        let plan = super::ovis_input::InputScale::plan(w,h).map_err(anyhow::Error::msg)?;
+        anyhow::ensure!(cfg!(feature = "ocr-review-diagnostics"),
+            "Experimental Ovis resize requires native review geometry diagnostics");
+        if plan.changed() {
+            let file = tempfile::Builder::new().prefix("ovis_inference_").suffix(".png").tempfile()?;
+            let decoded = image::open(path).context("Decode Ovis prepared image")?;
+            anyhow::ensure!((decoded.width(),decoded.height()) == plan.prepared, "Ovis source dimensions changed while reading");
+            decoded.resize_exact(plan.inference.0, plan.inference.1, image::imageops::FilterType::Lanczos3)
+                .save(file.path()).context("Write Ovis inference copy")?;
+            anyhow::ensure!(image::image_dimensions(file.path())? == plan.inference,
+                "Ovis inference PNG dimensions do not match its checked resize plan");
+            temporary = Some(file);
+        }
+        scale = Some(plan);
+    }
+    let inference_path = temporary.as_ref().map_or(path, |f| f.path());
+    let path_str = inference_path.to_str().context("image path is not valid UTF-8")?;
+    let (mut result, language, snapshot) = with_ocr_pipeline(cfg, |pipeline| {
+        let result = pipeline.run(path_str)
+            .map_err(|e| anyhow::anyhow!("CrispEmbed OCR pipeline run failed: {e}"))?;
+        #[cfg(feature = "ocr-review-diagnostics")]
+        let snapshot = if capture_review || scale.is_some() { pipeline.review_json().and_then(|s| parse_review_snapshot(&s)) } else { None };
+        #[cfg(not(feature = "ocr-review-diagnostics"))]
+        let snapshot: Option<serde_json::Value> = None;
+        Ok((result, if capture_language { pipeline.detected_lang() } else { None }, snapshot))
+    })?;
+    if let Some(plan) = scale {
+        anyhow::ensure!(snapshot.as_ref().and_then(|s| s.pointer("/geometry/coordinates_valid_for_input"))
+            .and_then(serde_json::Value::as_bool) == Some(true),
+            "Experimental Ovis resize cannot verify native input coordinates");
+        // Ovis exposes whole-image regions, not words. Refuse a future schema
+        // carrying additional geometry until it has an explicit mapping here.
+        anyhow::ensure!(snapshot.as_ref().and_then(|s| s.get("regions")).and_then(serde_json::Value::as_array)
+            .is_some_and(|regions| regions.iter().all(|r| r.get("word_evidence").is_none_or(serde_json::Value::is_null))),
+            "Experimental Ovis resize cannot map nested native word evidence");
+        for region in &mut result.regions {
+            let (x,y,w,h) = plan.map_box(region.x,region.y,region.w,region.h).map_err(anyhow::Error::msg)?;
+            (region.x,region.y,region.w,region.h) = (x,y,w,h);
+        }
+        let log = OperationLog::start("ocr.inference_resize", json!({"experimental":true,"opt_in":true,
+            "option":"CRISPSORTER_OVIS_RESIZE_INPUT","resized":plan.changed()}));
+        log.succeed(json!({"prepared_width":plan.prepared.0,"prepared_height":plan.prepared.1,
+            "inference_width":plan.inference.0,"inference_height":plan.inference.1,
+            "scale_x":plan.inference.0 as f64 / plan.prepared.0 as f64,
+            "scale_y":plan.inference.1 as f64 / plan.prepared.1 as f64,
+            "coordinate_space":"prepared_image_pixels"}));
+    }
+    Ok((result,language,snapshot,scale))
+}
+
 /// Run the C++ OCR pipeline orchestrator (source-type routing + per-stage
 /// cleanup + NAFNet denoise + accept-gate escalation) on an image.
 #[cfg(feature = "crispembed")]
@@ -761,13 +829,7 @@ pub fn ocr_via_pipeline(
     path: &Path,
     cfg: &super::OcrPipelineConfig,
 ) -> Result<ExtractedDocument> {
-    let path_str = path.to_str().context("image path is not valid UTF-8")?;
-
-    let (res, detected_lang) = with_ocr_pipeline(cfg, |pipeline| {
-        let result = pipeline.run(path_str)
-            .map_err(|e| anyhow::anyhow!("CrispEmbed OCR pipeline run failed: {e}"))?;
-        Ok((result, pipeline.detected_lang()))
-    })?;
+    let (res, detected_lang, _, _) = run_prepared_pipeline(path, cfg, false, true)?;
     if res.mean_confidence > 0.0 {
         crate::app_log("debug", format!(
             "[ocr] pipeline: {} regions, mean confidence {:.2}",
@@ -835,11 +897,7 @@ pub fn ocr_regions_via_pipeline(
     path: &Path,
     cfg: &super::OcrPipelineConfig,
 ) -> Result<Vec<super::ocr_render::OcrRegion>> {
-    let path_str = path.to_str().context("image path is not valid UTF-8")?;
-    let res = with_ocr_pipeline(cfg, |pipeline| {
-        pipeline.run(path_str)
-            .map_err(|e| anyhow::anyhow!("CrispEmbed OCR pipeline run failed: {e}"))
-    })?;
+    let (res, _, _, _) = run_prepared_pipeline(path, cfg, false, false)?;
     Ok(render_regions_from_pipeline(res))
 }
 
@@ -1018,11 +1076,7 @@ pub fn ocr_regions_detailed(
     path: &Path,
     cfg: &super::OcrPipelineConfig,
 ) -> Result<Vec<RegionConf>> {
-    let path_str = path.to_str().context("image path is not valid UTF-8")?;
-    let res = with_ocr_pipeline(cfg, |pipeline| {
-        pipeline.run(path_str)
-            .map_err(|e| anyhow::anyhow!("CrispEmbed OCR pipeline run failed: {e}"))
-    })?;
+    let (res, _, _, _) = run_prepared_pipeline(path, cfg, false, false)?;
     let regions = res.regions.into_iter().map(|r| {
             let confidence = effective_confidence(r.confidence, r.rec_confidence, r.char_conf.len());
             RegionConf {
@@ -1107,16 +1161,8 @@ fn parse_review_snapshot(payload: &str) -> Option<serde_json::Value> {
 #[cfg(feature = "crispembed")]
 pub fn ocr_regions_for_review(path: &Path, cfg: &super::OcrPipelineConfig) -> Result<OcrReviewResult> {
     let config = review_pipeline_config(cfg);
-    let path_str = path.to_str().context("image path is not valid UTF-8")?;
     let (width, height) = image::image_dimensions(path).context("read review image dimensions")?;
-    let (result, language, snapshot) = with_ocr_pipeline(&config, |pipeline| {
-        let result = pipeline.run(path_str).map_err(|e| anyhow::anyhow!("OCR recognition failed: {e}"))?;
-        #[cfg(feature = "ocr-review-diagnostics")]
-        let snapshot = pipeline.review_json().and_then(|s| parse_review_snapshot(&s));
-        #[cfg(not(feature = "ocr-review-diagnostics"))]
-        let snapshot: Option<serde_json::Value> = None;
-        Ok((result, pipeline.detected_lang(), snapshot))
-    })?;
+    let (result, language, snapshot, input_scale) = run_prepared_pipeline(path, &config, true, true)?;
     if !result.regions.is_empty()
         && snapshot.as_ref().and_then(|s| s.pointer("/geometry/coordinates_valid_for_input")).and_then(serde_json::Value::as_bool) == Some(false) {
         anyhow::bail!("The recognition engine changed image coordinates. Apply scan repair explicitly and retry on the prepared page.");
@@ -1126,12 +1172,25 @@ pub fn ocr_regions_for_review(path: &Path, cfg: &super::OcrPipelineConfig) -> Re
     if snapshot.is_none() {
         warnings.push("Detailed engine provenance is unavailable or its schema is unsupported in this build. Confidence scores are uncalibrated and character alignment is unverified.".into());
     }
-    let diagnostics = serde_json::json!({
+    let mut diagnostics = serde_json::json!({
         "coordinate_space": "prepared_image_pixels", "internal_cleanup": false,
         "language": language, "reading_order": result.reading_order,
         "full_text": result.full_text, "markdown": result.markdown,
         "native_review": snapshot,
     });
+    if let Some(scale) = input_scale {
+        diagnostics["inference_input"] = json!({"experimental":true,"opt_in":true,
+            "option":"CRISPSORTER_OVIS_RESIZE_INPUT","resized":scale.changed(),
+            "prepared_width":width,"prepared_height":height,
+            "width":scale.inference.0,"height":scale.inference.1,
+            "scale_x":scale.inference.0 as f64 / width as f64,
+            "scale_y":scale.inference.1 as f64 / height as f64,
+            "native_review_coordinate_space":"inference_input_pixels",
+            "returned_region_coordinate_space":"prepared_image_pixels"});
+        if scale.changed() {
+            warnings.push("Experimental Ovis inference resize reduces image detail; OCR quality is unqualified. Displayed image and region coordinates retain the prepared page.".into());
+        }
+    }
     let snapshot_regions = snapshot.as_ref().and_then(|s| s.get("regions")).and_then(serde_json::Value::as_array);
     let regions = result.regions.into_iter().enumerate().map(|(index, region)| {
         let native = snapshot_regions.and_then(|regions| regions.get(index));

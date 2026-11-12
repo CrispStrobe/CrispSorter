@@ -96,6 +96,8 @@ pub mod layout;
 pub mod math_ocr;
 pub mod ocr;
 pub mod ocr_crispembed;
+#[cfg(any(feature = "crispembed", test))]
+mod ovis_input;
 pub mod ocr_worker;
 pub mod ocr_ocrs;
 pub mod ocr_paddle;
