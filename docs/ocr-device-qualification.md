@@ -163,3 +163,14 @@ while push runs retain the complete target matrix. Record its source revision,
 artifact hash, actual import, recognition, export and recovery results before
 claiming success. Physical Android and iPhone devices are unavailable; camera,
 real provider grants, low-memory behavior and device performance remain unrun.
+
+The retained emulator rerun verified sandbox directory identity, installed
+and hashed models, imported an image, exercised native recognition and document
+formats, and passed the German quality case. It then failed the English
+column-order case (CER 0.503 versus the unchanged 0.25 threshold): native
+text detection had merged adjacent columns into page-wide lines. The current
+source adds bounded CC-layout recognition crops for unambiguous supported
+layouts, with a whole-page fallback for empty crops. Geometry and source-bound
+contract tests pass; the retained APK predates this change. Rebuild the Android
+x86_64 application and rerun the full flow before reporting the fix or later
+export and recovery steps as passed.

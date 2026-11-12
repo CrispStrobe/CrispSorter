@@ -883,6 +883,95 @@ fn recognize_plain_engine_for_review(path: &Path, config: &crate::extractors::Oc
         diagnostics: json!({"engine": config.engine, "geometry": "full_page_text_block", "native_word_evidence": false}) })
 }
 
+fn translate_crop_review_regions(
+    regions: &mut [crate::extractors::ocr_crispembed::OcrReviewRegion],
+    crop: crate::ocr_reading_order::Rect,
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    for region in regions {
+        let mapped = crate::ocr_reading_order::crop_rect_to_page(
+            crate::ocr_reading_order::Rect { x:region.x, y:region.y, w:region.w, h:region.h },
+            crop, width, height,
+        ).ok_or("Layout recognition returned invalid crop coordinates")?;
+        if let Some(evidence) = &mut region.word_evidence {
+            // Page bounds alone would accept words outside their real crop.
+            crate::ocr_word_evidence::validate_word_evidence(evidence, &region.text, crop.w as u32, crop.h as u32)?;
+            for word in &mut evidence.words {
+                word.x += crop.x;
+                word.y += crop.y;
+            }
+            crate::ocr_word_evidence::validate_word_evidence(evidence, &region.text, width, height)?;
+        }
+        region.x = mapped.x;
+        region.y = mapped.y;
+    }
+    Ok(())
+}
+
+/// Use layout as recognition input, rather than trying to split already
+/// recognized page-wide lines. The planner opts in only for unambiguous columns.
+fn recognize_cc_columns(
+    path: &Path,
+    config: &crate::extractors::OcrPipelineConfig,
+    layout: &[crate::extractors::layout::LayoutRegion],
+) -> Result<Option<crate::extractors::ocr_crispembed::OcrReviewResult>, String> {
+    use crate::extractors::ocr_crispembed::{ocr_regions_for_review, OcrReviewResult};
+    let (width, height) = checked_dimensions(path)?;
+    let boxes: Vec<_> = layout.iter().map(|r| crate::ocr_reading_order::Rect {
+        x: r.x1, y: r.y1, w: r.x2 - r.x1, h: r.y2 - r.y1,
+    }).collect();
+    let Some(crops) = crate::ocr_reading_order::column_recognition_crops(&boxes, width, height) else {
+        return Ok(None);
+    };
+    let image = decode_page(path)?;
+    let mut regions = Vec::new();
+    let mut warnings = Vec::new();
+    let mut observations = Vec::new();
+    for (index, crop) in crops.iter().enumerate() {
+        let (x, y, w, h) = checked_rect(PixelRect {
+            x: crop.x as f64, y: crop.y as f64, w: crop.w as f64, h: crop.h as f64,
+        }, width, height)?;
+        let temporary = tempfile::Builder::new().prefix("ocr_layout_").suffix(".png")
+            .tempfile().map_err(|e| format!("Create layout recognition input: {e}"))?;
+        image.crop_imm(x, y, w, h).save(temporary.path())
+            .map_err(|e| format!("Prepare layout recognition input: {e}"))?;
+        let mut result = ocr_regions_for_review(temporary.path(), config)
+            .map_err(|e| format!("Recognize layout region {}: {e:#}", index + 1))?;
+        if result.width != w || result.height != h {
+            return Err(format!("Layout region {} changed image coordinates", index + 1));
+        }
+        // Keep the complete original engine snapshot and local coordinates,
+        // including an empty crop that requires whole-page fallback.
+        observations.push(json!({"crop":{"x":x,"y":y,"w":w,"h":h},
+            "raw_regions": result.regions, "diagnostics": result.diagnostics, "warnings":result.warnings}));
+        if result.regions.is_empty() || result.regions.iter().all(|r| r.text.trim().is_empty()) {
+            let mut fallback = ocr_regions_for_review(path, config)
+                .map_err(|e| format!("Recognize whole page after empty layout region: {e:#}"))?;
+            warnings.append(&mut result.warnings);
+            fallback.warnings.extend(warnings);
+            fallback.warnings.push("A detected layout region returned no text; used whole-page recognition instead. Review the reading order.".into());
+            fallback.diagnostics["engine"] = json!(config.engine);
+            fallback.diagnostics["layout_recognition"] = json!({
+                "strategy":"whole_page_after_empty_cc_crop","crops":observations,
+            });
+            return Ok(Some(fallback));
+        }
+        if regions.len().saturating_add(result.regions.len()) > MAX_REGIONS {
+            return Err("Layout recognition returned too many regions".into());
+        }
+        translate_crop_review_regions(&mut result.regions, *crop, width, height)?;
+        warnings.append(&mut result.warnings);
+        regions.extend(result.regions);
+    }
+    Ok(Some(OcrReviewResult {
+        image_path: path.to_owned(), width, height, regions, warnings,
+        diagnostics: json!({"coordinate_space":"prepared_image_pixels","internal_cleanup":false,
+            "requested_config":config,"engine":config.engine,
+            "layout_recognition":{"strategy":"cc_crops_before_recognition","crops":observations}}),
+    }))
+}
+
 fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipelineConfig, zone: Option<PixelRect>, mut warnings: Vec<String>, physical_size: Option<(f64, f64)>, cpu_budget: bool, legacy_rec_lang: crate::extractors::OcrRecLang) -> Result<RecognizedPage, String> {
     let started = std::time::Instant::now();
     let (page, recognition_path, offset) = if let Some(zone) = zone {
@@ -906,7 +995,19 @@ fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipel
         let recognition_path = PathBuf::from(&prepared.page.image_path);
         (prepared.page, recognition_path, (0, 0))
     };
-    let mut result = if cpu_budget {
+    let mut column_layout = None;
+    let column_result = if !cpu_budget && zone.is_none() && config.enabled && config.layout
+        && config.layout_engine == "cc" && config.engine.as_deref() == Some("tesseract")
+        && !config.router && config.stages.len() <= 1
+        && config.stages.first().is_none_or(|stage| stage.engine == "tesseract") {
+        let layout = crate::extractors::ocr_crispembed::cc_detect_regions(&recognition_path);
+        let result = recognize_cc_columns(&recognition_path, config, &layout)?;
+        column_layout = Some(layout);
+        result
+    } else { None };
+    let mut result = if let Some(result) = column_result {
+        result
+    } else if cpu_budget {
         recognize_with_cpu_budget(&recognition_path, config)?
     } else if config.engine.as_deref() == Some("system_tesseract") {
         let source = crate::ocr_word_evidence::recognize(&recognition_path, config.language.as_deref())?;
@@ -931,7 +1032,11 @@ fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipel
     result.regions = organize_review_regions(std::mem::take(&mut result.regions), &mut result.diagnostics,
         |regions, diagnostics| {
             if config.enabled && config.layout && zone.is_none() {
-                annotate_layout(&recognition_path, config, regions, diagnostics, &mut warnings);
+                if let Some(layout) = &column_layout {
+                    apply_review_layout(layout, config, regions, diagnostics, &mut warnings);
+                } else {
+                    annotate_layout(&recognition_path, config, regions, diagnostics, &mut warnings);
+                }
             }
         });
     for region in &mut result.regions {
