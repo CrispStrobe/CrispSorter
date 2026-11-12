@@ -17,7 +17,10 @@ export type OperationName = 'ocr.session' | 'ocr.recognition' | 'ocr.worker' | '
   | 'docx.check' | 'docx.properties' | 'docx.headings' | 'docx.restyle'
   | 'docx.notes' | 'docx.quotes' | 'docx.clean' | 'docx.footnotes'
   | 'batch.duplicate_scan' | 'batch.duplicate_cleanup' | 'batch.review_edit' | 'batch.index_add'
-  | 'chat.request';
+  | 'chat.request'
+  | 'settings.test_connection' | 'settings.refresh_models'
+  | 'models.download' | 'models.delete' | 'models.pull'
+  | 'app.capabilities' | 'app.log_export' | 'app.provider_pick';
 export type OperationPhase = 'queued' | 'loading' | 'ready' | 'reused' | 'disposed'
   | 'dispatching' | 'recognizing' | 'rendering' | 'text_ready' | 'page_completed'
   | 'checking' | 'saving' | 'saved' | 'committing' | 'published' | 'progress'

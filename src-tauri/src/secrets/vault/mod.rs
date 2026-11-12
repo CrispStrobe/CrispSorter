@@ -644,6 +644,12 @@ pub fn is_chosen() -> bool {
     read_slot().chosen
 }
 
+/// The active choice's stable kind id. Cheap: unlike [`status`] it does not
+/// ask the vault whether it is unlocked. Used for log context.
+pub fn active_kind() -> &'static str {
+    read_slot().choice.kind()
+}
+
 /// Switch vaults and persist the decision. Takes effect immediately —
 /// no restart — because every secret module resolves [`active`] per
 /// call rather than caching a handle.

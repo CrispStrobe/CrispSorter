@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { beginOperation } from './operationLog';
 
 /** The first provider workflow supports read-only documents with JS extractors. */
 export const PROVIDER_MAX_BYTES = 16 * 1024 * 1024;
@@ -43,10 +44,28 @@ export function partitionProviderFiles(files: ProviderFile[]) {
 }
 
 export async function pickProviderDocuments(folder: boolean) {
-    const result = await invoke<PickerResult>(folder
-        ? 'plugin:mobile-provider|pick_folder'
-        : 'plugin:mobile-provider|pick_files');
-    return result.cancelled ? null : partitionProviderFiles(result.files);
+    // Counts only: provider URIs and document names stay out of the log.
+    const operation = beginOperation('app.provider_pick');
+    let result: PickerResult;
+    try {
+        result = await invoke<PickerResult>(folder
+            ? 'plugin:mobile-provider|pick_folder'
+            : 'plugin:mobile-provider|pick_files');
+    } catch (error) {
+        operation.fail(error);
+        throw error;
+    }
+    if (result.cancelled) {
+        operation.cancel();
+        return null;
+    }
+    const picked = partitionProviderFiles(result.files);
+    operation.complete({
+        total: result.files.length,
+        count: picked.accepted.length,
+        failed: picked.unsupported + picked.oversized,
+    });
+    return picked;
 }
 
 /** The native reader enforces the same limit while streaming, including when size is unknown. */
