@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
     availableDriveActions,
     drivePathFromSearchUri,
+    driveSearchUri,
+    relocateDriveSearchUri,
     joinDrivePath,
     localPathFromSearchUri,
     normalizeDrivePath,
@@ -91,6 +93,28 @@ describe('drive browser path contract', () => {
             'crisp+drive://research/docs/%00.pdf', 'crisp+drive:///docs/file.pdf',
             'crisp+drive://research', '/docs/file.pdf', 'https://example.test/file.pdf',
         ]) expect(drivePathFromSearchUri(uri)).toBeNull();
+    });
+
+    it('keeps literal percent sequences intact across duplicate moves and undo', () => {
+        const original = 'crisp+drive://research/docs/original%20paper.pdf';
+        const destination = '/docs/résumé %20 #?.pdf';
+        const moved = relocateDriveSearchUri(original, 'research', '/docs/original paper.pdf', destination);
+        expect(moved).toBe('crisp+drive://research/docs/r%C3%A9sum%C3%A9%20%2520%20%23%3F.pdf');
+        expect(drivePathFromSearchUri(moved)).toEqual({ driveId: 'research', remotePath: destination });
+        const undone = relocateDriveSearchUri(moved, 'research', destination, '/docs/original paper.pdf');
+        expect(undone).toBe(original);
+        expect(driveSearchUri('research', '/docs/literal%2Fname.pdf'))
+            .toBe('crisp+drive://research/docs/literal%252Fname.pdf');
+    });
+
+    it('matches decoded duplicate locations while leaving other files and drives untouched', () => {
+        const uri = 'crisp+drive://research/docs/old%20name.pdf';
+        expect(relocateDriveSearchUri(uri, 'research', '/docs/old name.pdf', '/docs/new name.pdf'))
+            .toBe('crisp+drive://research/docs/new%20name.pdf');
+        expect(relocateDriveSearchUri(uri, 'other', '/docs/old name.pdf', '/docs/new.pdf')).toBe(uri);
+        expect(relocateDriveSearchUri(uri, 'research', '/docs/other.pdf', '/docs/new.pdf')).toBe(uri);
+        const malformed = 'crisp+drive://research/docs/%Q1.pdf';
+        expect(relocateDriveSearchUri(malformed, 'research', '/docs/old.pdf', '/docs/new.pdf')).toBe(malformed);
     });
 
     it('only enables remote version queries when advertised', () => {

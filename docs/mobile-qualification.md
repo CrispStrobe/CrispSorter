@@ -310,3 +310,22 @@ That older run built native libraries and linked probes; it did not execute
 inference or build an OCR-enabled application. The paired OCR lane above supplies
 separate app and execution gates. See
 [HANDOFF_2026-10-29.md](HANDOFF_2026-10-29.md) for exact remaining steps.
+
+## Release and TestFlight binding
+
+The final publication gate requires the current version's Android APK and
+provisioned iOS IPA, source-bound receipts, and matching downloaded SHA-256
+hashes. Android also requires matching production-signing evidence. A draft
+can still retain unsigned diagnostic artifacts, but publication must not
+substitute them for these packages. Ordinary iOS and macOS TestFlight uploads
+record the upload cutoff and select the exact uploaded build number; the resume
+path requires the original cutoff explicitly. These checks validate artifact
+identity and signing evidence, not physical-device behavior.
+
+The existing v0.15.0 draft and internal TestFlight build were produced from an
+earlier source revision. After the current source is qualified, prepare a new
+version and source-bound draft, build each supported platform, verify its
+receipts, and upload the new iOS build before reporting current-source
+TestFlight coverage. Windows Authenticode and macOS Developer ID credentials
+are still required for signed desktop publication; see
+[desktop signing](desktop-signing.md).

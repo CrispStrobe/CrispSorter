@@ -28,11 +28,15 @@ pub mod kindle_match;
 pub mod migrations;
 pub mod ocr_workspace;
 mod ocr_extract;
+mod ocr_import_payload;
 pub(crate) mod ocr_atomic_output;
 mod ocr_photo;
 mod ocr_reading_order;
 mod ocr_text_export;
 pub mod model_provisioning;
+pub mod model_cache;
+pub mod ocr_models;
+pub mod ocr_builtin_models;
 pub mod operation_log;
 pub mod ocr_word_evidence;
 pub mod ocr_document;
@@ -3210,6 +3214,8 @@ pub fn run() {
                     app_log!("error", "OCR model store: {error}");
                     startup.warn("model_store_unavailable", serde_json::json!({}));
                 }
+                // Settings downloads used to land here; keep them findable.
+                model_cache::add_legacy_dir(data_dir.join("models"));
                 // Before anything can read a secret: pin the vault to the
                 // real data dir, so the user's chosen store is in force from
                 // the first read rather than from whenever Settings is
@@ -3663,12 +3669,17 @@ pub fn run() {
             drives::tauri_commands::drive_oauth_revoke,
             drives::tauri_commands::drive_list_dir,
             drives::tauri_commands::drive_search,
+            drives::tauri_commands::drive_search_report,
             drives::tauri_commands::drive_stat,
             drives::tauri_commands::drive_capabilities,
             drives::tauri_commands::drive_create_dir,
             drives::tauri_commands::drive_move_path,
             drives::tauri_commands::drive_copy_path,
             drives::tauri_commands::drive_delete_path,
+            drives::tauri_commands::drive_trash_with_receipt,
+            drives::tauri_commands::drive_trash_receipts,
+            drives::tauri_commands::drive_restore_trash_receipt,
+            drives::tauri_commands::drive_recheck_trash_receipt,
             drives::tauri_commands::drive_restore_deleted,
             drives::tauri_commands::drive_share_link,
             drives::tauri_commands::drive_list_versions,
@@ -3775,6 +3786,11 @@ pub fn run() {
             ocr_workspace::ocr_workspace_capabilities,
             ocr_extract::ocr_extract_image,
             model_provisioning::ocr_workspace_install_mobile_models,
+            ocr_models::ocr_models_required,
+            ocr_models::ocr_models_catalog,
+            ocr_models::ocr_models_install,
+            ocr_models::ocr_models_cancel,
+            ocr_models::ocr_models_remove,
             model_provisioning::ocr_workspace_model_storage,
             model_provisioning::ocr_workspace_clean_model_storage,
             model_provisioning::ocr_workspace_remove_mobile_model,
@@ -4139,12 +4155,17 @@ pub fn run() {
             drives::tauri_commands::drive_oauth_revoke,
             drives::tauri_commands::drive_list_dir,
             drives::tauri_commands::drive_search,
+            drives::tauri_commands::drive_search_report,
             drives::tauri_commands::drive_stat,
             drives::tauri_commands::drive_capabilities,
             drives::tauri_commands::drive_create_dir,
             drives::tauri_commands::drive_move_path,
             drives::tauri_commands::drive_copy_path,
             drives::tauri_commands::drive_delete_path,
+            drives::tauri_commands::drive_trash_with_receipt,
+            drives::tauri_commands::drive_trash_receipts,
+            drives::tauri_commands::drive_restore_trash_receipt,
+            drives::tauri_commands::drive_recheck_trash_receipt,
             drives::tauri_commands::drive_share_link,
             drives::tauri_commands::drive_list_versions,
             drives::tauri_commands::drive_restore_version,
@@ -4249,6 +4270,11 @@ pub fn run() {
             index::tauri_commands::tool_math_ocr,
             ocr_workspace::ocr_workspace_capabilities,
             model_provisioning::ocr_workspace_install_mobile_models,
+            ocr_models::ocr_models_required,
+            ocr_models::ocr_models_catalog,
+            ocr_models::ocr_models_install,
+            ocr_models::ocr_models_cancel,
+            ocr_models::ocr_models_remove,
             model_provisioning::ocr_workspace_model_storage,
             model_provisioning::ocr_workspace_clean_model_storage,
             model_provisioning::ocr_workspace_remove_mobile_model,

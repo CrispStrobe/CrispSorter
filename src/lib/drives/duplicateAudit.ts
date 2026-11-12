@@ -16,6 +16,15 @@ export type DuplicateMutationAudit = {
     at: number;
 };
 
+/** Keep the original mutation and its successful reversal as separate audit events. */
+export function recordDuplicateRestore(
+    entries: DuplicateMutationAudit[],
+    mutation: DuplicateMutationAudit,
+    at: number,
+): DuplicateMutationAudit[] {
+    return [...entries, { ...mutation, operation: 'restore' as const, to: null, at }].slice(-200);
+}
+
 const STORAGE_KEY = 'crispsorter.duplicate-decision-audit.v1';
 const MUTATION_STORAGE_KEY = 'crispsorter.duplicate-mutation-audit.v1';
 const decisions = new Set<DuplicateDecision>([

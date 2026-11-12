@@ -269,6 +269,19 @@ crispsorter ocr lowres-scan.png --sr                               # super-resol
 crispsorter ocr blurry-scan.jpg --restore                          # Restormer denoise+deblur before OCR
 crispsorter ocr book-photo.jpg --dewarp --restore --sr --sr-engine esrgan  # full restore chain: dewarp → deblur → SR (Real-ESRGAN)
 
+# OCR models: nothing is downloaded during recognition. Before OCR the CLI
+# prints the models the run needs (size, licence); on a terminal it asks
+# [y/N], a script must pass --yes, and a non-terminal run without it exits
+# non-zero listing the missing models. Downloads are SHA-256 verified,
+# resumable, and land in the shared cache (CRISPEMBED_CACHE_DIR, default
+# ~/.cache/crispembed) the app uses too.
+crispsorter models plan tesseract --language deu           # what the engine needs, installed or not (-f text|json)
+crispsorter models pull tesseract --language deu           # install with progress on stderr
+crispsorter models pull paddle --language ja                # PaddleOCR (CJK recognizer) and ocrs weights too
+crispsorter --yes ocr scan.png --engine qwen2vl            # scripts: download what is missing without asking
+crispsorter --offline ocr scan.png --engine tesseract      # never download; fail if a model is missing
+#   --download-models is an alias of --yes; restricted models still need --accept-license.
+
 # Key-information extraction (KIE) — pull structured fields from a document.
 crispsorter kie receipt.png --labels "total,date,vendor,tax"       # OCR + zero-shot NER → label·value·score
 crispsorter kie invoice.pdf  --labels "invoice number,due date,amount" -f json

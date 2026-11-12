@@ -1,5 +1,75 @@
 # CrispSorter — Development Plan
 
+## Non-Unix receipt durability admission — 12 November 2026
+
+[Receipt run 43303387822](https://github.com/CrispStrobe/CrispSorter/actions/runs/43303387822)
+stopped on Windows before executing tests because checkout converted LF source
+blobs to CRLF. Disable Git automatic line-ending conversion before checkout;
+retain the exact working-byte versus committed-blob equality check. This is a
+source-admission correction, not a Windows receipt test result.
+
+At source `26cfd7ca`, Internxt advertised durable trash receipts on every
+platform while journal directory-entry fsync was implemented only on Unix.
+The follow-up refuses journal opening and receipt adapter/capability exposure
+on non-Unix targets before a remote mutation can be authorized. Unix behavior
+is unchanged. The native credential-free capability control covers the target
+boundary; a non-Unix journal test requires refusal before directory creation.
+The narrow receipt workflow stages Linux journal tests and Windows refusal/
+adapter-capability controls with source-bound evidence; execution remains pending.
+All receipt IPC mutation paths open the gated store before obtaining a provider;
+legacy ordinary deletion remains independent of the receipt workflow.
+Unix/mobile physical
+crash durability and full application qualification remain separate gates.
+
+## Experimental CC recognition crops — 12 November 2026
+
+[Automatic app check 43290895137](https://github.com/CrispStrobe/CrispSorter/actions/runs/43290895137)
+at source `c2dbcb0f` failed with E0063 in the CLI's
+exhaustive `OcrPipelineConfig` initializer after the new gate field was added.
+Set that CLI field explicitly false. The lightweight contract build now checks
+exhaustive CLI config fields against the production schema; it previously
+compiled only workspace/config selections and missed this integration error.
+Hosted contract execution and full application typechecking remain required;
+this source-field guard does not compile the complete CLI.
+
+Source `87f5181f` changed supported CC/Tesseract review profiles from whole-page
+recognition to line-crop recognition after retained Android run
+[43275466921](https://github.com/CrispStrobe/CrispSorter/actions/runs/43275466921)
+failed the unchanged English two-column CER threshold (0.503 versus 0.25).
+CC geometry does not establish complete text coverage, and nonempty crops can
+silently omit text outside their boxes. The follow-up requires explicit
+`experimental_cc_column_crops: true`; omitted or false retains whole-page
+recognition with layout annotation. Existing profiles and quality thresholds
+retain their values. The source-bound contract now checks omitted/false inputs
+use one full-page inference and explicit true uses nine fixture crops. These
+new native controls await hosted execution; fixture recognition is not OCR
+quality evidence. Independent native-gutter A/B must keep the app crop gate off.
+See [coverage, latency and device limits](docs/ocr-device-qualification.md).
+
+## Android smoke sandbox paths — 12 November 2026
+
+[Mobile OCR run 43255928129](https://github.com/CrispStrobe/CrispSorter/actions/runs/43255928129)
+on `81ef8036` passed baseline installation and independent model hashes, then
+failed managed-page containment immediately after real binary image import.
+Its failure receipt reports `/data/user/0/com.crispstrobe.crispsorter` as app data;
+the old probe saved the import response only after validation, so the actual
+returned page path was lost. The relevant scripts are unchanged at PR #55 head
+`b34c6f83`.
+
+The bounded follow-up checks both exact Android package-root spellings with
+on-device `run-as realpath` before using them as aliases for containment. File
+inspection still requires the complete path to resolve exactly to the mapped
+sandbox path, rejecting internal symlinks and escapes. Production app storage,
+permissions and quality assertions are unchanged. Import results are retained
+before validation so a future failure preserves the actual native response.
+
+Local validation: all 11 focused probe utility tests passed, including alias
+containment and rejection of other packages/users, prefix spoofs, relative paths
+and traversal; JavaScript syntax and whitespace checks passed. Device alias
+equivalence and the complete Android flow remain pending hosted execution.
+The alias mismatch is a source-supported hypothesis until a new device receipt
+records the native response; this change does not establish OCR qualification.
+
 ## OCR text export compatibility — 9 November 2026
 
 - [x] Save selection-aware PDF script preflight and direct available text alternatives.
@@ -3248,7 +3318,27 @@ a transfer without leaving the search/catalog workflow.
     have genuine recoverable-trash semantics. The duplicate pane now exposes
     guarded restore-from-trash for providers advertising the capability and
     blocks duplicate deletion when recoverable trash is unavailable. ✅
-    contract/native adapters/UI 2026-08-02. Restore actions are retained as
+    contract/native adapters/UI 2026-08-02. Native Filen/Internxt path-only
+    restore was subsequently disabled: path-only audit records cannot prove
+    trash identity, so these adapters advertise `reversible_trash = false` and
+    path-only duplicate deletion is blocked. Durable provider/account/UUID/kind/original-
+    destination delete receipts and identity-validated restore remain required;
+    see `docs/cloud-provider-parity.md`. The duplicate workflow now also blocks
+    Google trash and restore from historical path-only records until such
+    receipts exist; explicit provider path-based operations remain separate.
+    Internxt now has a separately capability-gated durable object-receipt slice:
+    private pre-delete persistence, endpoint/account/root/UUID/type/name/parent
+    binding, single-use restore claims and read-only reconciliation of uncertain
+    outcomes. The app pins merged upstream `9b57beee7ac2e6ae9aaa15a1332a92bcfb5e1460`,
+    including the required filename and one-shot transport corrections. Receipt
+    mutations call `trash_once`/`restore_from_trash_once`, bypassing legacy retry
+    behavior; the merged SDK tree passed 11 real HTTP and four configuration
+    regressions. Both actual native app adapters compile against that SDK; locked native-feature metadata, the
+    source-bound receipt harness and focused frontend regressions pass. Legacy
+    path-only records and other providers remain blocked. Full Tauri, live
+    accounts, physical-crash and Windows/mobile durability qualification remain
+    outstanding; see `docs/cloud-provider-parity.md` for the exact scope.
+    Restore actions are retained as
     explicit mutation-audit events instead of erasing the original trash
     record.
 - [x] **Minimal file-manager operations.** Implement folder context, create

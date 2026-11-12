@@ -81,3 +81,6 @@ test-results/
 # Independent experimental SMB qualification crate
 /crates/crisp-smb-source/target/
 /.smb-fixture-source/
+
+# Keep local kernel submission configurations out of Git.
+**/kernel-metadata.json

@@ -24,6 +24,8 @@
 pub mod filen_native_drive;
 pub mod fuse_mount;
 pub mod google_drive;
+mod google_path;
+pub mod trash_receipts;
 #[cfg(feature = "drive-internxt-native")]
 pub mod internxt_native;
 #[cfg(feature = "drive-internxt-native")]

@@ -8,8 +8,8 @@ fn main() {
     let source = root.join("drives/filesystem.rs");
     println!("cargo:rerun-if-changed={}", source.display());
     let parsed = syn::parse_file(&fs::read_to_string(&source).unwrap()).unwrap();
-    let names = ["DriveCapabilities", "CloudDrive", "DriveType", "DirEntry", "FileVersion", "FileStat", "WalkEntry", "LocalDrive", "NonReplayableWrite"];
-    let functions = ["read_file_bounded", "content_search_matches", "walk", "walk_limited"];
+    let names = ["DriveCapabilities", "CloudDrive", "DriveType", "DirEntry", "FileVersion", "FileStat", "WalkEntry", "WalkScan", "LocalDrive", "NonReplayableWrite"];
+    let functions = ["read_file_bounded", "content_search_matches", "walk", "walk_limited", "walk_with_scan_budget"];
     let mut generated = String::from("use anyhow::{anyhow, Context, Result}; use serde::{Deserialize, Serialize}; use std::{io::{Read,Write}, path::{Path,PathBuf}};");
     let mut selected = Vec::new();
     for item in parsed.items {
@@ -34,7 +34,7 @@ fn main() {
     for name in names.into_iter().chain(functions) {
         assert!(selected.iter().any(|selected| selected == name), "production storage item missing: {name}");
     }
-    for module in ["materialize", "mounted_read", "read_cache"] {
+    for module in ["materialize", "mounted_read", "read_cache", "trash_receipts"] {
         let path = root.join(format!("drives/{module}.rs")).canonicalize().unwrap();
         println!("cargo:rerun-if-changed={}", path.display());
         generated.push_str(&format!("#[path={:?}] pub(crate) mod {module};", path));

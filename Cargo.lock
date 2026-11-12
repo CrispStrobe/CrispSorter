@@ -2081,7 +2081,7 @@ dependencies = [
 [[package]]
 name = "crisp-filen"
 version = "0.1.0"
-source = "git+https://github.com/CrispStrobe/crisp-cloud-rs?rev=33bdc33f64d0a2f1144dceec8ed372d18c12b551#33bdc33f64d0a2f1144dceec8ed372d18c12b551"
+source = "git+https://github.com/CrispStrobe/crisp-cloud-rs?rev=9b57beee7ac2e6ae9aaa15a1332a92bcfb5e1460#9b57beee7ac2e6ae9aaa15a1332a92bcfb5e1460"
 dependencies = [
  "aes 0.8.4",
  "aes-gcm 0.10.3",
@@ -2153,7 +2153,7 @@ dependencies = [
 [[package]]
 name = "crisp-internxt"
 version = "0.1.0"
-source = "git+https://github.com/CrispStrobe/crisp-cloud-rs?rev=33bdc33f64d0a2f1144dceec8ed372d18c12b551#33bdc33f64d0a2f1144dceec8ed372d18c12b551"
+source = "git+https://github.com/CrispStrobe/crisp-cloud-rs?rev=9b57beee7ac2e6ae9aaa15a1332a92bcfb5e1460#9b57beee7ac2e6ae9aaa15a1332a92bcfb5e1460"
 dependencies = [
  "aes 0.8.4",
  "anyhow",

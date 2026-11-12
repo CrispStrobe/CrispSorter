@@ -157,6 +157,63 @@ fn order_blocks(blocks: &[Block], indices: &[usize], depth: usize) -> Result<Vec
     Ok(result)
 }
 
+/// Translate a real crop-local recognition box back to its source page without
+/// changing its extent. Out-of-crop results are errors, never clamped repairs.
+pub(crate) fn crop_rect_to_page(local: Rect, crop: Rect, width: u32, height: u32) -> Option<Rect> {
+    if !local.valid() || !crop.valid() || local.x < 0.0 || local.y < 0.0
+        || crop.x < 0.0 || crop.y < 0.0 || crop.right() > width as f32
+        || crop.bottom() > height as f32 || local.right() > crop.w + 0.01
+        || local.bottom() > crop.h + 0.01 {
+        return None;
+    }
+    Some(Rect { x: local.x + crop.x, y: local.y + crop.y, ..local })
+}
+
+/// Plan bounded, nonoverlapping recognition inputs only when CC geometry proves
+/// multiple columns. Otherwise retain the existing whole-page recognition path.
+/// Adjacent components of the same printed line (including spanning headings)
+/// are coalesced before finding gutters; no recognized text is involved.
+pub(crate) fn column_recognition_crops(layout: &[Rect], width: u32, height: u32) -> Option<Vec<Rect>> {
+    if layout.len() < 4 || layout.len() > 64 || width == 0 || height == 0
+        || layout.iter().any(|r| !r.valid() || r.x < 0.0 || r.y < 0.0
+            || r.right() > width as f32 || r.bottom() > height as f32) {
+        return None;
+    }
+    let mut raw = layout.to_vec();
+    raw.sort_by(|a, b| a.y.total_cmp(&b.y).then(a.x.total_cmp(&b.x)));
+    let mut lines: Vec<Rect> = Vec::new();
+    for r in raw {
+        if let Some(line) = lines.iter_mut().rev().take(4).find(|line| {
+            let overlap = line.bottom().min(r.bottom()) - line.y.max(r.y);
+            overlap >= 0.5 * line.h.min(r.h) && r.x >= line.x
+                && r.x - line.right() <= 2.0 * line.h.min(r.h)
+        }) {
+            *line = line.union(r);
+        } else {
+            lines.push(r);
+        }
+    }
+    lines.sort_by(|a, b| a.y.total_cmp(&b.y).then(a.x.total_cmp(&b.x)));
+    let order = order_regions(&lines, &lines);
+    if order.iter().copied().eq(0..lines.len()) { return None; }
+    let crops: Vec<_> = order.into_iter().map(|i| {
+        let r = lines[i];
+        let pad = (r.h * 0.25).clamp(4.0, 20.0);
+        let x = (r.x - pad).floor().max(0.0);
+        let y = (r.y - pad).floor().max(0.0);
+        let right = (r.right() + pad).ceil().min(width as f32);
+        let bottom = (r.bottom() + pad).ceil().min(height as f32);
+        Rect { x, y, w: right - x, h: bottom - y }
+    }).collect();
+    // Never recognize the same pixels in two crops, or amplify page-sized
+    // inference into an unbounded crop batch. Ambiguity keeps native behavior.
+    if crops.iter().map(|r| r.area() as f64).sum::<f64>() > f64::from(width) * f64::from(height)
+        || crops.iter().enumerate().any(|(i, a)| crops[i + 1..].iter().any(|b| a.intersection(*b) > 0.0)) {
+        return None;
+    }
+    Some(crops)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,4 +280,62 @@ mod tests {
         let broken = [boxes[0], rect(f32::NAN, 0.0, 40.0, 10.0)];
         assert_eq!(order_regions(&broken, &boxes), vec![0, 1]);
     }
+
+    #[test]
+    fn retained_android_cc_geometry_plans_heading_then_complete_columns() {
+        // Real CC boxes from Android run 43275466921, not recognized text.
+        // CC split the heading at a word gap; DBNet joined the body columns.
+        let boxes = [rect(300.0,74.0,860.0,54.0), rect(1197.0,74.0,297.0,54.0),
+            rect(81.0,260.0,377.0,38.0),rect(1043.0,260.0,368.0,38.0),
+            rect(85.0,409.0,514.0,48.0),rect(1043.0,409.0,472.0,48.0),
+            rect(80.0,559.0,554.0,39.0),rect(1045.0,559.0,491.0,48.0),
+            rect(80.0,709.0,424.0,39.0),rect(1045.0,709.0,532.0,39.0)];
+        let crops = column_recognition_crops(&boxes, 1800, 1000).unwrap();
+        assert_eq!(crops.len(), 9);
+        assert!(crops[0].x < 300.0 && crops[0].right() > 1494.0);
+        assert!(crops[1..5].iter().all(|r| r.right() < 810.0));
+        assert!(crops[5..].iter().all(|r| r.x > 990.0));
+        for column in [&crops[1..5], &crops[5..]] {
+            assert!(column.windows(2).all(|pair| pair[0].y < pair[1].y));
+        }
+        // Every detected pixel belongs to exactly one padded recognition crop.
+        for b in boxes {
+            assert_eq!(crops.iter().filter(|c| c.intersection(b) >= b.area()).count(), 1);
+        }
+        assert!(crops.iter().all(|r| r.x >= 0.0 && r.y >= 0.0 && r.right() <= 1800.0 && r.bottom() <= 1000.0));
+        assert!(crops.iter().map(|r| r.area()).sum::<f32>() <= 1800.0 * 1000.0);
+    }
+
+    #[test]
+    fn crop_plan_preserves_whole_page_behavior_for_unsupported_or_ambiguous_layouts() {
+        let single = [rect(5.0,5.0,80.0,10.0),rect(5.0,25.0,80.0,10.0),
+            rect(5.0,45.0,80.0,10.0),rect(5.0,65.0,80.0,10.0)];
+        assert!(column_recognition_crops(&single, 200, 200).is_none());
+        assert!(column_recognition_crops(&[], 200, 200).is_none());
+        assert!(column_recognition_crops(&[single[0];65], 200, 200).is_none());
+        let mut bad = single;
+        bad[0].x = f32::NAN;
+        assert!(column_recognition_crops(&bad, 200, 200).is_none());
+        bad[0] = rect(190.0, 0.0, 20.0, 10.0);
+        assert!(column_recognition_crops(&bad, 200, 200).is_none());
+        // Separate lines whose padding overlaps must not duplicate source pixels.
+        let dense = [rect(0.0,0.0,40.0,10.0),rect(150.0,0.0,40.0,10.0),
+            rect(0.0,12.0,40.0,10.0),rect(150.0,12.0,40.0,10.0)];
+        assert!(column_recognition_crops(&dense, 200, 100).is_none());
+    }
+
+
+    #[test]
+    fn crop_coordinates_translate_to_the_page_without_resizing_or_clamping() {
+        let crop = rect(1030.0, 240.0, 400.0, 70.0);
+        let local = rect(8.25, 10.5, 360.0, 45.0);
+        let page = crop_rect_to_page(local, crop, 1800, 1000).unwrap();
+        assert_eq!((page.x,page.y,page.w,page.h), (1038.25,250.5,360.0,45.0));
+        assert!(crop_rect_to_page(rect(-1.0,0.0,10.0,10.0), crop,1800,1000).is_none());
+        assert!(crop_rect_to_page(rect(399.0,0.0,10.0,10.0), crop,1800,1000).is_none());
+        assert!(crop_rect_to_page(rect(0.0,69.0,10.0,10.0), crop,1800,1000).is_none());
+        assert!(crop_rect_to_page(rect(0.0,0.0,f32::NAN,10.0), crop,1800,1000).is_none());
+        assert!(crop_rect_to_page(local,crop,1400,1000).is_none());
+    }
+
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Render and push the OCR-bench GPU kernel without committing an account name or token.
 
-Modeled on CrispEmbed's tools/kaggle/kpush.py: kernel-metadata.json and kernel.py carry the
+Modeled on CrispEmbed's tools/kaggle/kpush.py: The built-in defaults and kernel.py carry the
 placeholder ${KAGGLE_ACCOUNT}; this renders a temporary copy with the account from the
 environment plus the run parameters (@RUN_ID@, @BINARY_SHA@, ...) and pushes it. Kaggle uploads
 only the code_file, so everything the kernel needs is baked into the rendered kernel.py.
@@ -27,6 +27,20 @@ import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+# Public defaults are account-neutral; local metadata overrides stay ignored.
+DEFAULT_METADATA = {'id': '${KAGGLE_ACCOUNT}/crispsorter-ocr-bench-gpu-@SLOT@',
+ 'title': 'crispsorter-ocr-bench-gpu-@SLOT@',
+ 'code_file': 'kernel.py',
+ 'language': 'python',
+ 'kernel_type': 'script',
+ 'is_private': 'true',
+ 'enable_gpu': 'true',
+ 'enable_tpu': 'false',
+ 'enable_internet': 'true',
+ 'competition_sources': [],
+ 'dataset_sources': ['${KAGGLE_ACCOUNT}/crispasr-hf-token'],
+ 'kernel_sources': [],
+ 'model_sources': []}
 ACCOUNT = "${KAGGLE_ACCOUNT}"
 
 
@@ -63,7 +77,9 @@ def main(argv=None):
     params = {ACCOUNT: account or "ACCOUNT", "@RUN_ID@": a.run_id, "@BINARY_SHA@": a.binary_sha,
               "@RUNNER_SHA@": a.runner_sha or a.binary_sha, "@ENGINES@": a.engines, "@SHARD@": a.shard, "@SLOT@": a.slot,
               "@CORPUS@": a.corpus, "@PAGES@": a.pages, "@BUDGET_HOURS@": str(a.budget_hours)}
-    meta = json.loads(render((HERE / "kernel-metadata.json").read_text(), params))
+    metadata_path = HERE / "kernel-metadata.json"
+    metadata_text = metadata_path.read_text() if metadata_path.exists() else json.dumps(DEFAULT_METADATA)
+    meta = json.loads(render(metadata_text, params))
     code = render((HERE / meta["code_file"]).read_text(), params)
     leftovers = [k for k in params if k in code or k in json.dumps(meta)]
     if leftovers:

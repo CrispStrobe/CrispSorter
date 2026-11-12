@@ -42,7 +42,7 @@ fn math_engine() -> Result<std::sync::MutexGuard<'static, crispembed::MathOcr>> 
         let _init = MATH_INIT.lock().map_err(|error| anyhow::anyhow!("Math OCR initialization lock poisoned: {error}"))?;
         if MATH_OCR.get().is_none() {
             let model = std::panic::catch_unwind(|| {
-                let resolved = crate::model_provisioning::resolve_model(DEFAULT_MATH_MODEL, Some(true))
+                let resolved = crate::model_provisioning::resolve_model(DEFAULT_MATH_MODEL, Some(false))
                     .map_err(anyhow::Error::msg)?;
                 crispembed::MathOcr::new(&resolved, 0)
                     .map_err(|error| anyhow::anyhow!("Math OCR initialization failed: {error}"))
@@ -126,7 +126,7 @@ pub fn recognize_formula_with_model(
     // consent instead of fetching it silently.
     crate::index::license_consent::ensure_registry_download_allowed(model_path)?;
     log.step("loading_model",Value::Null);
-    let resolved = crate::model_provisioning::resolve_model(model_path, Some(true))
+    let resolved = crate::model_provisioning::resolve_model(model_path, Some(false))
         .map_err(anyhow::Error::msg)?;
     let mut ocr = crispembed::MathOcr::new(&resolved, 0)
         .map_err(|e| anyhow::anyhow!("MathOcr init failed: {e}"))?;

@@ -39,7 +39,7 @@ trait used by CrispSorter.
 | Listing | Cache-aware native listings with invalidation after mutations; bounded recursive filename search | Remote full-text search is not assumed; fallback content search is bounded to readable files of at most 256 KiB |
 | Transfers | Shared bounded `TransferQueue`, retry/backoff, cancellation, progress, reader/writer APIs, and native resume checkpoints | The legacy synchronous trait uses a bounded blocking adapter; FUSE remains synchronous by design |
 | Mutations | Create, rename, move, copy, replace/update, timestamps where the gateway safely permits them, delete/trash | Capabilities are checked before IPC; unsupported operations fail explicitly |
-| Reversible trash | Native Internxt/Filen and Google Drive restore paths; duplicate UI and CLI/Tauri restore guards | LocalDrive and generic WebDAV do not claim recoverability; OneDrive recycle-bin restore is gated pending opaque-ID/account semantics |
+| Reversible trash | Google Drive explicit path restore; Internxt exact-object duplicate receipts; CLI/Tauri guards | Native Internxt/Filen path-only restore remains disabled; LocalDrive and generic WebDAV do not claim recoverability; OneDrive recycle-bin restore is gated pending opaque-ID/account semantics |
 | Versions | Google Drive and OneDrive list/restore contracts, UI capability gating, ignored live tests | OAuth tokens are required explicitly for live runs |
 | Search | Recursive bounded filename/path search in GUI and CLI; optional bounded content scan | Do not turn this into an unrestricted provider walk |
 | Proxy | HTTP(S), SOCKS5/SOCKS5H, persisted non-secret settings, keychain password, shared construction paths | Proxy passwords never serialize into settings or drive metadata |
@@ -90,8 +90,110 @@ and opt-in large-file live tests.
 `CloudDrive::restore_deleted` and `DriveCapabilities::reversible_trash` form
 the common restore boundary. The Tauri command and `crispsorter drives
 restore-deleted` CLI both check the capability before invoking it. Duplicate
-mutations persist bounded audit records; cloud moves can be undone, while
-trash restore is offered only for providers advertising a real restore API.
+mutations persist bounded audit records and cloud moves can be undone.
+Path-only historical restore controls remain disabled. New duplicate trash
+uses only the qualified object-receipt adapter described below.
+
+Native Filen and Internxt path-only restores remain disabled: a basename,
+including a unique current basename, does not prove historical object identity.
+Their legacy `reversible_trash` capability remains false. Explicit existing
+delete APIs are unchanged. Google Drive explicit path-based restore still uses
+unique live ancestors and a trashed leaf; legacy duplicate path-only history
+never enables restore. Use the provider app to restore existing native trash.
+
+### Durable duplicate trash: Internxt receipt slice
+
+Only Internxt advertises `trash_receipts` and exposes the exact-object adapter.
+Both app SDK dependencies and `Cargo.lock` pin merged upstream
+`9b57beee7ac2e6ae9aaa15a1332a92bcfb5e1460`. This includes the filename correction
+in [PR #5](https://github.com/CrispStrobe/crisp-cloud-rs/pull/5) and the receipt-specific
+one-shot transport in [PR #6](https://github.com/CrispStrobe/crisp-cloud-rs/pull/6).
+Legacy path-only restore stays disabled for native providers; Filen, Google and
+other providers do not enable the duplicate receipt workflow. Existing explicit
+delete APIs remain unchanged.
+
+Receipt deletion calls `trash_once`; restoration calls
+`restore_from_trash_once`. They bypass the legacy gateway retry helper. Their
+separate SDK client shares the ordinary proxy, TLS defaults, HTTP version,
+user-agent and timeout builder, then disables protocol retry and redirect
+following. There is no automatic auth-refresh/retry wrapper in the app receipt
+adapter. Legacy SDK mutation methods retain their existing retry behavior and
+must not be substituted into this contract. Listing caches and recent-write
+overlays for the affected UUID are cleared after every attempted one-shot
+mutation; local overlays do not establish remote completion.
+
+The advance from `33bdc33f` also includes Filen zero-byte download handling and
+Internxt empty-file handling, safe registration retries, recent-write listing
+reconciliation, in-place update changes and additional storage/search APIs.
+Public APIs and session identity fields used by the app adapters remain
+compatible. Internxt still rejects unsupported zero-byte uploads before remote
+registration; Filen chunkless empty files no longer request a nonexistent chunk.
+Receipt commands instantiate their own provider/client, so identity observation
+does not reuse a client containing another command's recent-write overlays.
+
+Qualification at the merged tree: all 11 targeted real HTTP one-shot tests and
+four existing HTTP-configuration regressions passed. These cover lost responses,
+502/503/504, redirect rejection, 401 without refresh, timeout, configured proxy,
+folder operations, escaped identifiers and cache/overlay invalidation. The app's
+complete native adapter modules, real CloudDrive/filesystem boundary, client
+cache, logger and journal passed a narrow compile check against both real
+pinned SDKs (host-only keychain/log-sink/proxy-configuration shims). Full locked
+metadata with both native features passed with isolated sibling versions
+matching the app lock: CrispASR 0.8.32, CrispEmbed 0.17.19 and crisp-docx 0.1.0.
+No unrelated sibling versions or registry lock entries were changed. Focused
+receipt and frontend checks qualify journal/identity/IPC behavior, not a full
+Tauri build or live account execution. Prior API-only compilation was not
+sufficient to establish no replay: the real SDK HTTP controls are a prerequisite.
+
+Before deletion, the application writes a private, fsynced journal containing
+registered drive/group, a fingerprint of provider endpoint + stable account +
+root IDs, object UUID/type/name, original path and original folder UUID. Every
+ancestor and source is resolved freshly with ambiguity rejection. The provider
+is then asked to trash that exact UUID. A success marker confirms deletion;
+the journal is not dependent on the browser's bounded audit/localStorage.
+Credentials and session tokens are never included or logged. Unix journal
+files and directories use modes 0600 and 0700 respectively.
+
+Restore accepts only an opaque journal receipt ID. It verifies the registered
+drive, account fingerprint, exact fresh trash UUID/type/name and original folder
+UUID, and refuses a replacement occupying the original name. A durable
+cross-process single-use claim precedes the provider mutation. Internxt moves
+the exact UUID/type into the recorded folder UUID; there is no caller-selected
+replacement identity or destination. A receipt is never automatically replayed.
+
+After interruption, **Recheck without retry** observes the recorded UUID only.
+An uncertain deletion found in trash becomes restorable. An object still in its
+original folder remains `delete_uncertain`: that snapshot cannot prove that an
+in-flight request will not subsequently commit. Legacy `not-deleted` journal
+markers are ignored; a later confirmed deletion cannot be hidden by them.
+An uncertain restoration found at its
+original folder becomes `restored`. Unknown state, missing/changed identity,
+account changes or a still-trashed claimed restore remain blocked; use the
+provider app when observation cannot establish completion. This avoids issuing
+another mutation when a remote request may still have completed. Directory
+fsync includes the journal's parent entry on first creation on Unix; oversized
+serialized receipts are rejected before remote deletion. Power-loss and physical-
+crash behavior have not been tested on any platform.
+The journal and receipt-specific Internxt capability are disabled on non-Unix
+targets: directory-entry persistence is not implemented there, so a receipt
+cannot authorize remote deletion or restoration. Unix behavior is unchanged;
+mobile Unix targets execute the fsync protocol but remain unqualified for
+device crash durability. Windows/mobile durability,
+full Tauri execution and live provider accounts remain unqualified. Provider APIs offer no cross-client
+transaction/CAS around the last validation and mutation, so concurrent remote
+changes can still produce a refused/uncertain outcome requiring recheck.
+
+`tests/trash-receipt-contract` executes the production journal and selected
+production native adapter methods against an in-memory SDK fixture. It covers
+restart, account/endpoint/root/drive mismatch, UUID/type/name/parent changes,
+duplicate names, destination replacements, concurrent claims and failures before
+or after mutation. Frontend tests verify capability gating and opaque-ID-only
+restore/recheck payloads. Full Tauri/application compilation and live provider
+qualification are separate gates. The source-bound gate also reproduces
+incomplete provider filename metadata
+and verifies that restore fails closed; it verifies that the enabled receipt
+capability remains separate from unsupported legacy path restore. No vendored
+SDK divergence is introduced.
 
 Sync-pair comparison is metadata-only until the user explicitly applies a
 policy. Confirmed one-click `local_wins` and `remote_wins` use the existing

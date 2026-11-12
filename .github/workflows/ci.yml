@@ -351,7 +351,26 @@ jobs:
         # all — the exact drift this list exists to prevent.
         # `fuse` compiles the actual filesystem, mount command and queue/cache
         # integration tests. These tests do not need a privileged mount.
-        run: cargo test -p crispsorter --lib --features desktop,sidecars,audio-glint,aitoolkit,cloud-backup,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,ocr-reviewed-pdf,crispembed-license-api,ocr-photo-tools,crispasr,translate-align,translate-nmt,pdf-render,anydoc,fuse
+        run: cargo test -p crispsorter --lib --features desktop,sidecars,audio-glint,aitoolkit,cloud-backup,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,ocr-reviewed-pdf,crispembed-license-api,ocr-photo-tools,crispasr,translate-align,translate-nmt,pdf-render,anydoc,fuse,paddle-ocr
+
+      # PaddleOCR ships in no other job; prove it really recognises text.
+      # Its pinned models now come from the OCR model manager (~20 MB),
+      # never from usls' own hub.
+      - name: Live PaddleOCR recognition (installs pinned models through the manager)
+        working-directory: repos/CrispSorter
+        run: cargo test -p crispsorter --lib --features desktop,sidecars,audio-glint,aitoolkit,cloud-backup,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,ocr-reviewed-pdf,crispembed-license-api,ocr-photo-tools,crispasr,translate-align,translate-nmt,pdf-render,anydoc,fuse,paddle-ocr -- --ignored live_paddle_recognises_the_fixture_sentence
+
+      # The OCR model manager against the real network: installs tesseract-eng
+      # + dbnet-det into a temporary cache, resumes a deliberately truncated
+      # `.part`, checks the SHA-256 pins and recognises the fixture. Run on its
+      # own: the test pins the process-wide model cache.
+      - name: Live OCR model manager (download, resume, verify, recognise)
+        working-directory: repos/CrispSorter
+        run: cargo test -p crispsorter --lib --features desktop,sidecars,audio-glint,aitoolkit,cloud-backup,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,ocr-reviewed-pdf,crispembed-license-api,ocr-photo-tools,crispasr,translate-align,translate-nmt,pdf-render,anydoc,fuse,paddle-ocr -- --ignored live_model_manager_installs_resumes_and_recognises
+
+      - name: Live ocrs recognition (installs pinned ONNX models through the manager)
+        working-directory: repos/CrispSorter
+        run: cargo test -p crispsorter --lib --features desktop,sidecars,audio-glint,aitoolkit,cloud-backup,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,ocr-reviewed-pdf,crispembed-license-api,ocr-photo-tools,crispasr,translate-align,translate-nmt,pdf-render,anydoc,fuse,paddle-ocr -- --ignored live_ocrs_installs_and_recognises_the_fixture_sentence
 
       - name: Batch sorting script tests
         working-directory: repos/CrispSorter
@@ -370,7 +389,7 @@ jobs:
         # gate on P32.11 Z4 — the claims zpdf is adopted for. The native drive
         # features match the shipped release builds, so the binary CI checks is
         # the binary users get.
-        run: cargo build --bin crispsorter -p crispsorter --features desktop,sidecars,audio-glint,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,ocr-reviewed-pdf,crispembed-license-api,ocr-photo-tools,crispasr,translate-align,translate-nmt,pdf-render,fuse
+        run: cargo build --bin crispsorter -p crispsorter --features desktop,sidecars,audio-glint,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,ocr-reviewed-pdf,crispembed-license-api,ocr-photo-tools,crispasr,translate-align,translate-nmt,pdf-render,fuse,paddle-ocr
 
       - name: Install the independent checkers
         # None of these share code with what they are checking: MuPDF
@@ -382,6 +401,33 @@ jobs:
       - name: Verify CLI results and operation diagnostics remain separate
         working-directory: repos/CrispSorter
         run: python3 scripts/verify_cli_operations.py --cli target/debug/crispsorter
+
+      - name: CLI OCR model manager smoke (offline refusal, pull, offline recognition)
+        working-directory: repos/CrispSorter
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CRISPEMBED_CACHE_DIR="${RUNNER_TEMP}/ocr-models-cli"
+          export CRISPSORTER_ACCEPT_INTENDED_PURPOSE=1
+          cli=target/debug/crispsorter
+          # Without the model, --offline must fail and name what is missing.
+          if out=$("$cli" -f json ocr tests/quality/ocr-task.png --engine tesseract --language eng --offline 2>&1 </dev/null); then
+            echo "expected --offline without models to fail"; echo "$out"; exit 1
+          fi
+          echo "$out" | grep -q "tesseract-eng" || { echo "missing model not listed: $out"; exit 1; }
+          # A non-terminal run without --yes refuses to download.
+          if "$cli" -f json ocr tests/quality/ocr-task.png --engine tesseract --language eng </dev/null >/dev/null 2>&1; then
+            echo "expected a non-terminal run without --yes to refuse"; exit 1
+          fi
+          "$cli" --yes models pull tesseract --language eng
+          "$cli" -f json ocr tests/quality/ocr-task.png --engine tesseract --language eng --offline </dev/null > "${RUNNER_TEMP}/ocr-cli.json"
+          python3 - "${RUNNER_TEMP}/ocr-cli.json" <<'PY'
+          import json, sys
+          text = json.load(open(sys.argv[1]))["text"].lower()
+          missing = [w for w in ("cobalt", "warranty", "november", "2031") if w not in text]
+          assert not missing, (missing, text)
+          print("offline OCR after `models pull`:", text.strip())
+          PY
 
       - name: Compile the generated OCR qualification tools against the pinned runtime
         working-directory: repos/CrispSorter
@@ -828,6 +874,71 @@ jobs:
           # And the env override has to win over it.
           CRISPSORTER_SECRET_BACKEND=session \
             "$EXE" --format json secrets --data-dir "$DATA" status | grep -q '"session"'
+
+  cloud-backends:
+    concurrency:
+      group: ci-cloud-backends-${{ github.ref }}${{ github.ref == 'refs/heads/main' && format('-{0}', github.sha) || '' }}
+      cancel-in-progress: false
+    if: github.event_name != 'workflow_dispatch' || inputs.scope == 'all'
+    name: Native cloud crates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      # The Filen/Internxt clients are git dependencies on crisp-cloud-rs
+      # (no vendored copies). Verify exactly the revision src-tauri/Cargo.toml
+      # pins; the script also fails if Cargo.lock resolved a different one.
+      - name: Check out CrispSorter manifests
+        uses: actions/checkout@v4
+        with:
+          path: repos/CrispSorter
+          sparse-checkout: |
+            src-tauri/Cargo.toml
+            Cargo.lock
+            scripts/crisp_cloud_rev.py
+          sparse-checkout-cone-mode: false
+
+      - name: Resolve the crisp-cloud-rs revision CrispSorter depends on
+        id: cloud
+        shell: bash
+        run: python3 repos/CrispSorter/scripts/crisp_cloud_rev.py --root repos/CrispSorter --github-output
+
+      - name: Check out crisp-cloud-rs
+        uses: actions/checkout@v4
+        with:
+          repository: CrispStrobe/crisp-cloud-rs
+          ref: ${{ steps.cloud.outputs.rev }}
+          path: crisp-cloud-rs
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Rust dependency cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crisp-cloud-rs -> target
+
+      - name: Format cloud crates
+        working-directory: crisp-cloud-rs
+        run: cargo fmt --all -- --check
+
+      - name: Test cloud crates
+        working-directory: crisp-cloud-rs
+        run: |
+          cargo test -p crisp-internxt --all-targets
+          cargo test -p crisp-filen --all-targets
+
+      - name: Clippy cloud crates
+        working-directory: crisp-cloud-rs
+        run: |
+          cargo clippy -p crisp-internxt --all-targets --all-features --no-deps -- -D warnings
+          cargo clippy -p crisp-filen --all-targets --all-features --no-deps -- -D warnings
+
+      - name: Verify publishable packages
+        working-directory: crisp-cloud-rs
+        run: |
+          cargo package -p crisp-internxt --allow-dirty
+          cargo package -p crisp-filen --allow-dirty
 
   cloud-facade:
     concurrency:

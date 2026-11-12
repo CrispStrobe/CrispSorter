@@ -1,14 +1,15 @@
 <script lang="ts">
     import { onMount } from 'svelte';
+    import { searchProvider, providerSearchNotice, type ProviderSearchEntry } from '$lib/drives/providerSearch';
     import { invoke } from '@tauri-apps/api/core';
     import { openPath } from '@tauri-apps/plugin-opener';
     import { ChevronRight, Copy, Folder, FolderPlus, Loader2, RefreshCw, Search, Trash2 } from 'lucide-svelte';
     import {
         availableDriveActions,
+        drivePathFromSearchUri,
         joinDrivePath,
         normalizeDrivePath,
         parentDrivePath,
-        supportsCloudVersions,
         type DriveCapabilities,
     } from '$lib/drives/browser';
     import {
@@ -20,8 +21,11 @@
         type DuplicateMutationAudit,
         type DuplicateDecisionAudit,
     } from '$lib/drives/duplicateAudit';
+    import { completeDuplicateMove } from '$lib/drives/duplicateMove';
     import { cloudDrivePanel, type ContextPanel, type DuplicateDecision } from '$lib/drives/panels';
     import { requestBrowserContext, subscribeBrowserContext } from '$lib/drives/browserContext';
+    import { loadTrashContext, trashWithReceipt, restoreTrashReceipt, recheckTrashReceipt, type TrashReceipt } from '$lib/drives/trashReceipts';
+    import { createVersionSelection, emptyVersionState, type VersionState, type VersionTarget } from '$lib/drives/versionSelection';
 
     type Drive = { id: string; label: string; kind: string };
     type Entry = { name: string; is_dir: boolean; size: number | null };
@@ -36,51 +40,80 @@
     let loading = $state(false);
     let error = $state('');
     let selected = $state<string | null>(null);
-    let selectedStat = $state<FileStat | null>(null);
-    let cloudVersions = $state<CloudVersion[]>([]);
-    let localVersions = $state<LocalVersion[]>([]);
-    let versionsLoading = $state(false);
-    let versionsError = $state('');
-    let restoringVersion = $state<string | null>(null);
+    // Preserve published row identity; the controller replaces whole snapshots.
+    let versionState = $state.raw<VersionState<FileStat, CloudVersion, LocalVersion>>(emptyVersionState());
+    let trashReceipts = $state<TrashReceipt[]>([]);
+    let receiptCapabilities = $state<Record<string, boolean>>({});
+    let trashContextGeneration = 0;
+
     let duplicateMutationBusy = $state<string | null>(null);
     let driveSearchQuery = $state('');
     let driveSearchContent = $state(false);
     let driveSearchBusy = $state(false);
-    let driveSearchResults = $state<Array<{ path: string; is_dir: boolean; size: number | null; mtime_unix: number | null }>>([]);
+    let driveSearchResults = $state<ProviderSearchEntry[]>([]);
+    let driveSearchNotice = $state('');
     let rightPanel = $state<ContextPanel | null>(null);
     let duplicateAudit = $state<DuplicateDecisionAudit[]>([]);
     let duplicateMutationAudit = $state<DuplicateMutationAudit[]>([]);
     const actions = $derived(availableDriveActions(capabilities, selected !== null));
 
+    const versionSelection = createVersionSelection<FileStat, CloudVersion, LocalVersion>({
+        current: currentVersionTarget,
+        changed: state => { versionState = state; },
+        stat: target => invoke('drive_stat', { driveId: target.driveId, path: target.path }),
+        capabilities: driveId => invoke('drive_capabilities', { driveId }),
+        cloud: target => invoke('drive_list_versions', { driveId: target.driveId, path: target.path }),
+        local: target => invoke('version_history', { path: target.path }),
+        confirm: (version, target) => window.confirm(`Restore version ${version.id} of ${target.name}?`),
+        restore: (target, versionId) => invoke('drive_restore_version', { driveId: target.driveId, path: target.path, versionId }),
+    });
+    function currentVersionTarget(): VersionTarget | null {
+        if (!driveId || rightPanel?.source.kind !== 'CloudDrive' || rightPanel.source.driveId !== driveId) return null;
+        return { driveId, directory: path, path: rightPanel.source.path, name: selected };
+    }
+    function clearSelection() {
+        selected = null;
+        versionSelection.invalidate();
+    }
+    let refreshGeneration = 0;
     async function refresh() {
-        if (!driveId) return;
+        clearSelection();
+        const revision = ++refreshGeneration;
+        const source = { driveId, path };
+        const current = () => revision === refreshGeneration && source.driveId === driveId && source.path === path;
+        if (!source.driveId) return;
         loading = true;
         error = '';
         try {
-            entries = await invoke<Entry[]>('drive_list_dir', { driveId, path });
-            capabilities = await invoke<DriveCapabilities>('drive_capabilities', { driveId });
-            selected = null;
+            const listed = await invoke<Entry[]>('drive_list_dir', source);
+            if (!current()) return;
+            const caps = await invoke<DriveCapabilities>('drive_capabilities', { driveId: source.driveId });
+            if (!current()) return;
+            entries = listed;
+            capabilities = caps;
         } catch (e) {
-            error = String(e);
-            entries = [];
+            if (current()) { error = String(e); entries = []; }
         } finally {
-            loading = false;
+            if (current()) loading = false;
         }
     }
 
     async function searchDrive() {
         if (!driveId || !driveSearchQuery.trim()) return;
         driveSearchBusy = true;
+        driveSearchNotice = '';
         error = '';
         try {
-            driveSearchResults = await invoke('drive_search', {
+            const report = await searchProvider({
                 driveId,
                 root: path,
                 query: driveSearchQuery.trim(),
                 maxDepth: 8,
                 maxResults: 100,
-                content: driveSearchContent && capabilities.read,
+                content: driveSearchContent && !!capabilities.read,
             });
+            driveSearchResults = report.results;
+            driveSearchNotice = providerSearchNotice(report);
         } catch (e) {
             error = `Could not search drive: ${String(e)}`;
             driveSearchResults = [];
@@ -91,14 +124,10 @@
 
     async function openDriveSearchResult(result: { path: string }): Promise<void> {
         const resultPath = normalizeDrivePath(result.path);
+        clearSelection();
         rightPanel = cloudDrivePanel(driveId, resultPath);
-        selected = null;
-        selectedStat = null;
-        try {
-            selectedStat = await invoke<FileStat>('drive_stat', { driveId, path: resultPath });
-        } catch (e) {
-            error = `Could not inspect search result: ${String(e)}`;
-        }
+        const target = currentVersionTarget();
+        if (target) await versionSelection.load(target);
     }
 
     async function loadDrives() {
@@ -111,43 +140,10 @@
 
     async function selectEntry(name: string) {
         selected = name;
-        cloudVersions = [];
-        localVersions = [];
-        versionsError = '';
         rightPanel = driveId ? cloudDrivePanel(driveId, joinDrivePath(path, name), name) : null;
-        const selectedPath = joinDrivePath(path, name);
-        try {
-            selectedStat = await invoke<FileStat>('drive_stat', { driveId, path: selectedPath });
-        } catch { selectedStat = null; }
-        if (!selectedStat || selectedStat.is_dir || !driveId) return;
-        versionsLoading = true;
-        try {
-            const caps = await invoke<DriveCapabilities>('drive_capabilities', { driveId });
-            // Do not even cross the IPC boundary for provider versions when
-            // the capability probe says they are unsupported. The Tauri
-            // command also guards this, but avoiding the call here keeps the
-            // frontend contract honest and avoids needless provider errors.
-            const cloud = supportsCloudVersions(caps)
-                ? await invoke<CloudVersion[]>('drive_list_versions', { driveId, path: selectedPath }).catch(() => [])
-                : [];
-            const local = await invoke<LocalVersion[]>('version_history', { path: selectedPath }).catch(() => []);
-            cloudVersions = cloud;
-            localVersions = local;
-        } catch (e) { versionsError = String(e); }
-        finally { versionsLoading = false; }
-    }
-
-    async function restoreCloudVersion(version: CloudVersion) {
-        if (!selected || !driveId || restoringVersion) return;
-        if (!window.confirm(`Restore version ${version.id} of ${selected}?`)) return;
-        restoringVersion = version.id;
-        versionsError = '';
-        try {
-            await invoke('drive_restore_version', { driveId, path: joinDrivePath(path, selected), versionId: version.id });
-            await selectEntry(selected);
-            await refresh();
-        } catch (e) { versionsError = String(e); }
-        finally { restoringVersion = null; }
+        const target = currentVersionTarget();
+        if (target) await versionSelection.load(target);
+        else versionSelection.invalidate();
     }
 
     function selectDrive(id: string) {
@@ -204,15 +200,10 @@
 
     async function openDuplicateItem(itemPath: string) {
         if (itemPath.startsWith('crisp+drive://')) {
-            const rest = itemPath.slice('crisp+drive://'.length);
-            const slash = rest.indexOf('/');
-            if (slash > 0) {
-                requestBrowserContext(cloudDrivePanel(
-                    rest.slice(0, slash),
-                    decodeURIComponent(rest.slice(slash)),
-                ));
-                return;
-            }
+            const parts = duplicateDriveParts(itemPath);
+            if (parts) requestBrowserContext(cloudDrivePanel(parts.driveId, parts.path));
+            else error = 'Could not open duplicate: invalid cloud location.';
+            return;
         }
         try { await openPath(itemPath); }
         catch (e) { error = `Could not open duplicate: ${String(e)}`; }
@@ -224,105 +215,103 @@
     }
 
     function duplicateDriveParts(itemPath: string): { driveId: string; path: string } | null {
-        if (!itemPath.startsWith('crisp+drive://')) return null;
-        const rest = itemPath.slice('crisp+drive://'.length);
-        const slash = rest.indexOf('/');
-        if (slash < 0) return null;
+        const parts = drivePathFromSearchUri(itemPath);
+        return parts ? { driveId: parts.driveId, path: normalizeDrivePath(parts.remotePath) } : null;
+    }
+
+    const duplicateMoveDependencies = {
+        current: () => rightPanel,
+        changed: (panel: ContextPanel) => { rightPanel = panel; },
+        move: (driveId: string, source: string, destination: string) =>
+            invoke('drive_move_path', { driveId, source, destination }),
+        record: (entry: DuplicateMutationAudit) => {
+            duplicateMutationAudit = [...duplicateMutationAudit, entry].slice(-200);
+            saveDuplicateMutationAudit(duplicateMutationAudit);
+        },
+    };
+    async function loadDuplicateTrash(groupId: string, items: { path: string }[]) {
+        const generation = ++trashContextGeneration;
+        const driveIds = items.flatMap((item) => { const parts = duplicateDriveParts(item.path); return parts ? [parts.driveId] : []; });
         try {
-            return { driveId: rest.slice(0, slash), path: normalizeDrivePath(decodeURIComponent(rest.slice(slash))) };
-        } catch {
-            return null;
+            const context = await loadTrashContext(groupId, driveIds);
+            if (generation !== trashContextGeneration || rightPanel?.source.kind !== 'DuplicateGroup' || rightPanel.source.groupId !== groupId) return;
+            trashReceipts = context.receipts;
+            receiptCapabilities = context.capabilities;
+        } catch (e) {
+            if (generation === trashContextGeneration) { receiptCapabilities = {}; error = `Could not load durable trash receipts: ${String(e)}`; }
         }
     }
 
-    async function mutateCloudDuplicate(itemPath: string, operation: 'move' | 'delete'): Promise<void> {
+    async function trashCloudDuplicate(itemPath: string) {
         const parts = duplicateDriveParts(itemPath);
-        if (!parts || duplicateMutationBusy === itemPath) return;
+        const panel = rightPanel?.source.kind === 'DuplicateGroup' ? rightPanel.source : null;
+        if (!parts || !panel || duplicateMutationBusy || receiptCapabilities[parts.driveId] !== true) return;
+        const groupId = panel.groupId;
+        if (!window.confirm('Move this duplicate to provider trash with a durable object receipt?')) return;
+        duplicateMutationBusy = itemPath;
+        try {
+            const receipt = await trashWithReceipt(parts.driveId, groupId, parts.path);
+            if (rightPanel?.source.kind === 'DuplicateGroup' && rightPanel.source.groupId === groupId) {
+                rightPanel = { ...rightPanel, source: { ...rightPanel.source, items: rightPanel.source.items.filter((item) => item.path !== itemPath) } };
+            }
+            duplicateMutationAudit = [...duplicateMutationAudit, { groupId, driveId: parts.driveId,
+                operation: 'delete' as const, from: receipt.path, to: null, at: Date.now() }].slice(-200);
+            saveDuplicateMutationAudit(duplicateMutationAudit);
+        } catch (e) { error = `Could not confirm duplicate trash: ${String(e)}`; }
+        finally {
+            duplicateMutationBusy = null;
+            if (rightPanel?.source.kind === 'DuplicateGroup' && rightPanel.source.groupId === groupId) await loadDuplicateTrash(groupId, rightPanel.source.items);
+        }
+    }
+
+    async function updateTrashReceipt(receipt: TrashReceipt, restore: boolean) {
+        if (duplicateMutationBusy) return;
+        if (restore && !window.confirm(`Restore “${receipt.path}” to its recorded provider folder?`)) return;
+        duplicateMutationBusy = receipt.id;
+        try {
+            const updated = restore ? await restoreTrashReceipt(receipt) : await recheckTrashReceipt(receipt);
+            if (rightPanel?.source.kind === 'DuplicateGroup' && rightPanel.source.groupId === receipt.group_id) {
+                trashReceipts = trashReceipts.map((item) => item.id === updated.id ? updated : item);
+            }
+        } catch (e) { error = `Could not ${restore ? 'restore' : 'recheck'} receipt: ${String(e)}`; }
+        finally {
+            duplicateMutationBusy = null;
+            if (rightPanel?.source.kind === 'DuplicateGroup' && rightPanel.source.groupId === receipt.group_id) await loadDuplicateTrash(receipt.group_id, rightPanel.source.items);
+        }
+    }
+
+    async function moveCloudDuplicate(itemPath: string): Promise<void> {
+        const parts = duplicateDriveParts(itemPath);
+        const panel = rightPanel?.source.kind === 'DuplicateGroup' ? rightPanel.source : null;
+        if (!parts || !panel || duplicateMutationBusy !== null) return;
+        const groupId = panel.groupId;
+        // Own the operation before the first provider await, including capabilities.
+        duplicateMutationBusy = itemPath;
         try {
             const caps = await invoke<DriveCapabilities>('drive_capabilities', { driveId: parts.driveId });
-            if (operation === 'delete' && !caps.delete) throw new Error('Provider does not support delete/trash.');
-            if (operation === 'delete' && !caps.reversible_trash) throw new Error('Provider does not expose recoverable trash; duplicate deletion is blocked.');
-            if (operation === 'move' && !caps.move_path) throw new Error('Provider does not support move.');
-            const name = parts.path.split('/').filter(Boolean).at(-1) ?? parts.path;
-            let destinationPath: string | undefined;
-            if (operation === 'delete') {
-                if (!window.confirm(`Move duplicate “${name}” to provider trash?`)) return;
-            } else {
-                const destination = window.prompt('Move duplicate to remote path', parts.path);
-                if (!destination?.trim() || normalizeDrivePath(destination) === parts.path) return;
-                destinationPath = normalizeDrivePath(destination);
-            }
-            duplicateMutationBusy = itemPath;
-            if (operation === 'delete') {
-                await invoke('drive_delete_path', { driveId: parts.driveId, path: parts.path });
-            } else {
-                if (!destinationPath) return;
-                await invoke('drive_move_path', {
-                    driveId: parts.driveId,
-                    source: parts.path,
-                    destination: destinationPath,
-                });
-            }
-            if (rightPanel?.source.kind === 'DuplicateGroup') {
-                const items = operation === 'delete'
-                    ? rightPanel.source.items.filter((item) => item.path !== itemPath)
-                    : rightPanel.source.items.map((item) => item.path === itemPath
-                        ? { ...item, path: `crisp+drive://${parts.driveId}${destinationPath}` }
-                        : item);
-                rightPanel = { ...rightPanel, source: { ...rightPanel.source, items } };
-            }
-            if (rightPanel?.source.kind === 'DuplicateGroup') {
-                const groupId = rightPanel.source.groupId;
-                duplicateMutationAudit = [...duplicateMutationAudit, {
-                    groupId,
-                    driveId: parts.driveId,
-                    operation,
-                    from: parts.path,
-                    to: destinationPath ?? null,
-                    at: Date.now(),
-                }].slice(-200);
-                saveDuplicateMutationAudit(duplicateMutationAudit);
-            }
-        } catch (e) { error = `Could not ${operation} cloud duplicate: ${String(e)}`; }
+            if (!caps.move_path) throw new Error('Provider does not support move.');
+            const destination = window.prompt('Move duplicate to remote path', parts.path);
+            if (!destination?.trim() || normalizeDrivePath(destination) === parts.path) return;
+            const destinationPath = normalizeDrivePath(destination);
+            await completeDuplicateMove(duplicateMoveDependencies, {
+                groupId, driveId: parts.driveId, source: parts.path, destination: destinationPath,
+                audit: { groupId, driveId: parts.driveId, operation: 'move', from: parts.path, to: destinationPath, at: Date.now() },
+            });
+        } catch (e) { error = `Could not move cloud duplicate: ${String(e)}`; }
         finally { duplicateMutationBusy = null; }
     }
 
     async function undoLastCloudMove(): Promise<void> {
         const panel = rightPanel?.source.kind === 'DuplicateGroup' ? rightPanel.source : null;
-        const last = duplicateMutationAudit.slice().reverse().find((entry) => entry.groupId === panel?.groupId && entry.operation === 'move');
-        if (!panel || !last?.to || duplicateMutationBusy) return;
+        const last = duplicateMutationAudit.filter((entry) => entry.groupId === panel?.groupId).at(-1);
+        if (!panel || last?.operation !== 'move' || !last.to || duplicateMutationBusy !== null) return;
         duplicateMutationBusy = last.to;
         try {
-            await invoke('drive_move_path', { driveId: last.driveId, source: last.to, destination: last.from });
-            const current = panel.items.map((item) => item.path === `crisp+drive://${last.driveId}${last.to}`
-                ? { ...item, path: `crisp+drive://${last.driveId}${last.from}` } : item);
-            rightPanel = { ...rightPanel!, source: { ...panel, items: current } };
-            duplicateMutationAudit = [...duplicateMutationAudit, {
-                ...last,
-                operation: 'restore' as const,
-                to: null,
-                at: Date.now(),
-            }].slice(-200);
-            saveDuplicateMutationAudit(duplicateMutationAudit);
-        } catch (e) { error = `Could not undo cloud duplicate move: ${String(e)}`; }
-        finally { duplicateMutationBusy = null; }
-    }
-
-    async function restoreLastCloudTrash(): Promise<void> {
-        const panel = rightPanel?.source.kind === 'DuplicateGroup' ? rightPanel.source : null;
-        const last = duplicateMutationAudit.slice().reverse().find((entry) => entry.groupId === panel?.groupId && entry.operation === 'delete');
-        if (!panel || !last || duplicateMutationBusy) return;
-        if (!window.confirm(`Restore “${last.from}” from provider trash?`)) return;
-        duplicateMutationBusy = last.from;
-        try {
-            await invoke('drive_restore_deleted', {
-                driveId: last.driveId,
-                trashPath: last.from,
-                destination: null,
+            await completeDuplicateMove(duplicateMoveDependencies, {
+                groupId: panel.groupId, driveId: last.driveId, source: last.to, destination: last.from,
+                audit: { ...last, operation: 'restore', to: null, at: Date.now() },
             });
-            duplicateMutationAudit = duplicateMutationAudit.filter((entry) => entry !== last);
-            saveDuplicateMutationAudit(duplicateMutationAudit);
-        } catch (e) { error = `Could not restore cloud duplicate: ${String(e)}`; }
+        } catch (e) { error = `Could not undo cloud duplicate move: ${String(e)}`; }
         finally { duplicateMutationBusy = null; }
     }
 
@@ -364,7 +353,12 @@
         duplicateAudit = loadDuplicateAudit();
         duplicateMutationAudit = loadDuplicateMutationAudit();
         const unsubscribe = subscribeBrowserContext((panel) => {
+            clearSelection();
+            trashReceipts = [];
+            receiptCapabilities = {};
+            trashContextGeneration += 1;
             if (panel.source.kind === 'DuplicateGroup') {
+                void loadDuplicateTrash(panel.source.groupId, panel.source.items);
                 const restored = latestDuplicateDecision(duplicateAudit, panel.source.groupId);
                 rightPanel = restored
                     ? { ...panel, source: { ...panel.source, decision: restored } }
@@ -379,7 +373,7 @@
             }
         });
         void loadDrives();
-        return unsubscribe;
+        return () => { unsubscribe(); versionSelection.dispose(); };
     });
 </script>
 
@@ -424,8 +418,9 @@
     {#if driveSearchQuery.trim() && !driveSearchBusy}
         <div class="drive-search-results">
             <strong>{driveSearchContent ? 'Filename + bounded content matches' : 'Filename matches'} ({driveSearchResults.length})</strong>
+            {#if driveSearchNotice}<p role="status">{driveSearchNotice}</p>{/if}
             {#if driveSearchResults.length === 0}
-                <span class="muted">No provider-visible matches.</span>
+                <span class="muted">{driveSearchNotice ? 'No matches in the scanned files.' : 'No provider-visible matches.'}</span>
             {:else}
                 {#each driveSearchResults as result (result.path)}
                     <button class="drive-search-result" onclick={() => void openDriveSearchResult(result)}>
@@ -481,7 +476,7 @@
                             <div class="audit-list">
                                 {#each cloudMutations.slice().reverse() as entry}
                                     <div class="audit-entry">
-                                        <span>{entry.operation === 'move' ? `${entry.from} → ${entry.to}` : entry.operation === 'delete' ? `${entry.from} → provider trash` : `${entry.from} ← provider trash`}</span>
+                                        <span>{entry.operation === 'move' ? `${entry.from} → ${entry.to}` : entry.operation === 'delete' ? `${entry.from} → provider trash` : `${entry.from} ← restored`}</span>
                                         <time datetime={new Date(entry.at).toISOString()}>{new Date(entry.at).toLocaleString()}</time>
                                     </div>
                                 {/each}
@@ -489,13 +484,32 @@
                             {#if lastCloudMutation?.operation === 'move'}
                                 <button class="duplicate-undo" onclick={undoLastCloudMove} disabled={duplicateMutationBusy !== null}>Undo last cloud move</button>
                             {:else if lastCloudMutation?.operation === 'delete'}
-                                <button class="duplicate-undo" onclick={restoreLastCloudTrash} disabled={duplicateMutationBusy !== null}>Restore from provider trash</button>
+                                <span class="muted">This history cannot identify the original trashed item safely. Restore using the provider app.</span>
                             {:else}
                                 <span class="muted">No reversible cloud mutation is available.</span>
                             {/if}
                         </details>
                     {/if}
                 </div>
+                {#if trashReceipts.length > 0}
+                    <details class="duplicate-audit" open>
+                        <summary>Durable trash receipts ({trashReceipts.length})</summary>
+                        {#each trashReceipts as receipt}
+                            <div class="audit-entry">
+                                <span>{receipt.path} — {receipt.state.replaceAll('_', ' ')}</span>
+                                {#if receipt.state === 'deleted'}
+                                    <button onclick={() => updateTrashReceipt(receipt, true)} disabled={duplicateMutationBusy !== null || receiptCapabilities[receipt.drive_id] !== true}>Restore exact item</button>
+                                {/if}
+                                {#if receipt.state === 'delete_uncertain' || receipt.state === 'restore_uncertain' || receipt.state === 'deleted'}
+                                    <button onclick={() => updateTrashReceipt(receipt, false)} disabled={duplicateMutationBusy !== null}>Recheck without retry</button>
+                                {/if}
+                            </div>
+                            {#if receipt.state === 'restore_uncertain'}
+                                <p class="muted">The restore may have completed. Recheck its state; if it remains uncertain, use the provider app. This action will not be replayed.</p>
+                            {/if}
+                        {/each}
+                    </details>
+                {/if}
                 <ul class="duplicate-context-list">
                     {#each dupSource.items as item}
                         <li>
@@ -509,16 +523,16 @@
                                 <button onclick={() => copyDuplicatePath(item.path)}>Copy path</button>
                                 {#if duplicateDriveParts(item.path)}
                                     <button
-                                        onclick={() => mutateCloudDuplicate(item.path, 'move')}
-                                        disabled={duplicateMutationBusy === item.path}
+                                        onclick={() => moveCloudDuplicate(item.path)}
+                                        disabled={duplicateMutationBusy !== null}
                                         title="Move cloud duplicate">
                                         Move
                                     </button>
                                     <button
                                         class="danger"
-                                        onclick={() => mutateCloudDuplicate(item.path, 'delete')}
-                                        disabled={duplicateMutationBusy === item.path}
-                                        title="Move cloud duplicate to trash">
+                                        onclick={() => trashCloudDuplicate(item.path)}
+                                        disabled={duplicateMutationBusy !== null || receiptCapabilities[duplicateDriveParts(item.path)?.driveId ?? ''] !== true}
+                                        title="Trash requires a durable object receipt supported by this provider.">
                                         Trash
                                     </button>
                                 {/if}
@@ -549,26 +563,27 @@
             {:else}
                 <code>{sourceKind(rightPanel.source)}</code>
             {/if}
-            {#if selectedStat}
+            {#if versionState.error && !versionState.stat}<div class="browser-error">{versionState.error}</div>{/if}
+            {#if versionState.stat}
                 <dl>
-                    <dt>Type</dt><dd>{selectedStat.is_dir ? 'Folder' : 'File'}</dd>
-                    <dt>Size</dt><dd>{selectedStat.size.toLocaleString()} B</dd>
-                    {#if selectedStat.mtime_unix}<dt>Modified</dt><dd>{new Date(selectedStat.mtime_unix * 1000).toLocaleString()}</dd>{/if}
+                    <dt>Type</dt><dd>{versionState.stat.is_dir ? 'Folder' : 'File'}</dd>
+                    <dt>Size</dt><dd>{versionState.stat.size.toLocaleString()} B</dd>
+                    {#if versionState.stat.mtime_unix}<dt>Modified</dt><dd>{new Date(versionState.stat.mtime_unix * 1000).toLocaleString()}</dd>{/if}
                 </dl>
-                {#if selected && !selectedStat.is_dir}
+                {#if selected && !versionState.stat.is_dir}
                     <section class="versions">
                         <div class="context-label">Version history</div>
-                        {#if versionsLoading}<div class="muted">Loading versions…</div>
-                        {:else if versionsError}<div class="browser-error">{versionsError}</div>
-                        {:else if !cloudVersions.length && !localVersions.length}<div class="muted">No provider or local versions.</div>
+                        {#if versionState.loading}<div class="muted">Loading versions…</div>
+                        {:else if versionState.error}<div class="browser-error">{versionState.error}</div>
+                        {:else if !versionState.cloud.length && !versionState.local.length}<div class="muted">No provider or local versions.</div>
                         {:else}
-                            {#each cloudVersions as version (version.id)}
+                            {#each versionState.cloud as version (version.id)}
                                 <div class="version-row">
                                     <span><strong>Cloud</strong> · {version.id}<br /><small>{version.modified_at ? new Date(version.modified_at * 1000).toLocaleString() : 'Unknown date'}{version.modifier_name ? ` · ${version.modifier_name}` : ''}</small></span>
-                                    <button onclick={() => restoreCloudVersion(version)} disabled={restoringVersion !== null}>{restoringVersion === version.id ? 'Restoring…' : 'Restore'}</button>
+                                    <button onclick={() => versionSelection.restore(version)} disabled={versionState.restoring !== null}>{versionState.restoring === version ? 'Restoring…' : 'Restore'}</button>
                                 </div>
                             {/each}
-                            {#each localVersions as version (version.id)}
+                            {#each versionState.local as version (version.id)}
                                 <div class="version-row local-version">
                                     <span><strong>Local v{version.version_seq}</strong>{version.title ? ` · ${version.title}` : ''}<br /><small>{new Date(version.indexed_at).toLocaleString()}{version.file_size !== null ? ` · ${version.file_size.toLocaleString()} B` : ''}</small></span>
                                     <span class="muted">Indexed</span>

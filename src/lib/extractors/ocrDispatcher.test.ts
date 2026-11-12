@@ -3,9 +3,11 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import Tesseract from 'tesseract.js';
 import { getSetting, getStore } from '../store';
 import { flog } from '../log';
+import { platform } from '../capabilities';
 import { createOcrSession, disposeOcrWorkers, MAX_OCR_IMAGE_BYTES, OCR_WORKER_IDLE_MS } from './ocrDispatcher';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(), isTauri: vi.fn() }));
+vi.mock('../capabilities', () => ({ platform: vi.fn(() => 'linux') }));
 vi.mock('../store', () => ({ getSetting: vi.fn(), getStore: vi.fn() }));
 vi.mock('tesseract.js', () => ({ default: { createWorker: vi.fn() } }));
 vi.mock('../log', () => ({ flog: vi.fn() }));
@@ -19,6 +21,7 @@ const metadata = (index = 0) => JSON.parse(new TextDecoder().decode(Uint8Array.f
 
 beforeEach(() => {
     vi.mocked(flog).mockClear();
+    vi.mocked(platform).mockReturnValue('linux');
     saved = {}; workers = [];
     vi.mocked(isTauri).mockReset().mockReturnValue(true);
     vi.mocked(invoke).mockReset().mockResolvedValue({ text: ' Native result ', engine: 'selected-native', warnings: [] });
@@ -33,6 +36,20 @@ beforeEach(() => {
 afterEach(async () => { await disposeOcrWorkers(); vi.useRealTimers(); });
 
 describe('native OCR dispatch', () => {
+    it('uses base64 for Android image extraction while preserving Unicode metadata and operation headers', async () => {
+        vi.mocked(platform).mockReturnValue('android');
+        const bytes = Uint8Array.from({ length: 24 * 1024 + 3 }, (_, i) => i % 256).subarray(1);
+        const session = await createOcrSession({ ocr: { engine: 'tesseract', language: 'deu' } });
+        await session.recognize(bytes, 'Überblick_日本_📷.png');
+        const [command, payload, options] = vi.mocked(invoke).mock.calls[0];
+        expect(command).toBe('ocr_extract_image');
+        const encoded = payload as { base64: string };
+        expect(Object.keys(encoded)).toEqual(['base64']);
+        expect(Uint8Array.from(atob(encoded.base64), c => c.charCodeAt(0))).toEqual(bytes);
+        expect(metadata()).toMatchObject({ name: 'Überblick_日本_📷.png', options: { engine: 'tesseract', language: 'deu' } });
+        expect((options as { headers: Record<string, string> }).headers['x-operation-id']).toBeTruthy();
+    });
+
     it.each(['auto', 'tesseract', 'system_tesseract', 'ocrs', 'paddle', 'dbnet_trocr', 'surya', 'got', 'glm', 'qwen2vl',
         'internvl2', 'parseq', 'deepseek_ocr2', 'pix2struct', 'granite_vision', 'lightonocr', 'qwen3vl',
         'unlimited_ocr', 'minicpm_ocr', 'unified', 'tesseract_fraktur', 'ppocrv6', 'easyocr', 'olmocr', 'lfm2_vl'])(

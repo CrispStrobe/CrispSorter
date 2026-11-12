@@ -36,7 +36,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { probeOptions, processMemory, summarizeMemory, textErrorRate, validateBuildSource, validatePackagedAndroidLibraries } from './mobile_ocr_probe_utils.mjs';
+import { verifyAndroidSandbox, canonicalAppPath, isWithinAppRoot, probeOptions, processMemory, summarizeMemory, textErrorRate, validateBuildSource, validatePackagedAndroidLibraries } from './mobile_ocr_probe_utils.mjs';
 import { assessQualityFixture } from './mobile_ocr_quality.mjs';
 
 const PACKAGE = 'com.crispstrobe.crispsorter';
@@ -79,37 +79,6 @@ function archivedPath(document) {
   return remotePath(value);
 }
 
-function validateAsset(asset, appData) {
-  assert(asset && Number.isInteger(asset.width) && Number.isInteger(asset.height), 'Missing raster dimensions.');
-  assert(asset.width > 0 && asset.height > 0 && asset.width * asset.height <= 100_000_000, 'Invalid raster size.');
-  assert(remotePath(asset.image_path).startsWith(appData + '/ocr-workspace/assets/'), 'Page is not a managed app asset.');
-  for (const key of ['page_width_points', 'page_height_points']) {
-    if (asset[key] != null) assert(Number.isFinite(asset[key]) && asset[key] > 0 && asset[key] <= 14_400, 'Invalid physical page dimensions.');
-  }
-  return asset;
-}
-
-function validateRecognition(result, appData, expected = 'CRISP MOBILE OCR\nDocument 2048\nTotal 125.00', language = 'eng') {
-  validateAsset(result, appData);
-  assert(Array.isArray(result.regions) && result.regions.length > 0, 'Real OCR returned no regions.');
-  for (const region of result.regions) {
-    assert.equal(typeof region.text, 'string');
-    assert([region.x, region.y, region.w, region.h].every(Number.isFinite), 'Nonfinite OCR geometry.');
-    assert(region.x >= 0 && region.y >= 0 && region.w > 0 && region.h > 0, 'Empty or negative OCR geometry.');
-    assert(region.x + region.w <= result.width + 0.01 && region.y + region.h <= result.height + 0.01, 'OCR box is outside the returned raster.');
-  }
-  const text = result.regions.map(region => region.text).join('\n');
-  assert(text.trim().length > 0, 'Actual OCR returned empty text.');
-  const cer = textErrorRate(expected, text);
-  assert(cer <= 0.25, 'Actual OCR exceeded the fixture Unicode character error limit (0.25): ' + cer + '\n' + text);
-  const config = result.diagnostics?.requested_config;
-  assert(config && config.router === false && config.stages?.length === 1, 'The saved explicit engine settings did not reach native recognition.');
-  assert.equal(config.stages[0].engine, 'tesseract');
-  assert.equal(config.stages[0].rec_model, 'tesseract-' + language);
-  assert.equal(config.stages[0].cleanup.enabled, false);
-  return text;
-}
-
 function projectRegion(region) {
   return {
     id: 'region-' + randomUUID(), text: region.text, originalText: region.text,
@@ -143,6 +112,40 @@ async function main() {
   const consoleLog = [];
   let browser, page, forwardPort, pid, privateRoot, appData, exportPath;
   let pickerFixturePath, pickerDumpPath;
+  const privateAliases = [];
+  const canonicalPrivateAlias = value => canonicalAppPath(remotePath(value), privateRoot, privateAliases);
+
+  function validateAsset(asset, appData) {
+    assert(asset && Number.isInteger(asset.width) && Number.isInteger(asset.height), 'Missing raster dimensions.');
+    assert(asset.width > 0 && asset.height > 0 && asset.width * asset.height <= 100_000_000, 'Invalid raster size.');
+    assert(canonicalPrivateAlias(asset.image_path).startsWith(appData + '/ocr-workspace/assets/'), 'Page is not a managed app asset.');
+    for (const key of ['page_width_points', 'page_height_points']) {
+      if (asset[key] != null) assert(Number.isFinite(asset[key]) && asset[key] > 0 && asset[key] <= 14_400, 'Invalid physical page dimensions.');
+    }
+    return asset;
+  }
+
+  function validateRecognition(result, appData, expected = 'CRISP MOBILE OCR\nDocument 2048\nTotal 125.00', language = 'eng') {
+    validateAsset(result, appData);
+    assert(Array.isArray(result.regions) && result.regions.length > 0, 'Real OCR returned no regions.');
+    for (const region of result.regions) {
+      assert.equal(typeof region.text, 'string');
+      assert([region.x, region.y, region.w, region.h].every(Number.isFinite), 'Nonfinite OCR geometry.');
+      assert(region.x >= 0 && region.y >= 0 && region.w > 0 && region.h > 0, 'Empty or negative OCR geometry.');
+      assert(region.x + region.w <= result.width + 0.01 && region.y + region.h <= result.height + 0.01, 'OCR box is outside the returned raster.');
+    }
+    const text = result.regions.map(region => region.text).join('\n');
+    assert(text.trim().length > 0, 'Actual OCR returned empty text.');
+    const cer = textErrorRate(expected, text);
+    assert(cer <= 0.25, 'Actual OCR exceeded the fixture Unicode character error limit (0.25): ' + cer + '\n' + text);
+    const config = result.diagnostics?.requested_config;
+    assert(config && config.router === false && config.stages?.length === 1, 'The saved explicit engine settings did not reach native recognition.');
+    assert.equal(config.stages[0].engine, 'tesseract');
+    assert.equal(config.stages[0].rec_model, 'tesseract-' + language);
+    assert.equal(config.stages[0].cleanup.enabled, false);
+    return text;
+  }
+
   let deadline = Infinity;
   function budget(limit, label) {
     const remaining = Math.floor(Math.min(limit, deadline - Date.now()));
@@ -212,18 +215,18 @@ async function main() {
     return value;
   }
   async function privatePath(value) {
-    remotePath(value);
-    assert(value.startsWith(privateRoot + '/'), 'Refusing to inspect a file outside the dedicated test app.');
+    const expected = canonicalPrivateAlias(value);
+    assert(expected.startsWith(privateRoot + '/'), 'Refusing to inspect a file outside the dedicated test app.');
     const resolved = (await runAs(['realpath', value])).stdout.trim();
-    assert.equal(resolved, value, 'Private file unexpectedly resolves through a symlink or alias.');
-    return value;
+    assert.equal(canonicalPrivateAlias(resolved), expected, 'Private file unexpectedly resolves through a symlink.');
+    return resolved;
   }
   async function privateBytes(value, limit = 16 * 1024 * 1024) {
-    await privatePath(value);
+    value = await privatePath(value);
     return (await runAs(['cat', value], { encoding: null, maxBuffer: limit })).stdout;
   }
   async function privateDigest(value) {
-    await privatePath(value);
+    value = await privatePath(value);
     const line = (await runAs(['sha256sum', value], { timeout: 60_000 })).stdout;
     const hash = line.match(/^([0-9a-f]{64})\s/i)?.[1];
     assert(hash, 'Device did not return a SHA-256 digest.');
@@ -284,11 +287,8 @@ async function main() {
   const importBytes = (command, bytes, metadata, timeout = 90_000) => {
     assert(['ocr_workspace_import_bytes', 'ocr_workspace_import_image'].includes(command));
     return bounded(page.evaluate(async ({ command, base64, metadata }) => {
-      const binary = atob(base64);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
       const header = btoa(Array.from(new TextEncoder().encode(JSON.stringify(metadata)), byte => String.fromCharCode(byte)).join(''));
-      return window.__TAURI_INTERNALS__.invoke(command, bytes, { headers: { 'x-ocr-metadata': header } });
+      return window.__TAURI_INTERNALS__.invoke(command, { base64 }, { headers: { 'x-ocr-metadata': header } });
     }, { command, base64: bytes.toString('base64'), metadata }), budget(timeout, command), command);
   };
   async function pickerSnapshot(label, filename, selected = false) {
@@ -390,10 +390,11 @@ async function main() {
       if (opt['device-kind'] === 'emulator') assert.equal(build.runtime.target, 'android-x86_64');
       await fs.writeFile(path.join(output, 'application-build-receipt.json'), buildBytes);
       receipt.source.app_build_receipt_sha256 = digest(buildBytes);
-      const reportedRoot = remotePath(await adbText(['exec-out', 'run-as', PACKAGE, 'pwd']));
-      assert(['/data/user/0/' + PACKAGE, '/data/data/' + PACKAGE].includes(reportedRoot), 'Unexpected app sandbox.');
-      privateRoot = remotePath((await runAs(['realpath', reportedRoot])).stdout.trim());
-      assert(['/data/user/0/' + PACKAGE, '/data/data/' + PACKAGE].includes(privateRoot), 'Unexpected canonical app sandbox.');
+      receipt.private_path_aliases = {};
+      const sandbox = await verifyAndroidSandbox(PACKAGE,
+        async args => (await runAs(args)).stdout.trim(), receipt.private_path_aliases);
+      privateRoot = sandbox.canonical_root;
+      privateAliases.push(...sandbox.verified_roots);
       const apkPaths = (await adbText(['shell', 'pm', 'path', PACKAGE])).split(/\r?\n/).filter(Boolean);
       assert.equal(apkPaths.length, 1, 'Install the single debug APK produced by this CI build.');
       assert(apkPaths[0].startsWith('package:'));
@@ -488,9 +489,10 @@ async function main() {
       assert.equal(value.docx_export, true, 'The mobile reviewed Word writer is unavailable.');
       assert(value.formats.includes('docx'), 'Word export is not advertised by this mobile build.');
       assert(value.engines.includes('tesseract'));
-      const rawAppData = remotePath(await invoke('get_app_data_dir'));
-      appData = remotePath((await runAs(['realpath', rawAppData])).stdout.trim());
-      assert(appData.startsWith(privateRoot + '/'), 'Native app data is outside the app sandbox.');
+      const rawAppData = canonicalPrivateAlias(remotePath(await invoke('get_app_data_dir')));
+      appData = canonicalPrivateAlias(remotePath((await runAs(['realpath', rawAppData])).stdout.trim()));
+      receipt.app_data_scope = { is_root: appData === privateRoot, is_descendant: appData.startsWith(privateRoot + '/') };
+      assert(isWithinAppRoot(privateRoot, appData), 'Native app data is outside the app sandbox.');
       const projects = await invoke('ocr_workspace_list');
       assert.deepEqual(projects, [], 'Use a fresh dedicated test installation; existing projects must not be overwritten or erased.');
       const registry = await invoke('embedder_registry_list', {}, 60_000);
@@ -521,15 +523,15 @@ async function main() {
       receipt.verified_models = installed;
     }, 150_000);
 
-    const imported = await step('import the synthetic PNG through the real raw binary IPC', async () => {
+    const imported = await step('import the synthetic PNG through the real Tauri binary IPC', async () => {
       const result = await importBytes('ocr_workspace_import_image', prepared.bytes, { name: 'Synthetic mobile OCR.png', requestId: randomUUID() }, 60_000);
+      receipt.imported = result;
       assert.equal(result.pages.length, 1);
       const asset = validateAsset(result.pages[0], appData);
       assert.equal(asset.width, prepared.inputs.fixture.width);
       assert.equal(asset.height, prepared.inputs.fixture.height);
-      assert(archivedPath(result).startsWith(appData + '/ocr-workspace/sources/'));
+      assert(canonicalPrivateAlias(archivedPath(result)).startsWith(appData + '/ocr-workspace/sources/'));
       assert.equal(await privateDigest(archivedPath(result)), prepared.inputs.fixture.png_sha256, 'The archived original bytes changed during import.');
-      receipt.imported = result;
       receipt.original_asset_sha256 = await privateDigest(asset.image_path);
       return result;
     }, 90_000);
@@ -634,7 +636,7 @@ async function main() {
     }
 
     receipt.native_documents = { status: 'not_supported', pdf_import: capabilities.pdf_import,
-      qualification: 'Actual app raw IPC and native document rasterizer; source-URI preservation here uses synthetic metadata and does not exercise a system provider grant.' };
+      qualification: 'Actual app Tauri binary IPC and native document rasterizer; source-URI preservation here uses synthetic metadata and does not exercise a system provider grant.' };
     if (capabilities.pdf_import && capabilities.native_document_import) {
       const manifest = prepared.inputs.document_fixtures;
       assert(manifest?.available === true, 'This native document profile requires the checked-in document fixture set.');
@@ -653,7 +655,7 @@ async function main() {
         const result = await importBytes('ocr_workspace_import_bytes', bytes,
           { name: 'Überblick-日本語.pdf', sourceUri, requestId: randomUUID() });
         assert.equal(result.source_uri, sourceUri, 'Native import changed the supplied provider identity.');
-        assert.equal(result.name, 'Überblick-日本語.pdf', 'UTF-8 import metadata did not survive raw IPC.');
+        assert.equal(result.name, 'Überblick-日本語.pdf', 'UTF-8 import metadata did not survive Tauri IPC.');
         assert.equal(result.pages.length, manifest.pages.length);
         assert.equal(await privateDigest(archivedPath(result)), manifest.sha256, 'Native PDF import rewrote original bytes.');
         for (const [index, asset] of result.pages.entries()) {
@@ -859,7 +861,7 @@ async function main() {
       }));
       assert(regions.some(region => region.text.includes('2049')));
       exportPath = remotePath(await invoke('ocr_workspace_export_target', { name: 'synthetic-reviewed.pdf' }));
-      assert(exportPath.startsWith(privateRoot + '/') && /\/ocr-exports\/[0-9a-f-]{36}\/synthetic-reviewed\.pdf$/.test(exportPath));
+      assert(canonicalPrivateAlias(exportPath).startsWith(privateRoot + '/') && /\/ocr-exports\/[0-9a-f-]{36}\/synthetic-reviewed\.pdf$/.test(exportPath));
       const exported = await invoke('ocr_workspace_export', {
         outputPath: exportPath, format: 'pdf', pdfa: false, overwrite: false, sourceUris: [imported.source_uri],
         pages: [{
@@ -869,7 +871,7 @@ async function main() {
           provenance: { syntheticNativeSmoke: true, automatedEdit: '2048 -> 2049; not human reviewed' },
         }],
       }, 90_000);
-      assert.equal(exported.saved_path, exportPath);
+      assert.equal(canonicalPrivateAlias(exported.saved_path), canonicalPrivateAlias(exportPath));
       assert.equal(exported.pages, 1);
       assert.equal(exported.format, 'pdf');
       const bytes = await privateBytes(exportPath);
@@ -972,7 +974,7 @@ async function main() {
       let artifactCaptured = false;
       try {
         exportPath = remotePath(await invoke('ocr_workspace_export_target', { name: 'synthetic-reviewed.docx' }));
-        assert(exportPath.startsWith(privateRoot + '/') && /\/ocr-exports\/[0-9a-f-]{36}\/synthetic-reviewed\.docx$/.test(exportPath));
+        assert(canonicalPrivateAlias(exportPath).startsWith(privateRoot + '/') && /\/ocr-exports\/[0-9a-f-]{36}\/synthetic-reviewed\.docx$/.test(exportPath));
         const exported = await invoke('ocr_workspace_export', {
           outputPath: exportPath, format: 'docx', pdfa: false, overwrite: false, requestId: randomUUID(),
           sourceUris: [document.sourceUri, document.archiveUri].filter(Boolean),
@@ -997,7 +999,7 @@ async function main() {
         await fs.writeFile(artifactPath, bytes, { flag: 'wx' });
         artifactCaptured = true;
         receipt.word.artifact = { file: path.basename(artifactPath), sha256: digest(bytes), bytes: bytes.length };
-        assert.equal(exported.saved_path, exportPath);
+        assert.equal(canonicalPrivateAlias(exported.saved_path), canonicalPrivateAlias(exportPath));
         assert.equal(exported.pages, 1);
         assert.equal(exported.format, 'docx');
         assert.equal(exported.bytes, bytes.length);

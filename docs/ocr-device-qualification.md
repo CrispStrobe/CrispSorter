@@ -132,3 +132,77 @@ An overall qualification report should link the underlying case evidence and
 list unrun cases. Keep synthetic UI, native inference, provider helper tests,
 full application commands, and observed camera/picker flows individually
 identifiable so a later change can rerun the affected level.
+
+## Current Android import follow-up
+
+The Android WebView uses Tauri postMessage, which delivers JSON rather than a
+raw byte body. The application now sends bounded base64 for Android and an
+unknown platform, while retaining raw bytes on known desktop and iOS targets.
+The native import and generic image OCR commands validate metadata first and
+accept either representation. Legacy JSON byte arrays are limited to 1 MiB;
+the normal base64 and raw paths retain the 32 MiB input limit. The maximum
+size is a validation limit, not a measured device-memory guarantee.
+
+The rebuilt Android x86_64 emulator run verified installed model hashes and
+imported an image through the fixed IPC, then failed a sandbox-path assertion.
+The subsequent retained flow failed earlier because the device's `realpath`
+preserved different spellings for `/data/data/<package>` and
+`/data/user/0/<package>`. That receipt establishes the spelling difference but
+does not establish that the directories share an identity. The harness now
+requires matching device/inode/owner/directory identities for both exact roots
+and their resolved paths, checked through the dedicated package's `run-as`
+namespace. It records the observations and rejects unexpected roots or identity
+mismatches before accepting either alias. Per-file resolution still rejects
+redirects to a different relative path or outside those verified roots.
+
+The new identity gate has focused simulated tests; matching directory identities
+have not yet been observed on the retained emulator. Run the retained full WebView
+flow using the newly pinned APK; do not count either failed attempt as a pass. The mobile native
+workflow supports a single-target manual run (Android x86_64 by default),
+while push runs retain the complete target matrix. Record its source revision,
+artifact hash, actual import, recognition, export and recovery results before
+claiming success. Physical Android and iPhone devices are unavailable; camera,
+real provider grants, low-memory behavior and device performance remain unrun.
+
+The retained emulator rerun verified sandbox directory identity, installed
+and hashed models, imported an image, exercised native recognition and document
+formats, and passed the German quality case. It then failed the English
+column-order case (CER 0.503 versus the unchanged 0.25 threshold): native
+text detection had merged adjacent columns into page-wide lines. The current
+source adds bounded experimental CC-layout recognition crops for supported
+layouts, with a whole-page fallback for empty crops. This path defaults off;
+an explicit request/profile `experimental_cc_column_crops: true` enables it
+only alongside the existing supported CC/Tesseract profile. Ordinary CC layout
+continues to annotate whole-page recognition. Geometry and source-bound
+contract tests pass; the retained APK predates this change. Rebuild the Android
+x86_64 application and rerun the full flow before reporting the fix or later
+export and recovery steps as passed.
+
+CC box geometry does not prove complete page-text coverage. Text missed by
+thresholding, morphology or component filtering outside the padded crops is
+never presented to the recognizer; nonempty crop results do not trigger the
+whole-page fallback. The experimental path therefore has an unresolved
+missing-text risk. Its 64-crop and source-pixel-area bounds also do not bound
+resized detector work or elapsed time. Retain full-page baselines and measure
+complete text, raw regions, CER/WER and latency on identical frozen inputs
+before any default promotion. Keep this app gate off when qualifying a native
+gutter change so the native engine still receives the unchanged whole page;
+an app-crop arm changes recognition inputs and must be reported separately.
+
+The subsequent rebuilt emulator run used the earlier experimental-crop
+revision. It passed the named English two-column threshold and reached repeated
+recognition, then failed a PDF export path comparison: the saved path and
+requested path used different device-verified aliases of the same sandbox.
+The harness now compares their verified canonical identities and still checks
+the exported file itself. Rerun the retained experimental APK to continue
+export and recovery qualification. This is evidence for that opt-in candidate,
+not proof of complete text coverage or of current default-off behavior.
+
+The [retained experimental-crop emulator run](https://github.com/CrispStrobe/CrispSorter/actions/runs/43293853454)
+subsequently passed all 33 recorded steps, including native document and image
+imports, the named quality fixtures, repeated recognition, PDF and Word export,
+staging cleanup, and the system document picker. Its receipt explicitly records
+synthetic inputs, no physical camera/device qualification, no system save
+picker, and no representative corpus quality qualification. The APK predates
+the current default-off gate; this result does not establish current-default
+behavior or justify promoting the experimental option.

@@ -74,8 +74,9 @@ def main():
     parser.add_argument('--archive', type=Path, required=True)
     parser.add_argument('--metadata', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--pin', type=Path, default=Path(__file__).with_name('artifact.json'))
     args = parser.parse_args()
-    pin = json.loads(Path(__file__).with_name('artifact.json').read_text())
+    pin = json.loads(args.pin.read_text())
     result = stage(args.archive, json.loads(args.metadata.read_text()), args.output, pin)
     print(json.dumps({'status': 'staged', 'apk_sha256': result['staged_apk_sha256']}))
 

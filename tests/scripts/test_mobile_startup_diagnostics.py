@@ -1,6 +1,7 @@
 """Failure-retention controls; no emulator or application is executed here."""
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -16,6 +17,31 @@ SPEC.loader.exec_module(startup)
 
 
 class StartupEvidence(unittest.TestCase):
+    @unittest.skipIf(os.name == 'nt', 'The retained emulator workflow runs on Linux.')
+    def test_retained_flow_passes_receipt_sources_in_one_shell(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            python = root / 'python3'
+            python.write_text("#!/bin/sh\nif [ \"$1\" = '-c' ]; then\n  case \"$2\" in *sorter_commit*) echo app-revision ;; *crispembed_commit*) echo embed-revision ;; *) exit 3 ;; esac\nfi\n")
+            node = root / 'node'
+            node.write_text("#!/bin/sh\ncase \" $* \" in *' --source-commit app-revision '*) ;; *) exit 7 ;; esac\ncase \" $* \" in *' --embed-commit embed-revision '*) exit 0 ;; *) exit 8 ;; esac\n")
+            python.chmod(0o755); node.chmod(0o755)
+            env = dict(os.environ, PATH=str(root) + os.pathsep + os.environ.get('PATH', ''), RUNNER_TEMP=str(root))
+            subprocess.run(['bash', str(ROOT / 'tools/android-startup-probe/run_retained_flow.sh')], cwd=ROOT, env=env, check=True)
+
+    def test_launcher_resolution_requires_one_activity_in_the_installed_package(self):
+        adb = ['adb', '-s', 'emulator-5554']
+        with patch.object(startup, 'run', return_value=(
+                'priority=0 preferredOrder=0 match=0x108000 specificIndex=-1 isDefault=false\n'
+                'com.crispstrobe.crispsorter/.MainActivity')) as run:
+            self.assertEqual(startup.android_launcher(adb), 'com.crispstrobe.crispsorter/.MainActivity')
+            self.assertIn('android.intent.category.LAUNCHER', run.call_args.args[0])
+        for output in ('No activity found', 'other.app/.MainActivity',
+                       'com.crispstrobe.crispsorter/.One\ncom.crispstrobe.crispsorter/.Two'):
+            with self.subTest(output=output), patch.object(startup, 'run', return_value=output):
+                with self.assertRaises(RuntimeError):
+                    startup.android_launcher(adb)
+
     def test_failed_command_keeps_exit_output_and_timeout_bytes(self):
         command = ['adb', '-s', 'emulator-5554', 'shell', 'am', 'start']
         error = subprocess.CalledProcessError(1, command, output='Error: activity unavailable', stderr='details')

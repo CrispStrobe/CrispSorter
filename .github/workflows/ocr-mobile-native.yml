@@ -2,11 +2,18 @@ name: OCR mobile native integration
 
 on:
   workflow_dispatch:
+    inputs:
+      target:
+        description: Mobile target to qualify
+        type: choice
+        default: android-x86_64
+        options: [android-x86_64, android-arm64, ios-sim-arm64, all]
   push:
     branches: ['feat/ocr-document-studio', 'feat/ocr-mobile-build', 'feat/ocr-native-validation']
     paths:
       - '.github/workflows/ocr-mobile-native.yml'
       - 'scripts/build_mobile_crispembed.py'
+      - 'scripts/ocr_mobile_target_matrix.py'
       - 'scripts/generate-licenses.js'
       - 'scripts/native_license_inventory.mjs'
       - 'tests/scripts/test_native_license_inventory.mjs'
@@ -71,12 +78,20 @@ env:
 
 jobs:
   contracts:
+    outputs:
+      target_matrix: ${{ steps.targets.outputs.matrix }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
           path: repos/CrispSorter
+      - name: Select mobile targets
+        id: targets
+        working-directory: repos/CrispSorter
+        env:
+          REQUESTED_TARGET: ${{ github.event_name == 'workflow_dispatch' && (inputs.target || 'android-x86_64') || 'all' }}
+        run: echo "matrix=$(python3 scripts/ocr_mobile_target_matrix.py "$REQUESTED_TARGET")" >> "$GITHUB_OUTPUT"
       - name: Read immutable feature runtime source
         id: runtime
         working-directory: repos/CrispSorter
@@ -125,26 +140,7 @@ jobs:
     needs: contracts
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - runner: ubuntu-24.04
-            runtime: android-arm64
-            rust: aarch64-linux-android
-            cli: aarch64
-            abi: arm64-v8a
-            probe: false
-          - runner: ubuntu-24.04
-            runtime: android-x86_64
-            rust: x86_64-linux-android
-            cli: x86_64
-            abi: x86_64
-            probe: true
-          - runner: macos-15
-            runtime: ios-sim-arm64
-            rust: aarch64-apple-ios-sim
-            cli: aarch64-sim
-            abi: arm64
-            probe: true
+      matrix: ${{ fromJSON(needs.contracts.outputs.target_matrix) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     env:

@@ -65,7 +65,7 @@ mod pdf_options;
 pub const SUBCOMMANDS: &[&str] = &[
     "version", "doctor", "catalog", "index", "batch", "chat", "images",
     "sync", "ocr", "kie", "table", "math-ocr", "zone", "pdf", "docx", "convert",
-    "search", "watch", "drives", "secrets", "intended-purpose", "manpage", "completion", "help", "--help", "-h",
+    "search", "watch", "drives", "secrets", "intended-purpose", "models", "manpage", "completion", "help", "--help", "-h",
     "--version", "-V",
 ];
 
@@ -91,6 +91,14 @@ struct Cli {
     /// jina-v3 / jina-v5 / jina-reranker-v2 / embeddinggemma.
     #[arg(long = "accept-license", global = true, default_value_t = false)]
     accept_license: bool,
+    /// Download OCR models a command needs without asking (for scripts).
+    /// Without it, a terminal asks [y/N] and a non-terminal run fails,
+    /// listing the missing models.
+    #[arg(long = "yes", visible_alias = "download-models", short = 'y', global = true, default_value_t = false)]
+    yes: bool,
+    /// Never download models; fail when a needed model is not installed.
+    #[arg(long, global = true, default_value_t = false)]
+    offline: bool,
     /// Acknowledge what this software is intended for, and the uses it is not
     /// intended for, so that output-producing commands run. One-time: the
     /// acknowledgement is recorded in the data dir with the statement version
@@ -100,6 +108,35 @@ struct Cli {
     accept_intended_purpose: bool,
     #[command(subcommand)]
     command: Command,
+}
+
+#[derive(Subcommand, Debug)]
+enum ModelsCmd {
+    /// Download (with progress on stderr) every model an OCR engine needs.
+    Pull {
+        /// OCR engine, e.g. tesseract, dbnet_trocr, qwen2vl.
+        #[arg(value_parser = clap::builder::PossibleValuesParser::new(
+            crate::extractors::ocr_policy::EMBEDDED_ENGINES.iter().copied()
+                .chain(crate::extractors::ocr_policy::LEGACY_ENGINES.iter().copied())))]
+        engine: String,
+        /// Document language (selects e.g. the Tesseract language model).
+        #[arg(long)]
+        language: Option<String>,
+        /// Also install specialist models: kie, math, layout.
+        #[arg(long = "with", value_parser = ["kie", "math", "layout"])]
+        extras: Vec<String>,
+    },
+    /// Show the models an OCR engine needs and whether they are installed.
+    Plan {
+        #[arg(value_parser = clap::builder::PossibleValuesParser::new(
+            crate::extractors::ocr_policy::EMBEDDED_ENGINES.iter().copied()
+                .chain(crate::extractors::ocr_policy::LEGACY_ENGINES.iter().copied())))]
+        engine: String,
+        #[arg(long)]
+        language: Option<String>,
+        #[arg(long = "with", value_parser = ["kie", "math", "layout"])]
+        extras: Vec<String>,
+    },
 }
 
 #[derive(clap::ValueEnum, Clone, Debug, Copy, PartialEq, Eq)]
@@ -366,6 +403,16 @@ enum Command {
         /// Complete OCR pipeline JSON snapshot (same options as the app).
         #[arg(long, value_name = "FILE")]
         ocr_config: Option<PathBuf>,
+    },
+    /// OCR model management: show (`plan`) or install (`pull`) the models an
+    /// engine needs. OCR commands never download during recognition: they
+    /// print the missing models first, ask [y/N] on a terminal, and need
+    /// `--yes` in scripts (`--offline` never downloads). Models are SHA-256
+    /// verified, resumable, and shared with the app (CRISPEMBED_CACHE_DIR,
+    /// default ~/.cache/crispembed).
+    Models {
+        #[command(subcommand)]
+        cmd: ModelsCmd,
     },
     /// Recognize a mathematical formula in an image and output LaTeX.
     MathOcr {
@@ -2267,6 +2314,9 @@ fn run_on_current_stack() -> ExitCode {
     if cli.accept_license {
         crate::index::license_consent::accept_all();
     }
+    // OCR model downloads are explicit: --yes / a terminal prompt / --offline.
+    crate::ocr_models::set_cli_assume_yes(cli.yes);
+    crate::model_cache::set_offline(cli.offline);
 
     // Global `--accept-intended-purpose`: record the acknowledgement so the
     // output-producing commands stop refusing. Written to the resolved data dir
@@ -2367,6 +2417,7 @@ fn run_on_current_stack() -> ExitCode {
             cmd_kie(cli.format, file, labels, threshold, lilt, lilt_model, data_dir, ocr_config)
         }
         Command::MathOcr { file, model } => cmd_math_ocr(file, model),
+        Command::Models { cmd } => cmd_models(cli.format, cmd),
         Command::Table { file, ocr_model, grid, out, data_dir, ocr_config } => {
             cmd_table(cli.format, file, ocr_model, grid, out, data_dir, ocr_config)
         }
@@ -2489,6 +2540,7 @@ fn cmd_ocr(
         layout,
         layout_model: None,
         layout_engine,
+        experimental_cc_column_crops: false,
         layout_threshold,
         drop_headers_footers,
         sr,
@@ -2515,6 +2567,8 @@ fn cmd_ocr(
     for warning in warnings { crate::app_log("warn", warning); }
     let engine = cfg.engine.clone().unwrap_or_else(|| "auto".into());
     options.ocr_pipeline = cfg.clone();
+    // Recognition never downloads implicitly: show what is missing first.
+    crate::ocr_models::cli_ensure(&cfg, &[])?;
 
     let fmt = OcrOutputFormat::from_name(&render)
         .ok_or_else(|| format!("unknown --render format: {render}"))?;
@@ -2639,6 +2693,9 @@ fn cmd_kie(
     let fields: Vec<(String, String, f32)> = if lilt || lilt_model.is_some() {
         let (ocr_config, warnings) = crate::extractors::ocr_policy::resolve_lilt_config(&options)?;
         for warning in warnings { crate::app_log("warn", warning); }
+        let mut extras = Vec::new();
+        if lilt_model.is_none() { extras.push("kie".to_owned()); }
+        crate::ocr_models::cli_ensure(&ocr_config, &extras)?;
         crate::extractors::ocr_crispembed::kie_extract_lilt_with_config(
             &file,
             &labels,
@@ -2652,6 +2709,8 @@ fn cmd_kie(
         let cfg = crate::index::config_persist::load(&data_dir);
         let cache_dir = crate::index::resolve_model_cache_dir(&cfg, &data_dir);
         let model = cfg.ner_model.unwrap_or_default();
+        let (ocr_cfg, _) = crate::extractors::ocr_policy::resolve_extraction_config(&options)?;
+        crate::ocr_models::cli_ensure(&ocr_cfg, &[])?;
         let doc = crate::extractors::extract_text_from_path_with_opts(&file, options)
             .map_err(|e| format!("extract failed: {e:#}"))?;
         if doc.full_text.trim().is_empty() {
@@ -2689,10 +2748,31 @@ fn cmd_kie(
     Ok(())
 }
 
+/// `crispsorter models pull|plan <engine>`: progress on stderr, the final
+/// plan on stdout (JSON by default).
+fn cmd_models(out: OutFormat, cmd: ModelsCmd) -> Result<(), String> {
+    let plan = match cmd {
+        ModelsCmd::Pull { engine, language, extras } => crate::ocr_models::cli_pull(&engine, language.as_deref(), &extras)?,
+        ModelsCmd::Plan { engine, language, extras } => {
+            let (config, _) = crate::extractors::ocr_policy::recognition_config(
+                crate::extractors::OcrPipelineConfig { enabled: true, ..Default::default() }, Some(engine.as_str()), language.as_deref())?;
+            crate::ocr_models::plan(&config, &extras)
+        }
+    };
+    match out {
+        OutFormat::Json => println!("{}", serde_json::to_string_pretty(&plan).map_err(|e| e.to_string())?),
+        OutFormat::Text => print!("{}", crate::ocr_models::describe_plan(&plan)),
+    }
+    Ok(())
+}
+
 /// Recognize a mathematical formula in an image and print LaTeX.
 fn cmd_math_ocr(file: PathBuf, model: Option<String>) -> Result<(), String> {
     if !file.exists() {
         return Err(format!("file not found: {}", file.display()));
+    }
+    if model.is_none() {
+        crate::ocr_models::cli_ensure_extras(&["math".to_owned()])?;
     }
     let result = if let Some(ref m) = model {
         crate::extractors::math_ocr::recognize_formula_with_model(&file, m)
@@ -2730,6 +2810,7 @@ fn cmd_table(
     let (config, warnings) = if grid { crate::extractors::ocr_policy::resolve_extraction_config(&options)? }
         else { crate::extractors::ocr_policy::resolve_table_config(&options)? };
     for warning in warnings { crate::app_log("warn", warning); }
+    if !grid { crate::ocr_models::cli_ensure(&config, &[])?; }
     if grid {
         let (rows, cols) = crate::extractors::ocr_crispembed::table_grid_with_config(&file, &config)
             .map_err(|e| format!("grid detection failed: {e:#}"))?;
@@ -2779,6 +2860,8 @@ fn cmd_zone(
         .ok_or_else(|| format!("template '{}' not found", template_name))?;
 
     let options = ocr_options::load(&data_dir, ocr_config.as_deref())?;
+    let (zone_cfg, _) = crate::extractors::ocr_policy::resolve_extraction_config(&options)?;
+    crate::ocr_models::cli_ensure(&zone_cfg, &[])?;
     let results = crate::index::zone_ocr::extract_zones_with_opts(&file, &template, &options)
         .map_err(|e| format!("zone extraction: {e:#}"))?;
 
@@ -13536,9 +13619,10 @@ fn cmd_drives(
             }
             let mut walk_errors = |_path: &std::path::Path, _error: anyhow::Error| {};
             let scan_limit = limit.saturating_mul(100).max(limit);
-            let rows: Vec<_> = crate::drives::walk_limited(
+            let scan = crate::drives::walk_with_scan_budget(
                 drive.as_ref(), std::path::Path::new(&path), Some(max_depth.min(32)), Some(scan_limit), &mut walk_errors,
-            ).into_iter().filter(|entry| entry.path.file_name()
+            );
+            let rows: Vec<_> = scan.entries.into_iter().filter(|entry| entry.path.file_name()
                 .and_then(|name| name.to_str())
                 .map(|name| name.to_lowercase().contains(&query)).unwrap_or(false)
                 || (content && !entry.is_dir && entry.size.unwrap_or(u64::MAX) <= crate::drives::MAX_CONTENT_SEARCH_BYTES
@@ -13548,9 +13632,18 @@ fn cmd_drives(
             let json = json || matches!(out, OutFormat::Json);
             if json {
                 println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                    "drive": drive_id, "path": path, "query": query, "n": rows.len(), "results": rows
+                    "drive": drive_id, "path": path, "query": query, "n": rows.len(), "results": rows,
+                    "scanned_entries": scan.scanned_entries, "scan_limit": scan_limit,
+                    "scan_limit_reached": scan.limit_reached,
+                    "results_limit_reached": rows.len() == limit
                 })).unwrap());
             } else {
+                if scan.limit_reached {
+                    eprintln!("search scan limit reached after {} entries; results may be incomplete", scan.scanned_entries);
+                }
+                if rows.len() == limit {
+                    eprintln!("search result limit reached; additional matches may exist");
+                }
                 for row in &rows {
                     println!("{}  {}", row.size.map(|n| n.to_string()).unwrap_or_else(|| "?".into()), row.path.display());
                 }

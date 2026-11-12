@@ -54,6 +54,9 @@ pub struct DriveCapabilities {
     /// This is separate from `delete`: WebDAV DELETE and local filesystem
     /// removal are not recoverable operations.
     pub reversible_trash: bool,
+    /// Durable object-bound duplicate trash, separate from path-based restore.
+    #[serde(default)]
+    pub trash_receipts: bool,
 }
 
 impl DriveCapabilities {
@@ -74,6 +77,7 @@ impl DriveCapabilities {
             share_links: false,
             versions: false,
             reversible_trash: false,
+            trash_receipts: false,
         }
     }
 }
@@ -171,6 +175,9 @@ pub trait CloudDrive: Send + Sync {
             self.drive_type().label()
         ))
     }
+
+    /// Optional exact-object trash contract; legacy path-only backends stay disabled.
+    fn receipt_trash(&self) -> Option<&dyn crate::drives::trash_receipts::ReceiptTrash> { None }
 
     /// File/directory metadata.
     fn stat(&self, path: &Path) -> Result<FileStat>;
@@ -376,27 +383,48 @@ pub fn walk(
     walk_limited(drive, root, max_depth, None, on_error)
 }
 
-/// Recursive walk with an optional file-entry scan budget. The budget is
-/// useful for interactive provider search, where a result limit must also
-/// prevent enumerating an unbounded remote tree.
+/// Recursive walk with an optional entry scan budget, including directories.
+/// See `walk_with_scan_budget` for scan counts and limit reporting.
 pub fn walk_limited(
     drive: &dyn CloudDrive,
     root: &Path,
     max_depth: Option<usize>,
-    max_files: Option<usize>,
+    max_entries: Option<usize>,
     on_error: &mut dyn FnMut(&Path, anyhow::Error),
 ) -> Vec<WalkEntry> {
-    let mut out = Vec::new();
+    walk_with_scan_budget(drive, root, max_depth, max_entries, on_error).entries
+}
+
+/// Files found by a walk and whether its entry budget prevented further work.
+pub struct WalkScan {
+    pub entries: Vec<WalkEntry>,
+    pub scanned_entries: usize,
+    /// True only when entries or eligible directories remain unexplored.
+    pub limit_reached: bool,
+}
+
+/// Bound both file inspection and directory traversal for provider search.
+/// Every inspected entry consumes budget, even an empty directory. A provider
+/// listing is still an atomic call: its response size is provider-controlled.
+/// Listing/stat failures retain the usual best-effort walk behavior.
+pub fn walk_with_scan_budget(
+    drive: &dyn CloudDrive,
+    root: &Path,
+    max_depth: Option<usize>,
+    max_entries: Option<usize>,
+    on_error: &mut dyn FnMut(&Path, anyhow::Error),
+) -> WalkScan {
+    let mut scan = WalkScan {
+        entries: Vec::new(),
+        scanned_entries: 0,
+        limit_reached: false,
+    };
     let mut stack: Vec<(PathBuf, usize)> = vec![(root.to_path_buf(), 0)];
 
-    while let Some((dir, depth)) = stack.pop() {
-        if max_files.is_some_and(|limit| out.len() >= limit) {
+    'walk: while let Some((dir, depth)) = stack.pop() {
+        if max_entries.is_some_and(|limit| scan.scanned_entries >= limit) {
+            scan.limit_reached = true;
             break;
-        }
-        if let Some(max) = max_depth {
-            if depth > max {
-                continue;
-            }
         }
         let entries = match drive.list_dir(&dir) {
             Ok(e) => e,
@@ -406,9 +434,11 @@ pub fn walk_limited(
             }
         };
         for ent in entries {
-            if max_files.is_some_and(|limit| out.len() >= limit) {
-                break;
+            if max_entries.is_some_and(|limit| scan.scanned_entries >= limit) {
+                scan.limit_reached = true;
+                break 'walk;
             }
+            scan.scanned_entries += 1;
             // Build the full path relative to the drive root.
             let full = if dir.as_os_str().is_empty() {
                 PathBuf::from(&ent.name)
@@ -416,12 +446,14 @@ pub fn walk_limited(
                 dir.join(&ent.name)
             };
             if ent.is_dir {
-                stack.push((full, depth + 1));
+                if max_depth.is_none_or(|max| depth < max) {
+                    stack.push((full, depth + 1));
+                }
             } else {
                 // Stat for mtime; tolerate failure (some drives are flaky
                 // about modificationTime on individual files).
                 let mtime = drive.stat(&full).ok().and_then(|s| s.mtime_unix);
-                out.push(WalkEntry {
+                scan.entries.push(WalkEntry {
                     path: full,
                     is_dir: false,
                     size: ent.size,
@@ -430,7 +462,7 @@ pub fn walk_limited(
             }
         }
     }
-    out
+    scan
 }
 
 /// Case-insensitive text probe used by bounded provider content search.

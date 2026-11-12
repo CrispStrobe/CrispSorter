@@ -4,6 +4,8 @@ import {
     decodeDuplicateMutationAudit,
     encodeDuplicateAudit,
     latestDuplicateDecision,
+    recordDuplicateRestore,
+    type DuplicateMutationAudit,
 } from './duplicateAudit';
 
 describe('duplicate decision audit persistence', () => {
@@ -59,6 +61,31 @@ describe('duplicate decision audit persistence', () => {
             { groupId: 'bad', driveId: 'd', operation: 'move', from: '/a', to: '/b', at: 'now' },
             { groupId: 'bad', driveId: 'd', operation: 'unknown', from: '/a', to: '/b', at: 1 },
         ]))).toEqual([]);
+    });
+
+    it('preserves the trash event and records its successful restore across persistence', () => {
+        const deleted: DuplicateMutationAudit = {
+            groupId: 'g', driveId: 'd', operation: 'delete', from: '/docs/paper.pdf', to: null, at: 10,
+        };
+        const original = [deleted];
+        const restored = recordDuplicateRestore(original, deleted, 20);
+        expect(original).toEqual([deleted]);
+        expect(decodeDuplicateMutationAudit(JSON.stringify(restored))).toEqual([
+            deleted,
+            { ...deleted, operation: 'restore', at: 20 },
+        ]);
+        // The last event is terminal: the UI must not offer the same trash restore again.
+        expect(restored.at(-1)?.operation).toBe('restore');
+    });
+
+    it('bounds restore history without removing unrelated recent mutations', () => {
+        const mutations: DuplicateMutationAudit[] = Array.from({ length: 200 }, (_, at) => ({
+            groupId: 'g', driveId: 'd', operation: 'move', from: `/old/${at}`, to: `/new/${at}`, at,
+        }));
+        const restored = recordDuplicateRestore(mutations, mutations[199], 201);
+        expect(restored).toHaveLength(200);
+        expect(restored.slice(0, -1)).toEqual(mutations.slice(1));
+        expect(restored.at(-1)).toEqual({ ...mutations[199], operation: 'restore', to: null, at: 201 });
     });
 
     it('preserves restore mutation records for durable history', () => {

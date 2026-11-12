@@ -24,6 +24,7 @@ export type DriveCapabilities = {
     share_links?: boolean;
     versions?: boolean;
     reversible_trash?: boolean;
+    trash_receipts?: boolean;
 };
 
 export type DriveBrowserAction = 'create_dir' | 'rename' | 'move' | 'copy' | 'delete';
@@ -83,6 +84,25 @@ export function drivePathFromSearchUri(uri: string): { driveId: string; remotePa
     } catch {
         return null;
     }
+}
+
+/** Serialize a decoded provider path without changing literal percent sequences. */
+export function driveSearchUri(driveId: string, remotePath: string): string {
+    const encodedPath = normalizeDrivePath(remotePath).split('/').map(encodeURIComponent).join('/');
+    return `crisp+drive://${driveId}${encodedPath}`;
+}
+
+/** Update duplicate provenance by decoded identity, including older URI spellings. */
+export function relocateDriveSearchUri(
+    uri: string,
+    driveId: string,
+    source: string,
+    destination: string,
+): string {
+    const parsed = drivePathFromSearchUri(uri);
+    return parsed?.driveId === driveId && normalizeDrivePath(parsed.remotePath) === normalizeDrivePath(source)
+        ? driveSearchUri(driveId, destination)
+        : uri;
 }
 
 export function pathBaseName(path: string): string {

@@ -24,6 +24,7 @@ use tauri::{Emitter, Manager, State};
 
 #[path = "ocr_document_import.rs"]
 mod document_import;
+use crate::ocr_import_payload::{self as import_payload, ImportMetadata};
 use crate::ocr_atomic_output as atomic_output;
 use atomic_output::{atomic_write, atomic_write_with, sync_directory};
 #[path = "ocr_export_control.rs"]
@@ -253,7 +254,8 @@ fn offered_engines(native: bool, system: bool, ocrs: bool, paddle: bool) -> Vec<
 pub fn ocr_workspace_capabilities() -> Value {
     let native = cfg!(feature = "crispembed");
     let system = crate::ocr_word_evidence::capabilities();
-    let ocrs = crate::extractors::ocr_ocrs::is_ocrs_available();
+    // Offered when compiled: the model manager installs missing weights.
+    let ocrs = crate::extractors::ocr_ocrs::is_ocrs_offered();
     let paddle = crate::extractors::ocr_paddle::is_paddle_ocr_available();
     let engines = offered_engines(native, system.available, ocrs, paddle);
     let available = native || system.available || ocrs || paddle;
@@ -377,31 +379,19 @@ pub fn ocr_workspace_cancel_import(request_id: String) -> Result<(), String> {
     result
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ImportMetadata {
-    name: String,
-    source_uri: Option<String>,
-    request_id: Option<String>,
-}
-
 fn import_request(request: &tauri::ipc::Request<'_>) -> Result<(ImportMetadata, Vec<u8>), String> {
-    use base64::Engine;
-    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
-        return Err("Photo import requires a raw binary payload.".into());
+    // Reject malformed headers before copying or decoding a large document.
+    let metadata = import_payload::decode_metadata(
+        request.headers().get("x-ocr-metadata").map(|header| header.as_bytes()),
+    )?;
+    // Android (and desktop custom-protocol fallback) uses postMessage, which
+    // requires JSON. New Android clients send base64; legacy typed bytes arrive
+    // as arrays. Tauri cannot deliver InvokeBody::Raw there.
+    let bytes = match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) => import_payload::copy_raw(bytes, MAX_CAPTURE_BYTES)?,
+        tauri::ipc::InvokeBody::Json(value) => import_payload::decode_json(value, MAX_CAPTURE_BYTES)?,
     };
-    if bytes.is_empty() || bytes.len() > MAX_CAPTURE_BYTES {
-        return Err("Choose a nonempty document no larger than 32 MiB.".into());
-    }
-    let header = request.headers().get("x-ocr-metadata").ok_or("Missing photo import metadata.")?;
-    if header.as_bytes().len() > 16 * 1024 { return Err("Photo import metadata is too large.".into()); }
-    let json = base64::engine::general_purpose::STANDARD.decode(header.as_bytes())
-        .map_err(|_| "Photo import metadata is invalid.")?;
-    let metadata = serde_json::from_slice(&json).map_err(|_| "Photo import metadata is invalid.")?;
-    let mut owned = Vec::new();
-    owned.try_reserve_exact(bytes.len()).map_err(|_| "Not enough memory to import this photo. Try a smaller capture.")?;
-    owned.extend_from_slice(bytes);
-    Ok((metadata, owned))
+    Ok((metadata, bytes))
 }
 
 fn import_bytes(root: &Path, name: &str, bytes: &[u8], allow_pdf: bool, source_uri: Option<&str>) -> Result<ImportedDocument, String> {
@@ -581,14 +571,11 @@ pub async fn ocr_workspace_prepare(
     let size = checked_physical_size(page_width_points, page_height_points)?;
     let worker_log=log.clone();
     tokio::task::spawn_blocking(move || {
-        // Models are downloaded only after the user agreed for this request.
-        if !allow_downloads.unwrap_or(false) {
-            let missing = missing_preparation_models(&config);
-            if !missing.is_empty() {
-                worker_log.warn("model_consent_required",json!({"models":missing.len()}));
-                return Err(format!("{MODEL_DOWNLOAD_REQUIRED}{}", serde_json::to_string(&missing).unwrap_or_default()));
-            }
-        }
+        // Models are downloaded only after the user agreed for this request,
+        // through the model manager; preparation itself never downloads.
+        let plan = crate::ocr_models::plan(&config, &[]);
+        let preparation: Vec<_> = plan.models.into_iter().filter(|m| m.engine == "preparation").collect();
+        crate::ocr_models::ensure_or_gate(&preparation, allow_downloads.unwrap_or(false), &worker_log)?;
         let progress = |stage: &str| {
             let code = if stage.starts_with("Straightening") {"dewarp"}
                 else if stage.starts_with("Image restoration") {"restore"}
@@ -612,29 +599,6 @@ pub async fn ocr_workspace_prepare(
 
 /// Error prefix the UI turns into a download confirmation; JSON follows.
 pub const MODEL_DOWNLOAD_REQUIRED: &str = "MODEL_DOWNLOAD_REQUIRED:";
-
-#[derive(Debug, Serialize)]
-struct MissingModel { name: String, purpose: &'static str, license: Option<String> }
-
-/// Registry models the configured preparation needs that are not yet local.
-#[cfg(feature = "crispembed")]
-fn missing_preparation_models(config: &crate::extractors::OcrPipelineConfig) -> Vec<MissingModel> {
-    use crate::extractors::ocr_crispembed;
-    let mut wanted: Vec<(String, &'static str)> = Vec::new();
-    if config.restore { wanted.push((ocr_crispembed::restore_model_name(config), "restoration")); }
-    if config.sr { wanted.push((ocr_crispembed::sr_model_name(config), "super-resolution")); }
-    if config.stages.first().map(|s| s.cleanup.denoise).unwrap_or(config.denoise) {
-        wanted.push((config.nafnet_model.clone().filter(|m| !m.is_empty()).unwrap_or_else(|| "nafnet-denoise".into()), "learned denoise"));
-    }
-    if config.dewarp && config.dewarp_engine == "tps" { wanted.push(("tps-loc".into(), "dewarp")); }
-    wanted.into_iter().filter(|(name, _)| !ocr_crispembed::model_is_local(name)).map(|(name, purpose)| {
-        let license = crispembed::CrispEmbed::model_license_info(&name).map(|info| info.spdx).filter(|s| !s.is_empty());
-        MissingModel { name, purpose, license }
-    }).collect()
-}
-
-#[cfg(not(feature = "crispembed"))]
-fn missing_preparation_models(_config: &crate::extractors::OcrPipelineConfig) -> Vec<MissingModel> { Vec::new() }
 
 fn prepare_page(root: &Path, source: &Path, config: &crate::extractors::OcrPipelineConfig, physical_size: Option<(f64, f64)>) -> Result<PreparedPage, String> {
     prepare_page_with_progress(root, source, config, physical_size, &|_| {})
@@ -710,7 +674,7 @@ fn prepare_page_with_progress(root: &Path, source: &Path, config: &crate::extrac
 #[cfg(feature = "crispembed")]
 fn cleanup_image(image: DynamicImage, config: &crate::extractors::OcrPipelineConfig, recipe: &crate::extractors::OcrCleanupSpec, classical: bool, denoise: bool) -> Result<DynamicImage, String> {
     let model = if denoise {
-        Some(crate::model_provisioning::resolve_model(config.nafnet_model.as_deref().unwrap_or("nafnet-denoise"), Some(true))
+        Some(crate::model_provisioning::resolve_model(config.nafnet_model.as_deref().unwrap_or("nafnet-denoise"), Some(false))
             .map_err(|e| format!("Load denoising model: {e}"))?)
     } else { None };
     let engine = crispembed::CrispScanCleanup::new(model.as_deref(), 0).map_err(|e| format!("Initialize scan cleanup: {e}"))?;
@@ -773,10 +737,11 @@ pub async fn ocr_workspace_recognize(
     page_width_points: Option<f64>,
     page_height_points: Option<f64>,
     cpu_pixel_budget: Option<bool>,
+    allow_downloads: Option<bool>,
 ) -> Result<RecognizedPage, String> {
     let log=OperationLog::start("ocr.workspace_recognition",json!({"surface":"gui","engine":engine,"language":language}));
     let result = ocr_workspace_recognize_inner(app, state, page_path, config, engine, language, zone,
-        page_width_points, page_height_points, cpu_pixel_budget,&log).await;
+        page_width_points, page_height_points, cpu_pixel_budget, allow_downloads.unwrap_or(false), &log).await;
     match &result {
         Ok(page) => log.succeed(json!({"regions":page.regions.len(),"warnings":page.warnings.len()})),
         Err(_) => log.fail("recognition_failed"),
@@ -796,6 +761,7 @@ async fn ocr_workspace_recognize_inner(
     page_width_points: Option<f64>,
     page_height_points: Option<f64>,
     cpu_pixel_budget: Option<bool>,
+    allow_downloads: bool,
     log: &OperationLog,
 ) -> Result<RecognizedPage, String> {
     log.step("validating",Value::Null);
@@ -815,9 +781,19 @@ async fn ocr_workspace_recognize_inner(
     let legacy_rec_lang = options.ocr_rec_lang;
     crate::extractors::ocr_policy::validate_runtime(&config)?;
     let cpu_budget = config.cpu_pixel_budget;
+    // Recognition never downloads implicitly. Missing models are reported
+    // (MODEL_DOWNLOAD_REQUIRED) so the UI can ask once, or installed first
+    // when the caller already has the user's agreement.
+    let plan_config = config.clone();
+    let plan = tokio::task::spawn_blocking(move || crate::ocr_models::plan(&plan_config, &[])).await
+        .map_err(|e| format!("Model plan: {e}"))?;
+    if !allow_downloads { crate::ocr_models::ensure_or_gate(&plan.models, false, log)?; }
     let _foreground = crate::bg_ingest::ForegroundGuard::new(state.foreground_active.clone());
     log.step("recognizing",Value::Null);
     let result = tokio::task::spawn_blocking(move || -> Result<RecognizedPage, String> {
+        if !plan.missing.is_empty() {
+            crate::ocr_models::install_models(&plan.missing, None, &|_| {})?;
+        }
         let mut result = recognize_page(&root, &path, &config, zone, warnings, size, cpu_budget, legacy_rec_lang)?;
         if zone.is_some() || !config.enabled {
             // managed_page validated the canonical path used for all I/O.
@@ -907,6 +883,95 @@ fn recognize_plain_engine_for_review(path: &Path, config: &crate::extractors::Oc
         diagnostics: json!({"engine": config.engine, "geometry": "full_page_text_block", "native_word_evidence": false}) })
 }
 
+fn translate_crop_review_regions(
+    regions: &mut [crate::extractors::ocr_crispembed::OcrReviewRegion],
+    crop: crate::ocr_reading_order::Rect,
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    for region in regions {
+        let mapped = crate::ocr_reading_order::crop_rect_to_page(
+            crate::ocr_reading_order::Rect { x:region.x, y:region.y, w:region.w, h:region.h },
+            crop, width, height,
+        ).ok_or("Layout recognition returned invalid crop coordinates")?;
+        if let Some(evidence) = &mut region.word_evidence {
+            // Page bounds alone would accept words outside their real crop.
+            crate::ocr_word_evidence::validate_word_evidence(evidence, &region.text, crop.w as u32, crop.h as u32)?;
+            for word in &mut evidence.words {
+                word.x += crop.x;
+                word.y += crop.y;
+            }
+            crate::ocr_word_evidence::validate_word_evidence(evidence, &region.text, width, height)?;
+        }
+        region.x = mapped.x;
+        region.y = mapped.y;
+    }
+    Ok(())
+}
+
+/// Use layout as recognition input, rather than trying to split already
+/// recognized page-wide lines. The planner opts in only for unambiguous columns.
+fn recognize_cc_columns(
+    path: &Path,
+    config: &crate::extractors::OcrPipelineConfig,
+    layout: &[crate::extractors::layout::LayoutRegion],
+) -> Result<Option<crate::extractors::ocr_crispembed::OcrReviewResult>, String> {
+    use crate::extractors::ocr_crispembed::{ocr_regions_for_review, OcrReviewResult};
+    let (width, height) = checked_dimensions(path)?;
+    let boxes: Vec<_> = layout.iter().map(|r| crate::ocr_reading_order::Rect {
+        x: r.x1, y: r.y1, w: r.x2 - r.x1, h: r.y2 - r.y1,
+    }).collect();
+    let Some(crops) = crate::ocr_reading_order::column_recognition_crops(&boxes, width, height) else {
+        return Ok(None);
+    };
+    let image = decode_page(path)?;
+    let mut regions = Vec::new();
+    let mut warnings = Vec::new();
+    let mut observations = Vec::new();
+    for (index, crop) in crops.iter().enumerate() {
+        let (x, y, w, h) = checked_rect(PixelRect {
+            x: crop.x as f64, y: crop.y as f64, w: crop.w as f64, h: crop.h as f64,
+        }, width, height)?;
+        let temporary = tempfile::Builder::new().prefix("ocr_layout_").suffix(".png")
+            .tempfile().map_err(|e| format!("Create layout recognition input: {e}"))?;
+        image.crop_imm(x, y, w, h).save(temporary.path())
+            .map_err(|e| format!("Prepare layout recognition input: {e}"))?;
+        let mut result = ocr_regions_for_review(temporary.path(), config)
+            .map_err(|e| format!("Recognize layout region {}: {e:#}", index + 1))?;
+        if result.width != w || result.height != h {
+            return Err(format!("Layout region {} changed image coordinates", index + 1));
+        }
+        // Keep the complete original engine snapshot and local coordinates,
+        // including an empty crop that requires whole-page fallback.
+        observations.push(json!({"crop":{"x":x,"y":y,"w":w,"h":h},
+            "raw_regions": result.regions, "diagnostics": result.diagnostics, "warnings":result.warnings}));
+        if result.regions.is_empty() || result.regions.iter().all(|r| r.text.trim().is_empty()) {
+            let mut fallback = ocr_regions_for_review(path, config)
+                .map_err(|e| format!("Recognize whole page after empty layout region: {e:#}"))?;
+            warnings.append(&mut result.warnings);
+            fallback.warnings.extend(warnings);
+            fallback.warnings.push("A detected layout region returned no text; used whole-page recognition instead. Review the reading order.".into());
+            fallback.diagnostics["engine"] = json!(config.engine);
+            fallback.diagnostics["layout_recognition"] = json!({
+                "strategy":"whole_page_after_empty_cc_crop","crops":observations,
+            });
+            return Ok(Some(fallback));
+        }
+        if regions.len().saturating_add(result.regions.len()) > MAX_REGIONS {
+            return Err("Layout recognition returned too many regions".into());
+        }
+        translate_crop_review_regions(&mut result.regions, *crop, width, height)?;
+        warnings.append(&mut result.warnings);
+        regions.extend(result.regions);
+    }
+    Ok(Some(OcrReviewResult {
+        image_path: path.to_owned(), width, height, regions, warnings,
+        diagnostics: json!({"coordinate_space":"prepared_image_pixels","internal_cleanup":false,
+            "requested_config":config,"engine":config.engine,
+            "layout_recognition":{"strategy":"cc_crops_before_recognition","crops":observations}}),
+    }))
+}
+
 fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipelineConfig, zone: Option<PixelRect>, mut warnings: Vec<String>, physical_size: Option<(f64, f64)>, cpu_budget: bool, legacy_rec_lang: crate::extractors::OcrRecLang) -> Result<RecognizedPage, String> {
     let started = std::time::Instant::now();
     let (page, recognition_path, offset) = if let Some(zone) = zone {
@@ -930,7 +995,20 @@ fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipel
         let recognition_path = PathBuf::from(&prepared.page.image_path);
         (prepared.page, recognition_path, (0, 0))
     };
-    let mut result = if cpu_budget {
+    let mut column_layout = None;
+    let column_result = if config.experimental_cc_column_crops
+        && !cpu_budget && zone.is_none() && config.enabled && config.layout
+        && config.layout_engine == "cc" && config.engine.as_deref() == Some("tesseract")
+        && !config.router && config.stages.len() <= 1
+        && config.stages.first().is_none_or(|stage| stage.engine == "tesseract") {
+        let layout = crate::extractors::ocr_crispembed::cc_detect_regions(&recognition_path);
+        let result = recognize_cc_columns(&recognition_path, config, &layout)?;
+        column_layout = Some(layout);
+        result
+    } else { None };
+    let mut result = if let Some(result) = column_result {
+        result
+    } else if cpu_budget {
         recognize_with_cpu_budget(&recognition_path, config)?
     } else if config.engine.as_deref() == Some("system_tesseract") {
         let source = crate::ocr_word_evidence::recognize(&recognition_path, config.language.as_deref())?;
@@ -955,7 +1033,11 @@ fn recognize_page(root: &Path, path: &Path, config: &crate::extractors::OcrPipel
     result.regions = organize_review_regions(std::mem::take(&mut result.regions), &mut result.diagnostics,
         |regions, diagnostics| {
             if config.enabled && config.layout && zone.is_none() {
-                annotate_layout(&recognition_path, config, regions, diagnostics, &mut warnings);
+                if let Some(layout) = &column_layout {
+                    apply_review_layout(layout, config, regions, diagnostics, &mut warnings);
+                } else {
+                    annotate_layout(&recognition_path, config, regions, diagnostics, &mut warnings);
+                }
             }
         });
     for region in &mut result.regions {

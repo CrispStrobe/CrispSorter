@@ -30,11 +30,11 @@
 //!
 //! Every field is a `cfg!` except [`ocr_tiers`], which goes through each
 //! tier's own availability predicate. Those are mostly `cfg!` too, but
-//! `ocrs` genuinely checks for its `.rten` model files on disk: it is
-//! compiled unconditionally (pure Rust, no feature flag) and useless
-//! without weights. A tier that is compiled in but cannot run is not a
-//! capability the user has, and reporting it would put the OCR tab back
-//! in exactly the dead state this exists to prevent.
+//! `ocrs` is compiled unconditionally (pure Rust) but useless without
+//! weights. On desktop the OCR model manager installs them on first use
+//! (after asking), so it counts as runnable; on mobile, where that manager
+//! does not cover ocrs, it is reported only once its models are on disk.
+//! A tier that cannot run is not a capability the user has.
 
 use serde::{Deserialize, Serialize};
 
@@ -139,7 +139,7 @@ pub struct Capabilities {
 /// "Can actually run" is the operative phrase, and it is why each tier is
 /// asked its own predicate rather than read off a `cfg!` here. Today
 /// CrispEmbed and PaddleOCR answer from their feature flag while `ocrs`
-/// checks for its `.rten` files on disk — but the predicate is the tier's
+/// answers `is_ocrs_offered` (installable on desktop, present on mobile) — but the predicate is the tier's
 /// to define, and a tier that later grows a runtime requirement should
 /// start reporting it without this function changing.
 ///
@@ -154,7 +154,7 @@ fn ocr_tiers() -> Vec<String> {
     if crate::extractors::ocr_paddle::is_paddle_ocr_available() {
         tiers.push("paddle".to_string());
     }
-    if crate::extractors::ocr_ocrs::is_ocrs_available() {
+    if crate::extractors::ocr_ocrs::is_ocrs_offered() {
         tiers.push("ocrs".to_string());
     }
     // Already false without `sidecars` — the function reports the tier as

@@ -1,15 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { invoke, open, save, loadCapabilities, listen } = vi.hoisted(() => ({
-    invoke: vi.fn(), open: vi.fn(), save: vi.fn(), loadCapabilities: vi.fn(), listen: vi.fn(),
+const { invoke, open, save, loadCapabilities, listen, platform } = vi.hoisted(() => ({
+    invoke: vi.fn(), open: vi.fn(), save: vi.fn(), loadCapabilities: vi.fn(), listen: vi.fn(), platform: vi.fn(() => 'linux'),
 }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke, convertFileSrc: (path: string) => `asset:${path}` }));
 vi.mock('@tauri-apps/api/event', () => ({ listen }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open, save }));
-vi.mock('../capabilities', () => ({ loadCapabilities }));
+vi.mock('../capabilities', () => ({ loadCapabilities, platform }));
 vi.mock('../log', () => ({ flog: vi.fn() }));
 import { flog } from '../log';
-beforeEach(() => { vi.mocked(flog).mockClear(); });
+beforeEach(() => { vi.mocked(flog).mockClear(); platform.mockReturnValue('linux'); });
 
 import { workspaceClient, setDefaultOcrLanguage, importProgressLabel, exportProgressLabel, type ExportRequest, type ExportResult, type ExportProgress, type ModelDownloadProgress, type ImportProgress } from './client';
 import { PROVIDER_MAX_BYTES } from '../mobileProvider';
@@ -185,7 +185,8 @@ describe('OCR workspace platform transport', () => {
         expect(invoke).toHaveBeenLastCalledWith('ocr_workspace_remove_mobile_model', { name: 'tesseract-eng', expectedVersion: 'displayed-version' });
     });
 
-    it('imports the exact provider URI and displayed filename, including unknown provider size', async () => {
+    it.each(['linux', 'android'])('imports the exact provider URI and displayed filename with unknown size on %s', async os => {
+        platform.mockReturnValue(os);
         const uri = 'content://documents/document/CaseSensitive%3AA%2FB';
         const imported = { source_uri: uri, name: 'Überprüfung_日本.TIFF', pages: [] };
         invoke.mockImplementation(async (command, args) => {
@@ -200,8 +201,12 @@ describe('OCR workspace platform transport', () => {
         expect(await workspaceClient.pickDocuments()).toEqual([uri]);
         expect(await workspaceClient.importDocument(uri)).toEqual(imported);
         const call = invoke.mock.calls.find(([command]) => command === 'ocr_workspace_import_bytes')!;
-        expect(call[1]).toBeInstanceOf(Uint8Array);
-        expect([...call[1]]).toEqual([0, 1, 255, 2]);
+        if (os === 'android') {
+            expect(call[1]).toEqual({ base64: 'AAH/Ag==' });
+        } else {
+            expect(call[1]).toBeInstanceOf(Uint8Array);
+            expect([...call[1]]).toEqual([0, 1, 255, 2]);
+        }
         expect(decodeMetadata(call[2])).toEqual({ name: imported.name, sourceUri: uri });
         expect(open).not.toHaveBeenCalled();
     });
@@ -218,6 +223,27 @@ describe('OCR workspace platform transport', () => {
         expect([...payload]).toEqual([0, 128, 255]);
         expect(decodeMetadata(options)).toEqual({ name });
         expect(loadCapabilities).not.toHaveBeenCalled();
+    });
+
+    it.each([1, 2, 3, 24 * 1024 - 1, 24 * 1024, 24 * 1024 + 1, 48 * 1024 + 2])('uses byte-exact Android base64 across chunk boundaries (%i bytes)', async length => {
+        platform.mockReturnValue('android');
+        const backing = Uint8Array.from({ length: length + 2 }, (_, i) => i % 256);
+        const bytes = backing.subarray(1, length + 1);
+        invoke.mockResolvedValue({ pages: [] });
+        await workspaceClient.importImage!('Überprüfung_日本_📷.jpg', bytes);
+        const [command, payload, options] = invoke.mock.calls[0];
+        expect(command).toBe('ocr_workspace_import_image');
+        expect(Object.keys(payload)).toEqual(['base64']);
+        expect(Uint8Array.from(atob(payload.base64), c => c.charCodeAt(0))).toEqual(bytes);
+        expect(payload.base64.length).toBe(4 * Math.ceil(length / 3));
+        expect(decodeMetadata(options)).toEqual({ name: 'Überprüfung_日本_📷.jpg' });
+    });
+
+    it('uses the bounded base64 transport before platform capabilities are ready', async () => {
+        platform.mockReturnValue('unknown');
+        invoke.mockResolvedValue({ pages: [] });
+        await workspaceClient.importImage!('photo.jpg', new Uint8Array([0, 128, 255]));
+        expect(invoke.mock.calls[0][1]).toEqual({ base64: 'AID/' });
     });
 
     it('rejects empty, oversized, and excessive-metadata imports before invoking native code', async () => {

@@ -345,6 +345,10 @@ pub struct OcrPipelineConfig {
     /// layout model is available or for a fast reading-order pass.
     #[serde(default = "default_layout_engine")]
     pub layout_engine: String,
+    /// Experimental CC line-crop recognition. CC does not prove complete text
+    /// coverage; retain whole-page recognition unless explicitly requested.
+    #[serde(default)]
+    pub experimental_cc_column_crops: bool,
     /// Layout region confidence threshold (0–1; 0.25 is a good default).
     #[serde(default = "default_layout_threshold")]
     pub layout_threshold: f32,
@@ -585,6 +589,7 @@ impl Default for OcrPipelineConfig {
             layout: false,
             layout_model: None,
             layout_engine: default_layout_engine(),
+            experimental_cc_column_crops: false,
             layout_threshold: default_layout_threshold(),
             drop_headers_footers: false,
             sr: false,

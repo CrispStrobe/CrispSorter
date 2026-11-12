@@ -56,7 +56,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-RUNNER_VERSION = "ocr-bench-runner-2026-11-12.1"
+RUNNER_VERSION = "ocr-bench-runner-2026-11-12.2"
 UNIT_SCHEMA = "crispsorter-ocr-bench-unit-v1"
 ENGINE_SCHEMA = "crispsorter-ocr-bench-engine-v1"
 SESSION_SCHEMA = "crispsorter-ocr-bench-session-v1"
@@ -882,6 +882,18 @@ def probe_cli(binary, env, timeout=60):
     return caps
 
 
+def models_pull_argv(binary, engine):
+    """Only pre-pull when the CLI can represent this exact model selection."""
+    model_flags = {"--model", "--det-model", "--rec-model"}
+    language = engine.get("language")
+    if language == "page" or any(arg.split("=", 1)[0] in model_flags for arg in engine.get("args", [])):
+        return None
+    result = [str(Path(binary).resolve()), "--accept-license", "models", "pull", engine["engine"]]
+    if language:
+        result += ["--language", language]
+    return result
+
+
 def host_info(device):
     info = dict(hostname=socket.gethostname(), platform=platform.platform(), python=sys.version.split()[0],
                 cpu_count=os.cpu_count(), machine=platform.machine())
@@ -1037,8 +1049,9 @@ class Bench:
                                            reason="internal evaluation benchmark"))
         before = dir_snapshot([self.cache, self.profile / "models"])
         env = self.engine_env(engine)
-        if self.caps.get("models_pull"):
-            argv = [str(Path(self.a.binary).resolve()), "--accept-license", "models", "pull", engine["engine"]]
+        pull_argv = models_pull_argv(self.a.binary, engine) if self.caps.get("models_pull") else None
+        if pull_argv:
+            argv = pull_argv
             left = self.budget_left()
             pto = self.a.pull_timeout if left is None else max(60.0, min(self.a.pull_timeout, left / 2))
             rr = run_measured(argv, env, pto, stdout_path=self.work / "logs" / "pull.out",
@@ -1046,6 +1059,8 @@ class Bench:
             rec["pull"] = dict(method="models pull", command=self.redact(argv), exit_code=rr["exit_code"],
                                timed_out=rr["timed_out"], seconds=rr["wall_seconds"],
                                stderr_tail=tail(self.work / "logs" / "pull.err", 1500))
+        elif self.caps.get("models_pull"):
+            rec["pull"] = dict(method="deferred to OCR", reason="model override or page-specific language cannot be represented by one models pull")
         else:
             rec["pull"] = dict(method="auto-download during warm-up (no `models pull` in this CLI)")
         warm = None

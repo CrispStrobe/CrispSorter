@@ -15,13 +15,16 @@ const MAX_IMAGE_PIXELS: u64 = 100_000_000;
 
 #[derive(Default, Deserialize)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
-struct RecognitionOptions {
-    engine: Option<String>,
-    language: Option<String>,
-    config: Option<extractors::OcrPipelineConfig>,
-    cpu_pixel_budget: Option<bool>,
-    ocr_tier: Option<String>,
-    ocr_rec_lang: Option<String>,
+pub(crate) struct RecognitionOptions {
+    pub(crate) engine: Option<String>,
+    pub(crate) language: Option<String>,
+    pub(crate) config: Option<extractors::OcrPipelineConfig>,
+    pub(crate) cpu_pixel_budget: Option<bool>,
+    pub(crate) ocr_tier: Option<String>,
+    pub(crate) ocr_rec_lang: Option<String>,
+    /// The user agreed to download missing models for this request. Without
+    /// it a missing model returns `MODEL_DOWNLOAD_REQUIRED:` + JSON.
+    pub(crate) allow_downloads: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -39,10 +42,7 @@ pub struct ImageRecognition {
     warnings: Vec<String>,
 }
 
-fn parse_metadata(header: &[u8], bytes: &[u8]) -> Result<ImageMetadata, String> {
-    if bytes.is_empty() || bytes.len() > MAX_IMAGE_BYTES {
-        return Err("Choose a nonempty image no larger than 32 MiB.".into());
-    }
+fn parse_metadata(header: &[u8]) -> Result<ImageMetadata, String> {
     if header.len() > MAX_METADATA_BYTES.div_ceil(3) * 4 {
         return Err("OCR metadata exceeds 64 KiB.".into());
     }
@@ -56,7 +56,7 @@ fn parse_metadata(header: &[u8], bytes: &[u8]) -> Result<ImageMetadata, String> 
     Ok(metadata)
 }
 
-fn extraction_options(mut saved: extractors::ExtractOptions, request: RecognitionOptions, source_name: &str) -> Result<extractors::ExtractOptions, String> {
+pub(crate) fn extraction_options(mut saved: extractors::ExtractOptions, request: RecognitionOptions, source_name: &str) -> Result<extractors::ExtractOptions, String> {
     if let Some(config) = request.config { saved.ocr_pipeline = config; }
     if let Some(engine) = request.engine { saved.ocr_pipeline.engine = Some(engine); }
     if let Some(language) = request.language { saved.ocr_pipeline.language = Some(language); }
@@ -127,16 +127,16 @@ pub async fn ocr_extract_image(state: State<'_, AppState>, request: tauri::ipc::
         serde_json::json!({"surface":"gui","kind":"image"}), request_id));
     let result: Result<ImageRecognition,String> = async {
     log.step("validating_request", serde_json::Value::Null);
-    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
-        return Err("Image OCR requires a raw binary payload.".into());
-    };
+    // Validate bounded settings and name before allocating the image snapshot.
     let header = request.headers().get("x-ocr-metadata").ok_or("Missing OCR metadata.")?;
-    let metadata = parse_metadata(header.as_bytes(), bytes)?;
-    let mut owned = Vec::new();
-    owned.try_reserve_exact(bytes.len()).map_err(|_| "Not enough memory for this OCR image.")?;
-    owned.extend_from_slice(bytes);
-    log.step("snapshot_settings", serde_json::json!({"input_bytes":bytes.len()}));
+    let metadata = parse_metadata(header.as_bytes())?;
+    let owned = match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) => crate::ocr_import_payload::copy_raw(bytes, MAX_IMAGE_BYTES)?,
+        tauri::ipc::InvokeBody::Json(value) => crate::ocr_import_payload::decode_json(value, MAX_IMAGE_BYTES)?,
+    };
+    log.step("snapshot_settings", serde_json::json!({"input_bytes":owned.len()}));
     let saved = state.bg_ingest.lock().await.ocr_options();
+    let allow_downloads = metadata.options.allow_downloads.unwrap_or(false);
     let options = extraction_options(saved, metadata.options, &metadata.name)?;
     let _foreground = crate::bg_ingest::ForegroundGuard::new(state.foreground_active.clone());
     let worker_log=log.clone();
@@ -145,6 +145,12 @@ pub async fn ocr_extract_image(state: State<'_, AppState>, request: tauri::ipc::
         let engine = config.engine.clone().unwrap_or_else(|| "auto".into());
         worker_log.step("policy_resolved",serde_json::json!({"engine":engine,"language":config.language,
             "stages":config.stages.len(),"cpu_budget":config.cpu_pixel_budget}));
+        // Never download implicitly: ask the user first (the UI shows the
+        // model dialog for MODEL_DOWNLOAD_REQUIRED and retries).
+        // PaddleOCR picks its recognizer from the script (here: the name).
+        let extras: Vec<String> = if options.ocr_rec_lang == extractors::OcrRecLang::Cjk { vec!["paddle_cjk".into()] } else { Vec::new() };
+        let plan = crate::ocr_models::plan(&config, &extras);
+        crate::ocr_models::ensure_or_gate(&plan.models, allow_downloads, &worker_log)?;
         worker_log.step("staging_image",serde_json::json!({"bytes":owned.len()}));
         with_image(&owned, |path| {
             let document = extractors::extract_text_from_path_with_opts(path, options)
@@ -170,14 +176,13 @@ mod tests {
 
     #[test]
     fn metadata_preserves_unicode_and_rejects_unknown_options() {
-        let parsed = parse_metadata(&header(serde_json::json!({"name":"Überprüfung.png","options":{"engine":"qwen2vl","cpuPixelBudget":true}})), &[1]).unwrap();
+        let parsed = parse_metadata(&header(serde_json::json!({"name":"Überprüfung.png","options":{"engine":"qwen2vl","cpuPixelBudget":true}}))).unwrap();
         assert_eq!(parsed.name, "Überprüfung.png");
         assert_eq!(parsed.options.engine.as_deref(), Some("qwen2vl"));
         assert_eq!(parsed.options.cpu_pixel_budget, Some(true));
-        assert!(parse_metadata(&header(serde_json::json!({"name":"scan","options":{"engnie":"got"}})), &[1]).is_err());
-        assert!(parse_metadata(b"invalid base64!", &[1]).is_err());
-        assert!(parse_metadata(&header(serde_json::json!({"name":"scan"})), &[]).is_err());
-        assert!(parse_metadata(&vec![b'A'; MAX_METADATA_BYTES.div_ceil(3) * 4 + 1], &[1]).is_err());
+        assert!(parse_metadata(&header(serde_json::json!({"name":"scan","options":{"engnie":"got"}}))).is_err());
+        assert!(parse_metadata(b"invalid base64!").is_err());
+        assert!(parse_metadata(&vec![b'A'; MAX_METADATA_BYTES.div_ceil(3) * 4 + 1]).is_err());
     }
 
     #[test]

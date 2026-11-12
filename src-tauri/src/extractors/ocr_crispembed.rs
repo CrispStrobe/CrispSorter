@@ -581,8 +581,8 @@ pub fn ocr_via_crispembed(path: &Path) -> Result<ExtractedDocument> {
 
     let key = format!("{DEFAULT_DET_MODEL}:{DEFAULT_REC_MODEL}");
     let mut cache = super::context_cache::acquire(&OCR_PIPELINE, key, || {
-        let det = crate::model_provisioning::resolve_model(DEFAULT_DET_MODEL, Some(true))?;
-        let rec = crate::model_provisioning::resolve_model(DEFAULT_REC_MODEL, Some(true))?;
+        let det = crate::model_provisioning::resolve_model(DEFAULT_DET_MODEL, Some(false))?;
+        let rec = crate::model_provisioning::resolve_model(DEFAULT_REC_MODEL, Some(false))?;
         crispembed::OcrPipeline::new(&det, &rec, 0)
     }).map_err(|e| anyhow::anyhow!("CrispEmbed OCR initialization failed: {e}"))?;
     let guard = &mut cache.as_mut().unwrap().context;
@@ -652,9 +652,9 @@ pub fn ocr_via_crispembed_custom(
         .to_str()
         .context("image path is not valid UTF-8")?;
 
-    let det = crate::model_provisioning::resolve_model(det_model, Some(true))
+    let det = crate::model_provisioning::resolve_model(det_model, Some(false))
         .unwrap_or_else(|_| det_model.to_string());
-    let rec = crate::model_provisioning::resolve_model(rec_model, Some(true))
+    let rec = crate::model_provisioning::resolve_model(rec_model, Some(false))
         .unwrap_or_else(|_| rec_model.to_string());
 
     let mut pipeline = crispembed::OcrPipeline::new(&det, &rec, 0)
@@ -714,7 +714,7 @@ pub fn ocr_via_crispembed_custom(
 }
 
 /// NAFNet denoise GGUF registry name (`cstr/nafnet-sidd-GGUF`, MIT, ~30 MB).
-#[cfg(feature = "crispembed")]
+#[cfg(any(feature = "crispembed", test))]
 const NAFNET_MODEL: &str = "nafnet-denoise";
 
 /// Keep one model bundle warm, keyed by the complete requested configuration.
@@ -1186,7 +1186,7 @@ fn vlm_engine_id(engine: &str) -> i32 {
 }
 
 /// Default single-shot model registry name for a VLM engine string.
-#[cfg(feature = "crispembed")]
+#[cfg(any(feature = "crispembed", test))]
 fn vlm_default_model(engine: &str) -> &'static str {
     match engine {
         "glm" => "glm-ocr",
@@ -1226,7 +1226,9 @@ fn resolve(name: &str) -> String {
     if !crate::index::license_consent::may_download(name) {
         return name.to_string();
     }
-    crate::model_provisioning::resolve_model(name, Some(true)).unwrap_or_else(|_| name.to_string())
+    // Recognition never downloads: missing models are installed beforehand
+    // through the model manager (`ocr_models`), after the user agreed.
+    crate::model_provisioning::resolve_model(name, Some(false)).unwrap_or_else(|_| name.to_string())
 }
 
 /// Why the model cache cannot receive downloads, if it cannot: the native
@@ -1258,14 +1260,14 @@ pub fn model_is_local(name: &str) -> bool {
     Path::new(name).is_file() || crate::model_provisioning::resolve_model(name, Some(false)).is_ok()
 }
 
-#[cfg(feature = "crispembed")]
+#[cfg(any(feature = "crispembed", test))]
 pub fn restore_model_name(cfg: &super::OcrPipelineConfig) -> String {
     cfg.restore_model.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| match cfg.restore_engine.as_str() {
         "scunet" => "scunet-color", "instructir" => "instructir", _ => "restormer-denoise",
     }.to_string())
 }
 
-#[cfg(feature = "crispembed")]
+#[cfg(any(feature = "crispembed", test))]
 pub fn sr_model_name(cfg: &super::OcrPipelineConfig) -> String {
     cfg.sr_model.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| match cfg.sr_engine.as_str() {
         "esrgan" => "esrgan-x4", "safmn" => "safmn-x4", "hat" => "hat-sr-x4", "tbsrn" => "tbsrn-telescope",
@@ -1306,8 +1308,10 @@ fn resolve_checked(name: &str) -> Result<String> {
         name.to_string()
     } else {
         crate::index::license_consent::ensure_registry_download_allowed(name)?;
-        crate::model_provisioning::resolve_model(name, Some(true))
-            .map_err(|e| anyhow::anyhow!("Could not load OCR model '{name}': {e}{}", cache_problem().map(|p| format!(". {p}")).unwrap_or_default()))?
+        // Never downloads (see `ocr_models`): the caller installs missing
+        // models after consent, so a miss here is an actionable error.
+        crate::model_provisioning::resolve_model(name, Some(false))
+            .map_err(|e| anyhow::anyhow!("OCR model '{name}' is not installed: {e}. Download it when prompted, in Settings > OCR models, or with `crispsorter models pull`{}", cache_problem().map(|p| format!(". {p}")).unwrap_or_default()))?
     };
     let mut file = std::fs::File::open(&resolved)
         .with_context(|| format!("OCR model '{name}' is unavailable at {resolved}"))?;
@@ -1413,6 +1417,87 @@ fn stage_model_defaults(eid: i32) -> (&'static str, &'static str) {
 #[cfg(any(feature = "crispembed", test))]
 fn automatic_tesseract_recognizer(eid: i32, name: &str) -> bool {
     matches!(eid, 6 | 15) && name == "auto"
+}
+
+/// One registry model (or local file) a resolved OCR configuration loads.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModelRequirement {
+    pub name: String,
+    /// Fixed, user-facing purpose ("text detection", "restoration", …).
+    pub purpose: &'static str,
+    /// Engine or stage the model belongs to (`tesseract`, `preparation`, …).
+    pub engine: String,
+}
+
+/// Every model a policy-resolved configuration will load, without loading or
+/// downloading anything. Mirrors `build_pipeline`, the page preparation steps
+/// and the layout pass, so the model manager can ask once before recognition.
+/// Local file paths are included (they need no download but must exist);
+/// native sentinels (`auto` Tesseract LID selection, empty names) are not.
+#[cfg(any(feature = "crispembed", test))]
+pub fn required_models(cfg: &super::OcrPipelineConfig) -> Vec<ModelRequirement> {
+    use super::engine_id;
+    let mut out: Vec<ModelRequirement> = Vec::new();
+    let mut push = |name: &str, purpose: &'static str, engine: &str| {
+        let name = match name.trim() {
+            "qwen2vl-ocr" => "qwen2vl-3b",
+            "internvl2-ocr" => "internvl2-2b",
+            other => other,
+        };
+        if name.is_empty() || name == "auto" || out.iter().any(|m| m.name == name) { return; }
+        out.push(ModelRequirement { name: name.to_owned(), purpose, engine: engine.to_owned() });
+    };
+    let selected = cfg.engine.as_deref().unwrap_or("auto");
+    let legacy = super::ocr_policy::LEGACY_ENGINES.contains(&selected);
+
+    // Page preparation (workspace prepare and the shared extraction path).
+    if cfg.dewarp && cfg.dewarp_engine == "tps" { push("tps-loc", "dewarp", "preparation"); }
+    if cfg.restore { push(restore_model_name(cfg).as_str(), "restoration", "preparation"); }
+    if cfg.sr { push(sr_model_name(cfg).as_str(), "super-resolution", "preparation"); }
+    let denoise = if legacy || cfg.stages.is_empty() { cfg.denoise }
+        else { cfg.stages.iter().any(|s| s.cleanup.enabled && s.cleanup.denoise) || cfg.stages.first().is_some_and(|s| s.cleanup.denoise) };
+    if denoise {
+        push(cfg.nafnet_model.as_deref().filter(|m| !m.is_empty()).unwrap_or(NAFNET_MODEL), "learned denoise", "preparation");
+    }
+
+    if !legacy {
+        let expanded = expand_flat_escalation(cfg).ok().flatten();
+        let cfg_ref = expanded.as_ref().unwrap_or(cfg);
+        if cfg_ref.stages.is_empty() {
+            let engine = if selected == "auto" { "dbnet_trocr" } else { selected };
+            push(cfg_ref.det_model.as_deref().unwrap_or(DEFAULT_DET_MODEL), "text detection", engine);
+            push(cfg_ref.rec_model.as_deref().unwrap_or(DEFAULT_REC_MODEL), "text recognition", engine);
+            if let Some(vlm) = cfg_ref.vlm_ocr_model.as_deref().filter(|m| !m.trim().is_empty()) {
+                push(vlm, "vision recognition (escalation)", cfg_ref.vlm_ocr_engine.as_str());
+            }
+        } else {
+            for stage in &cfg_ref.stages {
+                let eid = engine_id(&stage.engine);
+                if eid < 0 { continue; }
+                if needs_det_and_rec(eid) {
+                    let (det, rec) = stage_model_defaults(eid);
+                    push(stage.det_model.as_deref().unwrap_or(det), "text detection", stage.engine.as_str());
+                    let rec = stage.rec_model.as_deref().unwrap_or(rec);
+                    if !automatic_tesseract_recognizer(eid, rec) {
+                        push(rec, "text recognition", stage.engine.as_str());
+                    }
+                } else {
+                    let model = stage.det_model.clone().unwrap_or_else(|| vlm_default_model(&stage.engine).to_string());
+                    push(model.as_str(), "document recognition", stage.engine.as_str());
+                }
+            }
+        }
+    }
+
+    // Layout reading order (RT-DETRv2) also routes formula regions to math OCR.
+    if cfg.layout && cfg.layout_engine != "cc" {
+        push(cfg.layout_model.as_deref().filter(|m| !m.is_empty()).unwrap_or("layout-heron"), "layout detection", "layout");
+        push("ppformulanet-l", "formula recognition (layout)", "layout");
+    }
+    for (model, purpose) in [(&cfg.punct_model, "punctuation restore"), (&cfg.truecase_model, "truecasing"), (&cfg.lid_model, "language identification")] {
+        if let Some(model) = model.as_deref().filter(|m| !m.trim().is_empty()) { push(model, purpose, "postprocessing"); }
+    }
+    out
 }
 
 #[cfg(feature = "crispembed")]

@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "purpose": "Unpublished mobile build/link qualification candidate for the merged OCR native failure propagation fix; does not qualify application or device behavior",
+  "source_commit": "2d2ab3275022e095f4a8f580e276bb2e3aa3f59c",
+  "ggml_commit": "3a27b6c665b191cb230be367db5c52d81dd3e2ac",
+  "native_components": {
+    "sheenbidi": {
+      "source_tree": "c39bc929d47b3a770995df2d155b942bc4edac4e"
+    }
+  },
+  "review": "https://github.com/CrispStrobe/CrispEmbed/pull/227",
+  "includes_fix_commit": "497301606f2913c266f39ba8157f2d4769bb27e5",
+  "qualification_status": "pending; no runtime assets built from this lock"
+}

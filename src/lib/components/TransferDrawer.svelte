@@ -1,6 +1,7 @@
 <script lang="ts">
     import { onMount } from 'svelte';
     import { invoke } from '@tauri-apps/api/core';
+    import { formatTransferBytes as formatBytes } from '$lib/drives/transferFormatting';
     import { ChevronDown, ChevronUp, Download, Upload, X } from 'lucide-svelte';
 
     type TransferState =
@@ -53,19 +54,6 @@
         queued: 'Queued', active: 'Transferring', done: 'Done',
         cancelled: 'Cancelled',
     }[stateName(state)] ?? stateName(state));
-
-    function formatBytes(value: number | null | undefined): string {
-        if (value == null) return '—';
-        if (value < 1024) return `${value} B`;
-        const units = ['KB', 'MB', 'GB', 'TB'];
-        let amount = value;
-        let unit = 0;
-        while (amount >= 1024 && unit < units.length - 1) {
-            amount /= 1024;
-            unit += 1;
-        }
-        return `${amount.toFixed(amount >= 100 ? 0 : 1)} ${units[unit]}`;
-    }
 
     function speed(job: TransferProgress): number {
         return speeds.get(job.job_id) ?? 0;

@@ -80,6 +80,11 @@ class BuildTests(unittest.TestCase):
             simulator_args = mobile.configure_args('android-x86_64', Path('/source'), Path('/out'), ndk)
             self.assertIn('-DANDROID_ABI=x86_64', simulator_args)
             self.assertNotIn('-DANDROID_ABI=arm64-v8a', simulator_args)
+            armv7_args = mobile.configure_args('android-armv7', Path('/source'), Path('/out'), ndk)
+            self.assertIn('-DANDROID_ABI=armeabi-v7a', armv7_args)
+            self.assertIn('-DANDROID_NATIVE_API_LEVEL=24', armv7_args)
+            self.assertIn('-DANDROID_STL=c++_static', armv7_args)
+            self.assertIn('-DCRISPEMBED_BUILD_SHARED=ON', armv7_args)
 
     def test_unknown_target_never_falls_through_to_ios(self):
         with patch.object(mobile, 'run') as run:
