@@ -312,11 +312,15 @@ did not match the committed controller bytes; it is not a Windows runtime
 result. A follow-up checkout and exact Windows packaged-header line-ending fix
 is under review in [PR 230](https://github.com/CrispStrobe/CrispEmbed/pull/230);
 the [Windows-only rerun](https://github.com/CrispStrobe/CrispEmbed/actions/runs/43313165931)
-was queued at this update. None of these controls establishes decoded OCR, a
-positively recognized blank page, CrispSorter application behavior or GPU execution.
+passed its native C controls but its Rust control failed before execution because
+Cargo selected a non-MSVC `link.exe`. A Windows-only linker correction is in
+PR 230; [its targeted rerun](https://github.com/CrispStrobe/CrispEmbed/actions/runs/43316615562)
+must pass before claiming Rust behavior. None of these controls
+establishes decoded OCR, a positively recognized blank page, CrispSorter
+application behavior or GPU execution.
 
 The [Android x86_64 candidate app run](https://github.com/CrispStrobe/CrispSorter/actions/runs/43313212722)
-was queued at this update. It reuses the verified candidate runtime and exercises
+was building the app at this update. It reuses the verified candidate runtime and exercises
 the app IPC native-failure and white-raster blank controls. Until it completes,
 these controls have only source review and response-validator tests; even a pass
 will not establish Ovis inference, same-context recovery or physical-device
