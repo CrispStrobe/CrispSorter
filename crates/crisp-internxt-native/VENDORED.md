@@ -12,9 +12,9 @@ This crate is a vendored copy of `crates/crisp-internxt` from
 
 The vendored baseline above differs from the upstream validation source. Both
 `.github/workflows/provider-conformance.yml` and the `cloud-facade` job pin
-`121bfa6682ab710cc19fbd7c7897e4aea0729920`, which includes the Windows root
-fix and the Rust clippy correction. This commit is the head of upstream PR #3;
-re-pin to its merged commit after it lands and verify the resulting source tree.
+`33bdc33f64d0a2f1144dceec8ed372d18c12b551`, which includes the Windows root
+fix and the Rust clippy correction. This is the merge of upstream PR #3; its tree is identical to the previously
+verified PR head `121bfa6682ab710cc19fbd7c7897e4aea0729920`.
 
 ## App-local divergences
 
@@ -64,8 +64,8 @@ re-syncing; do not drop them silently.
 
 1. `git -C ../crisp-cloud-rs diff <old-rev> <new-rev> -- crates/crisp-internxt`
    and apply it here, keeping the divergences above.
-2. Update the revision in this file, `provider-conformance.yml`, `ci.yml` and
-   `docs/STORAGE_ENGINE_ARCHITECTURE.md`.
+2. Record the new vendored baseline here; assess and record the separately
+   pinned upstream validation revision in the workflows and architecture guide.
 3. Run `cargo test -p crisp-internxt --lib` and the provider-conformance workflow.
 
 - **Windows root paths** (2026-11-12): `resolve_path` walks only `Component::Normal` segments. Upstream skips only `/`, so on Windows the root component `\` was looked up as a folder name and every absolute path failed. Upstream fix: CrispStrobe/crisp-cloud-rs#1.
