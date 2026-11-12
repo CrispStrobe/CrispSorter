@@ -304,6 +304,17 @@ provider-backed move tests on actual devices.
 The locked iOS `libcrispembed-static.a` also lacks the separately linked core
 and ggml closure. `scripts/build_mobile_crispembed.py` prepares source-pinned
 Android, iOS device, and iOS simulator builds without unpinned sibling sources.
+The manual `mobile-crispembed-qualification.yml` workflow accepts
+`target: android-x86_64` to build only an Android emulator candidate and link its
+OCR C API probe with the NDK's `x86_64-linux-android24-clang`. The default `all`
+still selects only Android ARM64 and the two iOS ARM64 targets; `android-armv7`
+remains a separate candidate. Choose a repository-committed `runtime_lock`
+(default `scripts/crispembed-runtime-lock.json`, or
+`scripts/ocr-mobile-runtime-lock.json` for paired OCR bindings). The workflow
+validates the committed lock before checkout and retains the library, notices,
+source/build receipts, ELF inspection, and linked probe for 14 days under
+`crispembed-mobile-candidate-android-x86_64`. It builds and links only; emulator
+execution and complete-app qualification require the separate paired OCR lane.
 The [build/link qualification](https://github.com/CrispStrobe/CrispSorter/actions/runs/40875226935)
 completed successfully for Android ARM64, iOS ARM64, and iOS ARM64 simulator.
 That older run built native libraries and linked probes; it did not execute
