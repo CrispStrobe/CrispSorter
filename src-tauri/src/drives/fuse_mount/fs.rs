@@ -21,6 +21,62 @@ use std::time::{Duration, UNIX_EPOCH};
 const ATTR_TTL: Duration = Duration::from_secs(5);
 pub const DEFAULT_CACHE_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
+/// Below this size a chunk-addressed provider's file is still downloaded once
+/// into the disk cache: one transfer beats many small ranged requests.
+const CHUNKED_RANGE_MIN_FILE_BYTES: u64 = 16 * 1024 * 1024;
+/// Bytes fetched per ranged miss. A whole number of Filen's 1 MiB encrypted
+/// chunks, so sequential FUSE pages are served from memory instead of
+/// re-downloading and re-authenticating the same chunk for every page.
+const CHUNKED_RANGE_WINDOW_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Providers whose `read_range` fetches whole encrypted chunks: worth a
+/// ranged read for large files, but only through an aligned window.
+fn chunked_range_provider(kind: &crate::drives::DriveType) -> bool {
+    matches!(kind, crate::drives::DriveType::Filen)
+}
+
+/// The inclusive, `window`-aligned range covering `offset..offset + size`,
+/// clamped to `file_size`; `None` for an empty request or one at/after EOF.
+fn aligned_window(offset: u64, size: u32, file_size: u64, window: u64) -> Option<(u64, u64)> {
+    if size == 0 || offset >= file_size || window == 0 {
+        return None;
+    }
+    let start = offset / window * window;
+    let wanted_end = offset.saturating_add(size as u64).min(file_size);
+    let end = wanted_end
+        .div_ceil(window)
+        .saturating_mul(window)
+        .min(file_size);
+    Some((start, end - 1))
+}
+
+/// One fetched window of a remote file, kept in memory for the next pages.
+struct RangeWindow {
+    path: PathBuf,
+    file_size: u64,
+    start: u64,
+    bytes: Vec<u8>,
+}
+
+impl RangeWindow {
+    /// The requested slice when this window fully covers it (or the request
+    /// is at/after EOF of this file); `None` on a miss.
+    fn slice(&self, path: &Path, offset: u64, size: u32) -> Option<Vec<u8>> {
+        if self.path != path {
+            return None;
+        }
+        if offset >= self.file_size {
+            return Some(Vec::new());
+        }
+        let window_end = self.start + self.bytes.len() as u64;
+        let wanted_end = offset.saturating_add(size as u64).min(self.file_size);
+        if offset < self.start || wanted_end > window_end {
+            return None;
+        }
+        Some(self.bytes[(offset - self.start) as usize..(wanted_end - self.start) as usize].to_vec())
+    }
+}
+
 /// FUSE filesystem backed by a `CloudDrive`.
 pub struct FuseDriveFs {
     drive: Arc<dyn CloudDrive>,
@@ -28,6 +84,11 @@ pub struct FuseDriveFs {
     /// Bidirectional inode ↔ path map, protected by a mutex.
     state: Mutex<InodeState>,
     content_cache: Mutex<ContentCache>,
+    /// Last range window fetched from a chunk-addressed provider (Filen).
+    range_window: Mutex<Option<RangeWindow>>,
+    /// Files at least this large are range-read from chunk-addressed
+    /// providers instead of being materialised whole into `content_cache`.
+    chunked_range_min_bytes: u64,
 }
 
 struct InodeState {
@@ -91,6 +152,8 @@ impl FuseDriveFs {
             queue: TransferQueue::shared(),
             state: Mutex::new(InodeState::new()),
             content_cache: Mutex::new(ContentCache::new(cache_max_bytes)),
+            range_window: Mutex::new(None),
+            chunked_range_min_bytes: CHUNKED_RANGE_MIN_FILE_BYTES,
         }
     }
 
@@ -104,7 +167,34 @@ impl FuseDriveFs {
             queue,
             state: Mutex::new(InodeState::new()),
             content_cache: Mutex::new(ContentCache::new(cache_max_bytes)),
+            range_window: Mutex::new(None),
+            chunked_range_min_bytes: CHUNKED_RANGE_MIN_FILE_BYTES,
         }
+    }
+
+    /// Fetch the aligned window around a request through the transfer queue,
+    /// keep it for the following pages, and return the requested slice.
+    fn read_chunked_window(
+        &self,
+        file_path: &Path,
+        offset: u64,
+        size: u32,
+        file_size: u64,
+    ) -> Result<Vec<u8>> {
+        let Some((start, end)) = aligned_window(offset, size, file_size, CHUNKED_RANGE_WINDOW_BYTES) else {
+            return Ok(Vec::new());
+        };
+        let drive = Arc::clone(&self.drive);
+        let bytes = self.queue.download_blocking(
+            drive.label().to_owned(), file_path.to_owned(), Some(end - start + 1),
+            move |path| drive.read_range(path, start, end),
+        )?;
+        let window = RangeWindow { path: file_path.to_owned(), file_size, start, bytes };
+        // A short window means the remote file changed size since the stat.
+        let slice = window.slice(file_path, offset, size)
+            .ok_or_else(|| anyhow::anyhow!("provider returned a short byte range"))?;
+        *self.range_window.lock().unwrap() = Some(window);
+        Ok(slice)
     }
 
     /// Read one FUSE request through the real queue and cache without coupling
@@ -135,6 +225,17 @@ impl FuseDriveFs {
             );
         }
 
+        // Chunk-addressed providers (Filen) serve large files by aligned range
+        // windows; a page inside the last window needs no provider call.
+        let chunked = chunked_range_provider(&self.drive.drive_type());
+        if chunked {
+            let hit = self.range_window.lock().unwrap().as_ref()
+                .and_then(|window| window.slice(file_path, offset, size));
+            if let Some(bytes) = hit {
+                return Ok(bytes);
+            }
+        }
+
         // Other providers materialize once into a private disk-backed LRU.
         // Each read allocates only the requested slice, including cache hits.
         let cached = self.content_cache.lock().unwrap().get(file_path);
@@ -143,7 +244,19 @@ impl FuseDriveFs {
             None => {
                 let drive = Arc::clone(&self.drive);
                 let drive_id = drive.label().to_owned();
-                let size_hint = drive.stat(file_path).ok().map(|stat| stat.size);
+                // The window of this file already knows its size; reusing it
+                // spares a provider stat for every window of a sequential read.
+                let known_size = if chunked {
+                    self.range_window.lock().unwrap().as_ref()
+                        .filter(|window| window.path == file_path)
+                        .map(|window| window.file_size)
+                } else { None };
+                let size_hint = known_size.or_else(|| drive.stat(file_path).ok().map(|stat| stat.size));
+                if let (true, Some(file_size)) = (chunked, size_hint) {
+                    if file_size >= self.chunked_range_min_bytes {
+                        return self.read_chunked_window(file_path, offset, size, file_size);
+                    }
+                }
                 let fetched = Arc::new(CachedFile::create(|destination| {
                     self.queue.download_to_file_blocking(
                         drive_id, file_path.to_owned(), destination.to_owned(), size_hint,
@@ -463,7 +576,7 @@ mod tests {
             panic!("FUSE must not use whole-buffer reads");
         }
         fn read_range(&self, path: &Path, start: u64, end: u64) -> Result<Vec<u8>> {
-            assert_eq!(self.kind, DriveType::Local);
+            assert!(matches!(self.kind, DriveType::Local | DriveType::Filen), "only ranged providers may use read_range");
             self.ranges.lock().unwrap().push((start, end));
             self.local.read_range(path, start, end)
         }
@@ -593,5 +706,71 @@ mod tests {
         assert_eq!(jobs.len(), 2);
         assert!(matches!(&jobs[0].state, TransferState::Failed { .. }));
         assert!(matches!(&jobs[1].state, TransferState::Done));
+    }
+
+    #[test]
+    fn aligned_windows_cover_the_request_and_clamp_to_eof() {
+        const W: u64 = 4;
+        assert_eq!(aligned_window(5, 2, 100, W), Some((4, 7)));
+        assert_eq!(aligned_window(3, 2, 100, W), Some((0, 7)));
+        assert_eq!(aligned_window(8, 4, 100, W), Some((8, 11)));
+        assert_eq!(aligned_window(97, 50, 99, W), Some((96, 98)));
+        assert_eq!(aligned_window(99, 1, 99, W), None);
+        assert_eq!(aligned_window(0, 0, 99, W), None);
+        assert_eq!(aligned_window(u64::MAX - 1, u32::MAX, u64::MAX, W), Some((u64::MAX - 3, u64::MAX - 1)));
+    }
+
+    #[test]
+    fn range_window_serves_only_fully_covered_pages() {
+        let window = RangeWindow { path: PathBuf::from("a"), file_size: 10, start: 4, bytes: b"4567".to_vec() };
+        assert_eq!(window.slice(Path::new("a"), 5, 2).unwrap(), b"56");
+        assert_eq!(window.slice(Path::new("a"), 4, 4).unwrap(), b"4567");
+        assert!(window.slice(Path::new("a"), 6, 4).is_none());
+        assert!(window.slice(Path::new("a"), 3, 2).is_none());
+        assert!(window.slice(Path::new("b"), 5, 1).is_none());
+        assert!(window.slice(Path::new("a"), 10, 4).unwrap().is_empty());
+        let tail = RangeWindow { path: PathBuf::from("a"), file_size: 10, start: 8, bytes: b"89".to_vec() };
+        assert_eq!(tail.slice(Path::new("a"), 9, 4096).unwrap(), b"9");
+    }
+
+    #[test]
+    fn filen_large_reads_use_aligned_windows_without_content_cache() {
+        const MIB: u64 = 1024 * 1024;
+        let directory = tempfile::tempdir().unwrap();
+        let path = Path::new("large.bin");
+        let length = 9 * MIB + 100;
+        let content: Vec<u8> = (0..length).map(|index| (index % 251) as u8).collect();
+        std::fs::write(directory.path().join(path), &content).unwrap();
+        let drive = Arc::new(CheckedDrive::new(directory.path(), DriveType::Filen));
+        let queue = TransferQueue::with_concurrency(1);
+        let mut fs = FuseDriveFs::with_queue_and_cache(drive.clone(), queue.clone(), 64);
+        fs.chunked_range_min_bytes = 0;
+        let slice = |offset: u64, size: u64| content[offset as usize..(offset + size).min(length) as usize].to_vec();
+
+        assert_eq!(fs.read_file_slice(path, 5 * MIB + 10, 4096).unwrap(), slice(5 * MIB + 10, 4096));
+        // The next sequential page is inside the fetched window.
+        assert_eq!(fs.read_file_slice(path, 5 * MIB + 4106, 4096).unwrap(), slice(5 * MIB + 4106, 4096));
+        assert_eq!(fs.read_file_slice(path, 8 * MIB + 50, MIB as u32).unwrap(), slice(8 * MIB + 50, MIB));
+        assert!(fs.read_file_slice(path, length, 4096).unwrap().is_empty());
+        assert_eq!(*drive.ranges.lock().unwrap(), vec![(4 * MIB, 8 * MIB - 1), (8 * MIB, length - 1)]);
+        assert_eq!(drive.downloads.load(Ordering::SeqCst), 0);
+        assert_eq!(fs.content_cache.lock().unwrap().stats(), (0, 0));
+        assert!(queue.snapshot().iter().all(|job| matches!(&job.state, TransferState::Done)));
+    }
+
+    #[test]
+    fn filen_small_files_still_materialise_once() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = Path::new("document");
+        std::fs::write(directory.path().join(path), b"abcdefghij").unwrap();
+        let drive = Arc::new(CheckedDrive::new(directory.path(), DriveType::Filen));
+        let queue = TransferQueue::with_concurrency(1);
+        let fs = FuseDriveFs::with_queue_and_cache(drive.clone(), queue, 64);
+
+        assert_eq!(fs.read_file_slice(path, 2, 3).unwrap(), b"cde");
+        assert_eq!(fs.read_file_slice(path, 8, 4).unwrap(), b"ij");
+        assert!(drive.ranges.lock().unwrap().is_empty());
+        assert_eq!(drive.downloads.load(Ordering::SeqCst), 1);
+        assert_eq!(fs.content_cache.lock().unwrap().stats(), (10, 1));
     }
 }
