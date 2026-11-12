@@ -7,7 +7,6 @@
     import {
         availableDriveActions,
         drivePathFromSearchUri,
-        relocateDriveSearchUri,
         joinDrivePath,
         normalizeDrivePath,
         parentDrivePath,
@@ -19,10 +18,10 @@
         latestDuplicateDecision,
         saveDuplicateAudit,
         saveDuplicateMutationAudit,
-        recordDuplicateRestore,
         type DuplicateMutationAudit,
         type DuplicateDecisionAudit,
     } from '$lib/drives/duplicateAudit';
+    import { completeDuplicateMove } from '$lib/drives/duplicateMove';
     import { cloudDrivePanel, type ContextPanel, type DuplicateDecision } from '$lib/drives/panels';
     import { requestBrowserContext, subscribeBrowserContext } from '$lib/drives/browserContext';
     import { createVersionSelection, emptyVersionState, type VersionState, type VersionTarget } from '$lib/drives/versionSelection';
@@ -215,55 +214,48 @@
         return parts ? { driveId: parts.driveId, path: normalizeDrivePath(parts.remotePath) } : null;
     }
 
+    const duplicateMoveDependencies = {
+        current: () => rightPanel,
+        changed: (panel: ContextPanel) => { rightPanel = panel; },
+        move: (driveId: string, source: string, destination: string) =>
+            invoke('drive_move_path', { driveId, source, destination }),
+        record: (entry: DuplicateMutationAudit) => {
+            duplicateMutationAudit = [...duplicateMutationAudit, entry].slice(-200);
+            saveDuplicateMutationAudit(duplicateMutationAudit);
+        },
+    };
+
     async function moveCloudDuplicate(itemPath: string): Promise<void> {
         const parts = duplicateDriveParts(itemPath);
-        if (!parts || duplicateMutationBusy === itemPath) return;
+        const panel = rightPanel?.source.kind === 'DuplicateGroup' ? rightPanel.source : null;
+        if (!parts || !panel || duplicateMutationBusy !== null) return;
+        const groupId = panel.groupId;
+        // Own the operation before the first provider await, including capabilities.
+        duplicateMutationBusy = itemPath;
         try {
             const caps = await invoke<DriveCapabilities>('drive_capabilities', { driveId: parts.driveId });
             if (!caps.move_path) throw new Error('Provider does not support move.');
             const destination = window.prompt('Move duplicate to remote path', parts.path);
             if (!destination?.trim() || normalizeDrivePath(destination) === parts.path) return;
             const destinationPath = normalizeDrivePath(destination);
-            duplicateMutationBusy = itemPath;
-            await invoke('drive_move_path', {
-                driveId: parts.driveId,
-                source: parts.path,
-                destination: destinationPath,
+            await completeDuplicateMove(duplicateMoveDependencies, {
+                groupId, driveId: parts.driveId, source: parts.path, destination: destinationPath,
+                audit: { groupId, driveId: parts.driveId, operation: 'move', from: parts.path, to: destinationPath, at: Date.now() },
             });
-            if (rightPanel?.source.kind === 'DuplicateGroup') {
-                const groupId = rightPanel.source.groupId;
-                const items = rightPanel.source.items.map((item) => item.path === itemPath
-                    ? { ...item, path: relocateDriveSearchUri(item.path, parts.driveId, parts.path, destinationPath) }
-                    : item);
-                rightPanel = { ...rightPanel, source: { ...rightPanel.source, items } };
-                duplicateMutationAudit = [...duplicateMutationAudit, {
-                    groupId,
-                    driveId: parts.driveId,
-                    operation: 'move' as const,
-                    from: parts.path,
-                    to: destinationPath,
-                    at: Date.now(),
-                }].slice(-200);
-                saveDuplicateMutationAudit(duplicateMutationAudit);
-            }
         } catch (e) { error = `Could not move cloud duplicate: ${String(e)}`; }
         finally { duplicateMutationBusy = null; }
     }
 
     async function undoLastCloudMove(): Promise<void> {
         const panel = rightPanel?.source.kind === 'DuplicateGroup' ? rightPanel.source : null;
-        const last = duplicateMutationAudit.slice().reverse().find((entry) => entry.groupId === panel?.groupId && entry.operation === 'move');
-        if (!panel || !last?.to || duplicateMutationBusy) return;
+        const last = duplicateMutationAudit.filter((entry) => entry.groupId === panel?.groupId).at(-1);
+        if (!panel || last?.operation !== 'move' || !last.to || duplicateMutationBusy !== null) return;
         duplicateMutationBusy = last.to;
         try {
-            await invoke('drive_move_path', { driveId: last.driveId, source: last.to, destination: last.from });
-            const current = panel.items.map((item) => ({
-                ...item,
-                path: relocateDriveSearchUri(item.path, last.driveId, last.to!, last.from),
-            }));
-            rightPanel = { ...rightPanel!, source: { ...panel, items: current } };
-            duplicateMutationAudit = recordDuplicateRestore(duplicateMutationAudit, last, Date.now());
-            saveDuplicateMutationAudit(duplicateMutationAudit);
+            await completeDuplicateMove(duplicateMoveDependencies, {
+                groupId: panel.groupId, driveId: last.driveId, source: last.to, destination: last.from,
+                audit: { ...last, operation: 'restore', to: null, at: Date.now() },
+            });
         } catch (e) { error = `Could not undo cloud duplicate move: ${String(e)}`; }
         finally { duplicateMutationBusy = null; }
     }
@@ -454,7 +446,7 @@
                                 {#if duplicateDriveParts(item.path)}
                                     <button
                                         onclick={() => moveCloudDuplicate(item.path)}
-                                        disabled={duplicateMutationBusy === item.path}
+                                        disabled={duplicateMutationBusy !== null}
                                         title="Move cloud duplicate">
                                         Move
                                     </button>
