@@ -1,7 +1,7 @@
 name: Qualify source-pinned mobile CrispEmbed builds
 
-# Builds and links native runtime test programs. No binaries are uploaded,
-# and this workflow does not establish app, simulator, or OCR qualification.
+# Builds and links native runtime test programs and retains candidate libraries.
+# This does not establish app, simulator, or OCR qualification.
 on:
   workflow_dispatch:
     inputs:
@@ -83,3 +83,13 @@ jobs:
               "$runtime/libcrispembed.a" -lc++ -framework Foundation -framework Metal \
               -framework MetalKit -framework Accelerate -o "$RUNNER_TEMP/ocr-link-probe"
           fi
+      - name: Retain candidate library and provenance
+        uses: actions/upload-artifact@v4
+        with:
+          name: crispembed-mobile-candidate-${{ matrix.target }}
+          path: |
+            ${{ runner.temp }}/crispembed-mobile/lib/
+            ${{ runner.temp }}/crispembed-mobile/notices/
+            ${{ runner.temp }}/crispembed-mobile/runtime-build.json
+          if-no-files-found: error
+          retention-days: 14

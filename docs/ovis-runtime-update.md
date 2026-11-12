@@ -135,3 +135,12 @@ review or searchable export. Retain original images and record the applied
 transform. Measure accuracy and end-to-end latency on admitted images before any
 default change. No resize, tiling, larger patch bound or quality claim is part of
 this update plan.
+
+## Mobile candidate build evidence
+
+The [candidate mobile build/link run](https://github.com/CrispStrobe/CrispSorter/actions/runs/43299077945)
+passed Android arm64, iOS arm64 and iOS simulator arm64. Its workflow did not
+retain the built libraries, so those results establish build/link compatibility
+only and cannot supply runtime assets. Subsequent qualification runs retain the
+candidate libraries, native notices and source-bound build receipts for 14 days.
+They still do not establish application behavior or physical-device OCR.
