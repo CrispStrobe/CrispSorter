@@ -343,13 +343,25 @@ pub fn draw_region(
     regions: &[TextRegion],
     out_path: &Path,
 ) -> Result<Vec<LayoutReport>, String> {
-    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
-    let mut reports = Vec::with_capacity(regions.len());
-    for r in regions {
-        reports.push(draw_region_doc(&mut doc, r)?);
-    }
-    doc.save(out_path).map_err(|e| format!("save: {e}"))?;
-    Ok(reports)
+    crate::pdf_ops::with_operation_receipt(
+        "pdf.text_region.draw",
+        serde_json::json!({"regions": regions.len()}),
+        |log| {
+            log.step("processing", serde_json::Value::Null);
+            let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+            let mut reports = Vec::with_capacity(regions.len());
+            for r in regions {
+                reports.push(draw_region_doc(&mut doc, r)?);
+            }
+            log.step("publishing", serde_json::Value::Null);
+            doc.save(out_path).map_err(|e| format!("save: {e}"))?;
+            Ok(reports)
+        },
+        |reports: &Vec<LayoutReport>| serde_json::json!({
+            "items": reports.iter().map(|r| r.lines).sum::<usize>(),
+            "partial": reports.iter().any(|r| r.overflow),
+        }),
+    )
 }
 
 /// Lay out without drawing — lets a GUI preview the fit before committing.

@@ -4,7 +4,10 @@
 /// blocked by a synchronous Mutex acquisition.
 use tauri::State;
 
+use serde_json::{json, Value};
+
 use super::{BatchItemRow, BatchReplacementItem, BatchSessionStore, ProcessedHistoryRow};
+use crate::operation_log::OperationLog;
 use crate::AppState;
 
 fn get_store(state: &AppState) -> Result<BatchSessionStore, String> {
@@ -16,20 +19,33 @@ fn get_store(state: &AppState) -> Result<BatchSessionStore, String> {
         .ok_or_else(|| "Batch session store not yet initialised".to_owned())
 }
 
+/// Run one state-changing session-store call under exactly one receipt.
+/// Item ids and SQLite error text stay in the Result; errors propagate unchanged.
+async fn logged<T, W, R>(state: &AppState, log: OperationLog, work: W, receipt: R) -> Result<T, String>
+where
+    T: Send + 'static,
+    W: FnOnce(BatchSessionStore) -> anyhow::Result<T> + Send + 'static,
+    R: FnOnce(&T) -> Value,
+{
+    let store = match get_store(state) {
+        Ok(store) => store,
+        Err(error) => { log.fail("store_unavailable"); return Err(error); }
+    };
+    match tokio::task::spawn_blocking(move || work(store)).await {
+        Err(error) => { log.fail("worker_failed"); Err(error.to_string()) }
+        Ok(Err(error)) => { log.fail("store_error"); Err(error.to_string()) }
+        Ok(Ok(value)) => { log.succeed(receipt(&value)); Ok(value) }
+    }
+}
+
 /// Load all items for the current session.
 /// Returns them in insertion order.
 #[tauri::command]
 pub async fn batch_session_load(
     state: State<'_, AppState>,
 ) -> Result<Vec<BatchItemRow>, String> {
-    crate::app_log!("info", "Loading batch items from SQLite...");
-    let store = get_store(&state)?;
-    let items = tokio::task::spawn_blocking(move || store.load())
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?;
-    crate::app_log!("info", "Loaded {} items from SQLite.", items.len());
-    Ok(items)
+    let log = OperationLog::start("batch.session.load", Value::Null);
+    logged(&state, log, |store| store.load(), |items| json!({"items": items.len()})).await
 }
 
 /// Upsert a single item (insert or update all mutable columns).
@@ -53,8 +69,10 @@ pub async fn batch_session_upsert_items_bulk(
     state: State<'_, AppState>,
     items: Vec<BatchItemRow>,
 ) -> Result<(), String> {
+    // Small status updates are frequent; only large writes get a receipt.
     if items.len() > 100 {
-        crate::app_log!("info", "Bulk upserting {} items to SQLite...", items.len());
+        let log = OperationLog::start("batch.session.save", json!({"items": items.len()}));
+        return logged(&state, log, move |store| store.upsert_items_bulk(&items), |_| json!({"saved": true})).await;
     }
     let store = get_store(&state)?;
     tokio::task::spawn_blocking(move || store.upsert_items_bulk(&items))
@@ -82,15 +100,8 @@ pub async fn batch_session_delete_items(
     state: State<'_, AppState>,
     ids: Vec<String>,
 ) -> Result<(), String> {
-    crate::app_log!("info", "Deleting {} items from SQLite batch...", ids.len());
-    let count = ids.len();
-    let store = get_store(&state)?;
-    tokio::task::spawn_blocking(move || store.delete_items(&ids))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?;
-    crate::app_log!("info", "Deleted {} items from SQLite.", count);
-    Ok(())
+    let log = OperationLog::start("batch.session.delete", json!({"items": ids.len()}));
+    logged(&state, log, move |store| store.delete_items(&ids), |_| Value::Null).await
 }
 
 /// Delete all items for the current session.
@@ -98,14 +109,8 @@ pub async fn batch_session_delete_items(
 pub async fn batch_session_clear(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    crate::app_log!("info", "Clearing all items from SQLite batch...");
-    let store = get_store(&state)?;
-    tokio::task::spawn_blocking(move || store.clear())
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?;
-    crate::app_log!("info", "SQLite batch cleared.");
-    Ok(())
+    let log = OperationLog::start("batch.session.clear", Value::Null);
+    logged(&state, log, |store| store.clear(), |_| Value::Null).await
 }
 
 /// Persist the full extracted text for an item.
@@ -155,11 +160,8 @@ pub async fn batch_session_is_migrated(
 pub async fn batch_session_mark_migrated(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let store = get_store(&state)?;
-    tokio::task::spawn_blocking(move || store.mark_migrated())
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+    let log = OperationLog::start("batch.session.migrate", Value::Null);
+    logged(&state, log, |store| store.mark_migrated(), |_| Value::Null).await
 }
 
 /// Record a successfully-processed item in the persistent history table.

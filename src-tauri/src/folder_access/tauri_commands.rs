@@ -16,8 +16,21 @@
 //! plugin opens.
 
 use super::{decline, forget, grant, held_paths, load_store, probe, should_ask, Writability};
+use crate::operation_log::OperationLog;
 use serde::Serialize;
+use serde_json::json;
 use std::path::PathBuf;
+
+/// One receipt per decision the user made about a folder. The folder
+/// itself never reaches the log.
+fn logged<T>(operation: &'static str, result: Result<T, String>) -> Result<T, String> {
+    let log = OperationLog::start(operation, json!({}));
+    match &result {
+        Ok(_) => log.succeed(json!({"saved": true})),
+        Err(_) => log.fail("store_failed"),
+    }
+    result
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,7 +69,7 @@ pub async fn folder_access_should_ask(path: PathBuf) -> Result<bool, String> {
 /// nothing useful later.
 #[tauri::command]
 pub async fn folder_access_grant(path: PathBuf) -> Result<FolderStatus, String> {
-    grant(&path)?;
+    logged("app.folder_grant", grant(&path))?;
     let w = probe(&path);
     Ok(FolderStatus {
         can_request: false,
@@ -70,13 +83,13 @@ pub async fn folder_access_grant(path: PathBuf) -> Result<FolderStatus, String> 
 /// half of the contract.
 #[tauri::command]
 pub async fn folder_access_decline(path: PathBuf) -> Result<(), String> {
-    decline(&path)
+    logged("app.folder_decline", decline(&path))
 }
 
 /// Drop a stored grant.
 #[tauri::command]
 pub async fn folder_access_forget(path: PathBuf) -> Result<(), String> {
-    forget(&path)
+    logged("app.folder_forget", forget(&path))
 }
 
 #[derive(Debug, Serialize)]

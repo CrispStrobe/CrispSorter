@@ -478,10 +478,19 @@ pub fn substitute_text_doc(
 // ── Path wrappers ──────────────────────────────────────────────────────
 
 pub fn overprint(path: &Path, specs: &[OverprintSpec], out_path: &Path) -> Result<usize, String> {
-    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
-    let n = overprint_doc(&mut doc, specs)?;
-    doc.save(out_path).map_err(|e| format!("save: {e}"))?;
-    Ok(n)
+    crate::pdf_ops::with_operation_receipt(
+        "pdf.text_edit.overprint",
+        serde_json::json!({"items": specs.len()}),
+        |log| {
+            log.step("processing", serde_json::Value::Null);
+            let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+            let n = overprint_doc(&mut doc, specs)?;
+            log.step("publishing", serde_json::Value::Null);
+            doc.save(out_path).map_err(|e| format!("save: {e}"))?;
+            Ok(n)
+        },
+        |drawn: &usize| serde_json::json!({"count": *drawn}),
+    )
 }
 
 pub fn substitute_text(
@@ -489,10 +498,25 @@ pub fn substitute_text(
     subs: &[Substitution],
     out_path: &Path,
 ) -> Result<TextEditReport, String> {
-    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
-    let report = substitute_text_doc(&mut doc, subs)?;
-    doc.save(out_path).map_err(|e| format!("save: {e}"))?;
-    Ok(report)
+    // Counts only: the search and replacement strings are document text.
+    crate::pdf_ops::with_operation_receipt(
+        "pdf.text_edit.substitute",
+        serde_json::json!({"items": subs.len()}),
+        |log| {
+            log.step("processing", serde_json::Value::Null);
+            let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+            let report = substitute_text_doc(&mut doc, subs)?;
+            log.step("publishing", serde_json::Value::Null);
+            doc.save(out_path).map_err(|e| format!("save: {e}"))?;
+            Ok(report)
+        },
+        |report: &TextEditReport| serde_json::json!({
+            "count": report.replacements,
+            "pages": report.pages_changed,
+            "failed": report.skipped,
+            "warnings": report.warnings.len(),
+        }),
+    )
 }
 
 pub mod tauri_commands {

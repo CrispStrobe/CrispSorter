@@ -80,6 +80,18 @@ pub enum WatchMode {
     AutoFile,
 }
 
+impl WatchMode {
+    /// Closed log label (accepted by the operation-log `mode` allowlist).
+    pub fn log_name(self) -> &'static str {
+        match self {
+            WatchMode::Off => "watch.off",
+            WatchMode::Analyse => "watch.analyse",
+            WatchMode::Sort => "watch.sort",
+            WatchMode::AutoFile => "watch.autofile",
+        }
+    }
+}
+
 /// Tauri event payload — kept stable so the frontend listener can
 /// stay simple. The field name `path` matches what the rest of the
 /// codebase uses for absolute file paths.
@@ -429,7 +441,8 @@ pub fn start(
                 daily_token_budget,
                 &automation_for_handler,
             ),
-            Err(e) => eprintln!("[watch] notify error: {e}"),
+            // notify errors can carry the watched path; the log gets a fixed line.
+            Err(_) => crate::app_log!("warn", "watch: file-system notification error"),
         }
     })
     .context("create fs watcher")?;
@@ -448,7 +461,11 @@ pub fn start(
         let limits_scan = state.rate_limits.clone();
         let automation_scan = automation.clone();
         tokio::spawn(async move {
-            if let Err(e) = run_initial_scan(
+            let log = crate::operation_log::OperationLog::start(
+                "watch.initial_scan",
+                serde_json::json!({"mode": mode.log_name()}),
+            );
+            match run_initial_scan(
                 &app_scan,
                 &folder_scan,
                 mode,
@@ -461,7 +478,11 @@ pub fn start(
             )
             .await
             {
-                eprintln!("[watch] initial scan failed for {}: {e:#}", folder_scan.display());
+                Ok(queued) => log.succeed(serde_json::json!({"files": queued})),
+                Err(e) => {
+                    eprintln!("[watch] initial scan failed for {}: {e:#}", folder_scan.display());
+                    log.fail("scan_failed");
+                }
             }
         });
     }
@@ -496,7 +517,7 @@ async fn run_initial_scan(
     daily_cap: u32,
     daily_token_budget: u64,
     automation: &rules::AutomationEngine,
-) -> Result<()> {
+) -> Result<usize> {
     let mut batch: Vec<PathBuf> = Vec::new();
     for entry in walkdir::WalkDir::new(folder)
         .min_depth(1)
@@ -514,12 +535,14 @@ async fn run_initial_scan(
                 "[watch] initial scan hit rate limit for {}",
                 folder.display()
             );
+            crate::app_log!("warn", "watch: initial scan stopped at the auto-process rate limit");
             break;
         }
         drop(lim);
         batch.push(path);
     }
 
+    let queued = batch.len();
     if !batch.is_empty() {
         // Emit added events for each file.
         for p in &batch {
@@ -544,7 +567,7 @@ async fn run_initial_scan(
         };
         let _ = app.emit("folder-watch:auto-process", payload);
     }
-    Ok(())
+    Ok(queued)
 }
 
 // ── Event handling ────────────────────────────────────────────────────────────
@@ -616,6 +639,7 @@ fn handle_event(
                         "[watch] rate limit hit for {} — skipping auto-process",
                         folder_clone.display()
                     );
+                    crate::app_log!("warn", "watch: auto-process rate limit reached; file left unprocessed");
                     return;
                 }
                 drop(lim);
@@ -649,8 +673,17 @@ fn handle_event(
                         mode,
                         folder: folder_flush.to_string_lossy().into_owned(),
                     };
-                    if let Err(e) = app_flush.emit("folder-watch:auto-process", payload) {
-                        eprintln!("[watch] auto-process emit failed: {e}");
+                    let dispatched = batch.len();
+                    match app_flush.emit("folder-watch:auto-process", payload) {
+                        Ok(()) => crate::app_log!(
+                            "info",
+                            "watch: auto-process dispatched files={} pending={} mode={}",
+                            dispatched, total_pending, mode.log_name()
+                        ),
+                        Err(e) => {
+                            eprintln!("[watch] auto-process emit failed: {e}");
+                            crate::app_log!("error", "watch: auto-process dispatch failed files={}", dispatched);
+                        }
                     }
                     // Emit status event so the frontend can update badges.
                     let lim = rate_flush.lock().await;

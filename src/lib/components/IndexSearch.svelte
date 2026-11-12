@@ -1296,7 +1296,7 @@
         const request = ++searchRequest;
         const recipe = currentRecipe();
         const started = performance.now();
-        const operation = beginOperation('search.request');
+        const operation = beginOperation('search.request', { mode: recipe.mode });
         const isCurrent = () => {
             if (request === searchRequest) return true;
             operation.stage('discarded'); operation.cancel(); return false;

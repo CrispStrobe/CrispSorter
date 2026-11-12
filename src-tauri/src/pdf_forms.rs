@@ -348,8 +348,16 @@ fn walk_field(
 }
 
 pub fn read_fields_from_path(path: &Path) -> Result<Vec<FormField>, String> {
-    let doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
-    Ok(read_fields(&doc))
+    crate::pdf_ops::with_operation_receipt(
+        "pdf.form.read",
+        serde_json::Value::Null,
+        |log| {
+            log.step("processing", serde_json::Value::Null);
+            let doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+            Ok(read_fields(&doc))
+        },
+        |fields: &Vec<FormField>| serde_json::json!({"count": fields.len()}),
+    )
 }
 
 // ── Filling ────────────────────────────────────────────────────────────
@@ -476,10 +484,20 @@ pub fn fill_fields(
     values: &std::collections::HashMap<String, String>,
     out_path: &Path,
 ) -> Result<usize, String> {
-    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
-    let n = fill_fields_doc(&mut doc, values)?;
-    doc.save(out_path).map_err(|e| format!("save: {e}"))?;
-    Ok(n)
+    // Only how many values were supplied and applied - never names or values.
+    crate::pdf_ops::with_operation_receipt(
+        "pdf.form.fill",
+        serde_json::json!({"items": values.len()}),
+        |log| {
+            log.step("processing", serde_json::Value::Null);
+            let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+            let n = fill_fields_doc(&mut doc, values)?;
+            log.step("publishing", serde_json::Value::Null);
+            doc.save(out_path).map_err(|e| format!("save: {e}"))?;
+            Ok(n)
+        },
+        |filled: &usize| serde_json::json!({"count": *filled}),
+    )
 }
 
 // ── Flattening ─────────────────────────────────────────────────────────
@@ -564,10 +582,19 @@ pub fn flatten_form_doc(doc: &mut Document) -> Result<usize, String> {
 }
 
 pub fn flatten_form(path: &Path, out_path: &Path) -> Result<usize, String> {
-    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
-    let n = flatten_form_doc(&mut doc)?;
-    doc.save(out_path).map_err(|e| format!("save: {e}"))?;
-    Ok(n)
+    crate::pdf_ops::with_operation_receipt(
+        "pdf.form.flatten",
+        serde_json::Value::Null,
+        |log| {
+            log.step("processing", serde_json::Value::Null);
+            let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+            let n = flatten_form_doc(&mut doc)?;
+            log.step("publishing", serde_json::Value::Null);
+            doc.save(out_path).map_err(|e| format!("save: {e}"))?;
+            Ok(n)
+        },
+        |flattened: &usize| serde_json::json!({"count": *flattened}),
+    )
 }
 
 pub mod tauri_commands {
@@ -886,5 +913,33 @@ mod tests {
         if let Ok(cat) = doc.catalog_mut() { cat.remove(b"AcroForm"); }
         assert!(read_fields(&doc).is_empty());
         assert_eq!(flatten_form_doc(&mut doc).unwrap(), 0);
+    }
+
+    #[test]
+    fn fill_receipts_count_values_without_names_values_or_paths() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let source = dir.path().join("private-form.pdf");
+        let out = dir.path().join("private-filled.pdf");
+        form_doc().save(&source).unwrap();
+
+        let mut vals = HashMap::new();
+        vals.insert("fullName".to_string(), "Secretvalue Lovelace".to_string());
+        let (result, events) = crate::operation_log::capture(|| fill_fields(&source, &vals, &out));
+        assert_eq!(result.unwrap(), 1);
+        let last = events.last().unwrap();
+        assert_eq!(last.operation, "pdf.form.fill");
+        assert_eq!(last.phase, "completed");
+        assert_eq!(last.context.get("count"), Some(&serde_json::json!(1)));
+        assert_eq!(last.context.get("items"), Some(&serde_json::json!(1)));
+
+        vals.insert("nosuchfield".to_string(), "x".to_string());
+        let (result, events) = crate::operation_log::capture(|| fill_fields(&source, &vals, &out));
+        assert!(result.is_err());
+        assert_eq!(events.last().unwrap().phase, "failed");
+
+        let recorded = serde_json::to_string(&events).unwrap();
+        for private in ["Secretvalue", "fullName", "nosuchfield", "private-form", "private-filled"] {
+            assert!(!recorded.contains(private), "{private} leaked into {recorded}");
+        }
     }
 }
