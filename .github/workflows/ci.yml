@@ -347,7 +347,12 @@ jobs:
         # all — the exact drift this list exists to prevent.
         # `fuse` compiles the actual filesystem, mount command and queue/cache
         # integration tests. These tests do not need a privileged mount.
-        run: cargo test -p crispsorter --lib --features desktop,sidecars,audio-glint,aitoolkit,cloud-backup,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,ocr-reviewed-pdf,crispembed-license-api,ocr-photo-tools,crispasr,translate-align,translate-nmt,pdf-render,anydoc,fuse
+        run: cargo test -p crispsorter --lib --features desktop,sidecars,audio-glint,aitoolkit,cloud-backup,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,ocr-reviewed-pdf,crispembed-license-api,ocr-photo-tools,crispasr,translate-align,translate-nmt,pdf-render,anydoc,fuse,paddle-ocr
+
+      # PaddleOCR ships in no other job; prove it really recognises text.
+      - name: Live PaddleOCR recognition (downloads ~60 MB of models)
+        working-directory: repos/CrispSorter
+        run: cargo test -p crispsorter --lib --features desktop,sidecars,audio-glint,aitoolkit,cloud-backup,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,ocr-reviewed-pdf,crispembed-license-api,ocr-photo-tools,crispasr,translate-align,translate-nmt,pdf-render,anydoc,fuse,paddle-ocr -- --ignored live_paddle_recognises_the_fixture_sentence
 
       - name: Batch sorting script tests
         working-directory: repos/CrispSorter
@@ -366,7 +371,7 @@ jobs:
         # gate on P32.11 Z4 — the claims zpdf is adopted for. The native drive
         # features match the shipped release builds, so the binary CI checks is
         # the binary users get.
-        run: cargo build --bin crispsorter -p crispsorter --features desktop,sidecars,audio-glint,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,ocr-reviewed-pdf,crispembed-license-api,ocr-photo-tools,crispasr,translate-align,translate-nmt,pdf-render,fuse
+        run: cargo build --bin crispsorter -p crispsorter --features desktop,sidecars,audio-glint,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,ocr-reviewed-pdf,crispembed-license-api,ocr-photo-tools,crispasr,translate-align,translate-nmt,pdf-render,fuse,paddle-ocr
 
       - name: Install the independent checkers
         # None of these share code with what they are checking: MuPDF
