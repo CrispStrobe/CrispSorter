@@ -367,8 +367,13 @@ bound, failure after successful VLM initialization, EOS-only VLM text, recovery
 in the same native context, prior-result clearing, or multi-stage success/blank fallback.
 Those cases need separate native/model-specific and rebuilt-consumer execution.
 Malformed PDF, missing-file/model, and policy errors elsewhere in the lane do
-not establish that they crossed the native recognition boundary. This route is
-prepared; no candidate app or boundary execution result is claimed here.
+not establish that they crossed the native recognition boundary.
+The [retained candidate observation](../tests/results/ocr-mobile-candidate/run-43313212722-boundary.json)
+records a real native initialization failure reaching the rebuilt app wrapper
+and WebView IPC in run `43313212722`. The run failed on an obsolete harness
+error-context assertion; the exact current context is now checked against the
+actual Rust source and frozen rejection. The blank and subsequent gates did not
+execute. The corrected harness has not been rerun on an emulator.
 
 The [build/link qualification](https://github.com/CrispStrobe/CrispSorter/actions/runs/40875226935)
 completed successfully for Android ARM64, iOS ARM64, and iOS ARM64 simulator.

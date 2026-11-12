@@ -322,9 +322,32 @@ establishes decoded OCR, a positively recognized blank page, CrispSorter
 application behavior or GPU execution.
 
 The [Android x86_64 candidate app run](https://github.com/CrispStrobe/CrispSorter/actions/runs/43313212722)
-built the app and reached its emulator boundary check. The retained rejection
-contains the expected native pipeline failure, but the assertion used an obsolete
-app error prefix and failed; update the exact source-bound marker before a
-follow-up. The blank control and later checks did not complete. This single
-negative observation does not establish Ovis inference, same-context recovery
-or physical-device behavior.
+built the app and reached its emulator boundary check. The retained native log
+shows the deliberate DBNet/unified mismatch being refused for missing
+encoder/decoder tensors, followed by `unified OCR model load failed`. The actual
+WebView rejection ends with `Recognize page: CrispEmbed OCR pipeline run failed:
+OCR pipeline recognition failed; see native diagnostics`. The harness expected
+the obsolete `OCR recognition failed` application context and rejected that
+genuine native failure. The harness now requires the exact current execution
+context plus the unchanged native wrapper sentinel; its regression follows the
+actual Rust `pipeline.run` error context and replays the sanitized retained
+rejection. Earlier model/config/constructor errors and successful empty replies
+remain failures of the negative gate.
+
+The [sanitized observation](../tests/results/ocr-mobile-candidate/run-43313212722-boundary.json)
+binds the run, archive, APK, source commits, native receipt, raw rejection and
+log hashes. The whole run remains failed: the blank control and later checks
+did not execute. Its retained evidence establishes this deliberate native
+initialization rejection crossing the rebuilt Rust wrapper and app IPC; it does
+not establish valid blank behavior, Ovis inference, same-context recovery or
+physical-device behavior. Local validator replay is not emulator execution.
+
+The retained APK bytes match the build receipt's SHA-256, so correcting this
+external harness does not require rebuilding the app. An emulator-only replay
+must bind original application source `a26ea39776b5510f55a73f0a0fde3f54b0724b20`
+and corrected harness source separately, retaining exact APK/native/lock checks.
+The existing runner assumes its checkout is the app source and cannot directly
+replay this artifact. The full quality/document fixture directory and installed
+private baseline models were not retained; a replay needs exact fixture
+reconstruction or a narrow boundary runner, and available verified baseline
+model bytes in the fresh emulator. No replay workflow or execution is added here.

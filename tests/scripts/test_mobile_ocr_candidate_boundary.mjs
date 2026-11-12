@@ -3,9 +3,9 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
-import { checkCandidateOcrBoundary } from '../../scripts/mobile_ocr_candidate_boundary.mjs';
+import { checkCandidateOcrBoundary, NATIVE_PIPELINE_RUN_FAILURE } from '../../scripts/mobile_ocr_candidate_boundary.mjs';
 
-const nativeError = 'Recognize page: OCR recognition failed: OCR pipeline recognition failed; see native diagnostics';
+const nativeError = 'Recognize page: CrispEmbed OCR pipeline run failed: OCR pipeline recognition failed; see native diagnostics';
 const blankResult = () => ({ regions: [], diagnostics: { full_text: '',
   native_review: { schema: 'crispembed.ocr.review', schema_version: 1 },
   requested_config: { engine: 'tesseract', stages: [{ min_chars: 0 }] } } });
@@ -42,12 +42,28 @@ test('validator preserves actual observations and requests only installed baseli
 
 test('earlier model, policy, constructor and transport errors cannot masquerade as native run failure', async () => {
   for (const message of ['MODEL_DOWNLOAD_REQUIRED', 'Unsupported OCR engine',
-    'CrispEmbed OCR per-stage pipeline initialization failed', 'IPC timeout']) {
+    'CrispEmbed OCR per-stage pipeline initialization failed', 'IPC timeout',
+    'Recognize page: OCR recognition failed: OCR pipeline recognition failed; see native diagnostics',
+    'Recognize page: CrispEmbed OCR pipeline run failed: other failure',
+    nativeError + ' followed by unrelated failure']) {
     const value = controls(new Error(message));
     await assert.rejects(checkCandidateOcrBoundary(value.options), /actual rebuilt Rust pipeline-run error/);
     assert.equal(value.calls.length, 1);
     assert.match(value.retained[0].value.error, new RegExp(message));
   }
+});
+
+test('exact marker follows the actual Rust execution context and frozen app rejection', async () => {
+  const extractor = fs.readFileSync(new URL('../../src-tauri/src/extractors/ocr_crispembed.rs', import.meta.url), 'utf8');
+  const workspace = fs.readFileSync(new URL('../../src-tauri/src/ocr_workspace.rs', import.meta.url), 'utf8');
+  const boundary = extractor.match(/let result = pipeline\.run\(path_str\)\s*\.map_err\(\|e\| anyhow::anyhow!\("([^"\n]+)"\)\)\?/);
+  assert(boundary, 'The actual pipeline.run error boundary must remain source-bound.');
+  assert(workspace.includes('.map_err(|e| format!("Recognize page: {e:#}"))?'));
+  const evidence = JSON.parse(fs.readFileSync(new URL('../results/ocr-mobile-candidate/run-43313212722-boundary.json', import.meta.url), 'utf8'));
+  assert.equal(NATIVE_PIPELINE_RUN_FAILURE, 'Recognize page: ' + boundary[1].replace('{e}', evidence.native_wrapper_error));
+  const value = controls(new Error(evidence.observed_rejection.replace(/^Error: /, '')));
+  await checkCandidateOcrBoundary(value.options);
+  assert.equal(value.calls.length, 2, 'The genuine native rejection must reach the blank control.');
 });
 
 test('native false-success empty output is retained and fails the negative gate', async () => {
