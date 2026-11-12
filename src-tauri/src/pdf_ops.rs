@@ -16,12 +16,26 @@ pub(crate) fn with_operation<T>(
     name: &'static str,
     work: impl FnOnce(&crate::operation_log::OperationLog) -> Result<T, String>,
 ) -> Result<T, String> {
-    let log = crate::operation_log::OperationLog::start(
-        name, serde_json::json!({"kind":"pdf","surface":"native"}),
-    );
+    with_operation_receipt(name, serde_json::Value::Null, work, |_| serde_json::Value::Null)
+}
+
+/// [`with_operation`] with allowlisted input counts on the start event and
+/// result counts on the completion receipt (pages, items, files - never
+/// paths, text, patterns or passwords; `safe_context` drops anything else).
+pub(crate) fn with_operation_receipt<T>(
+    name: &'static str,
+    context: serde_json::Value,
+    work: impl FnOnce(&crate::operation_log::OperationLog) -> Result<T, String>,
+    receipt: impl FnOnce(&T) -> serde_json::Value,
+) -> Result<T, String> {
+    let mut start = serde_json::json!({"kind":"pdf","surface":"native"});
+    if let (Some(fields), serde_json::Value::Object(extra)) = (start.as_object_mut(), context) {
+        fields.extend(extra);
+    }
+    let log = crate::operation_log::OperationLog::start(name, start);
     let result = work(&log);
     match &result {
-        Ok(_) => log.succeed(serde_json::Value::Null),
+        Ok(value) => log.succeed(receipt(value)),
         Err(_) => log.fail("pdf_operation_failed"),
     }
     result
@@ -262,11 +276,11 @@ pub struct PdfInfo {
 }
 
 pub fn pdf_info(path: &Path) -> Result<PdfInfo, String> {
-    with_operation("pdf.info", |log| {
+    with_operation_receipt("pdf.info", serde_json::Value::Null, |log| {
         log.step("processing", serde_json::Value::Null);
         let doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
         Ok(pdf_info_from_doc(&doc))
-    })
+    }, |info: &PdfInfo| serde_json::json!({"pages": info.page_count}))
 }
 
 /// Same as [`pdf_info`] against an already-loaded document — used by the
@@ -345,14 +359,14 @@ pub fn reorder_pages_doc(doc: &mut Document, new_order: &[usize]) -> Result<(), 
 }
 
 pub fn reorder_pages(path: &Path, new_order: &[usize], out_path: &Path) -> Result<(), String> {
-    with_operation("pdf.reorder_pages", |log| {
+    with_operation_receipt("pdf.reorder_pages", serde_json::json!({"pages": new_order.len()}), |log| {
         log.step("processing", serde_json::Value::Null);
         let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
         reorder_pages_doc(&mut doc, new_order)?;
         log.step("publishing", serde_json::Value::Null);
         save_document(&mut doc, out_path)?;
         Ok(())
-    })
+    }, |_| serde_json::Value::Null)
 }
 
 // ── Extract pages ──────────────────────────────────────────────────────
@@ -373,14 +387,14 @@ pub fn extract_pages_doc(doc: &mut Document, page_indices: &[usize]) -> Result<(
 }
 
 pub fn extract_pages(path: &Path, page_indices: &[usize], out_path: &Path) -> Result<(), String> {
-    with_operation("pdf.extract_pages", |log| {
+    with_operation_receipt("pdf.extract_pages", serde_json::json!({"pages": page_indices.len()}), |log| {
         log.step("processing", serde_json::Value::Null);
         let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
         extract_pages_doc(&mut doc, page_indices)?;
         log.step("publishing", serde_json::Value::Null);
         save_document(&mut doc, out_path)?;
         Ok(())
-    })
+    }, |_| serde_json::Value::Null)
 }
 
 // ── Remove pages ───────────────────────────────────────────────────────
@@ -395,14 +409,14 @@ pub fn remove_pages_doc(doc: &mut Document, page_indices: &[usize]) -> Result<()
 }
 
 pub fn remove_pages(path: &Path, page_indices: &[usize], out_path: &Path) -> Result<(), String> {
-    with_operation("pdf.remove_pages", |log| {
+    with_operation_receipt("pdf.remove_pages", serde_json::json!({"pages": page_indices.len()}), |log| {
         log.step("processing", serde_json::Value::Null);
         let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
         remove_pages_doc(&mut doc, page_indices)?;
         log.step("publishing", serde_json::Value::Null);
         save_document(&mut doc, out_path)?;
         Ok(())
-    })
+    }, |_| serde_json::Value::Null)
 }
 
 // ── Rotate pages ───────────────────────────────────────────────────────
@@ -431,14 +445,14 @@ pub fn rotate_pages_doc(doc: &mut Document, page_indices: &[usize], degrees: i64
 }
 
 pub fn rotate_pages(path: &Path, page_indices: &[usize], degrees: i64, out_path: &Path) -> Result<(), String> {
-    with_operation("pdf.rotate_pages", |log| {
+    with_operation_receipt("pdf.rotate_pages", serde_json::json!({"pages": page_indices.len()}), |log| {
         log.step("processing", serde_json::Value::Null);
         let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
         rotate_pages_doc(&mut doc, page_indices, degrees)?;
         log.step("publishing", serde_json::Value::Null);
         save_document(&mut doc, out_path)?;
         Ok(())
-    })
+    }, |_| serde_json::Value::Null)
 }
 
 // ── Crop pages ─────────────────────────────────────────────────────────
@@ -460,14 +474,14 @@ pub fn crop_pages_doc(doc: &mut Document, page_indices: &[usize], x: f64, y: f64
 }
 
 pub fn crop_pages(path: &Path, page_indices: &[usize], x: f64, y: f64, w: f64, h: f64, out_path: &Path) -> Result<(), String> {
-    with_operation("pdf.crop_pages", |log| {
+    with_operation_receipt("pdf.crop_pages", serde_json::json!({"pages": page_indices.len()}), |log| {
         log.step("processing", serde_json::Value::Null);
         let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
         crop_pages_doc(&mut doc, page_indices, x, y, w, h)?;
         log.step("publishing", serde_json::Value::Null);
         save_document(&mut doc, out_path)?;
         Ok(())
-    })
+    }, |_| serde_json::Value::Null)
 }
 
 // ── Merge PDFs ─────────────────────────────────────────────────────────
@@ -476,7 +490,7 @@ pub fn crop_pages(path: &Path, page_indices: &[usize], x: f64, y: f64, w: f64, h
 /// into the first, remapping ObjectIds to avoid collisions, then
 /// appending page references to the base /Pages /Kids array.
 pub fn merge_pdfs(paths: &[&Path], out_path: &Path) -> Result<usize, String> {
-    with_operation("pdf.merge", |log| {
+    with_operation_receipt("pdf.merge", serde_json::json!({"files": paths.len()}), |log| {
         log.step("processing", serde_json::Value::Null);
         if paths.is_empty() { return Err("no input files".into()); }
         let mut base = Document::load(paths[0]).map_err(|e| format!("load {}: {e}", paths[0].display()))?;
@@ -539,7 +553,7 @@ pub fn merge_pdfs(paths: &[&Path], out_path: &Path) -> Result<usize, String> {
         log.step("publishing", serde_json::Value::Null);
         save_document(&mut base, out_path)?;
         Ok(total)
-    })
+    }, |pages: &usize| serde_json::json!({"pages": *pages}))
 }
 
 /// Recursively remap all Object::Reference values using the given map.
@@ -564,7 +578,7 @@ fn remap_refs(obj: &mut Object, map: &std::collections::HashMap<ObjectId, Object
 // ── Split PDF ──────────────────────────────────────────────────────────
 
 pub fn split_pdf(path: &Path, ranges: &[(usize, usize)], out_dir: &Path, stem: &str) -> Result<Vec<String>, String> {
-    with_operation("pdf.split", |log| {
+    with_operation_receipt("pdf.split", serde_json::json!({"items": ranges.len()}), |log| {
         log.step("processing", serde_json::Value::Null);
         let mut outputs = Vec::new();
         for (i, &(start, end)) in ranges.iter().enumerate() {
@@ -575,7 +589,7 @@ pub fn split_pdf(path: &Path, ranges: &[(usize, usize)], out_dir: &Path, stem: &
             outputs.push(out.to_string_lossy().into_owned());
         }
         Ok(outputs)
-    })
+    }, |outputs: &Vec<String>| serde_json::json!({"files": outputs.len()}))
 }
 
 // ── Add page numbers ───────────────────────────────────────────────────
@@ -955,6 +969,7 @@ pub fn decrypt_pdf(path: &Path, password: &str, out_path: &Path) -> Result<(), S
         log.step("processing", serde_json::Value::Null);
         publish_checked(out_path, |out_path| {
             let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+            log.step("loaded", serde_json::json!({"pages": doc.get_pages().len()}));
             if !doc.is_encrypted() {
                 // Not encrypted — just copy as-is
                 log.step("publishing", serde_json::Value::Null);
@@ -1096,7 +1111,7 @@ fn decrypt_via_zpdf(path: &Path, password: &str, out_path: &Path) -> Result<(), 
 /// confirming each input really was damaged.
 #[cfg(feature = "pdf-zpdf")]
 pub fn repair_pdf(path: &Path, out_path: &Path) -> Result<usize, String> {
-    with_operation("pdf.repair", |log| {
+    with_operation_receipt("pdf.repair", serde_json::Value::Null, |log| {
         log.step("processing", serde_json::Value::Null);
         publish_checked(out_path, |out_path| {
             let data = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
@@ -1151,7 +1166,7 @@ pub fn repair_pdf(path: &Path, out_path: &Path) -> Result<usize, String> {
             }
             Ok(pages)
         })
-    })
+    }, |pages: &usize| serde_json::json!({"pages": *pages}))
 }
 
 /// Rewrite a PDF in linearized ("fast web view") form.
@@ -1339,6 +1354,7 @@ pub fn encrypt_pdf(path: &Path, config: &EncryptConfig, out_path: &Path) -> Resu
         use lopdf::encryption::{EncryptionVersion, Permissions};
 
         let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+        log.step("loaded", serde_json::json!({"pages": doc.get_pages().len()}));
 
         if doc.is_encrypted() {
             return Err("PDF is already encrypted; decrypt first".into());
@@ -1440,7 +1456,7 @@ pub fn sanitise_pdf(path: &Path, out_path: &Path) -> Result<Vec<String>, String>
 }
 
 pub fn sanitise_pdf_with_options(path: &Path, opts: &SanitiseOptions, out_path: &Path) -> Result<Vec<String>, String> {
-    with_operation("pdf.sanitise", |log| {
+    with_operation_receipt("pdf.sanitise", serde_json::Value::Null, |log| {
         log.step("processing", serde_json::Value::Null);
         let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
         let mut stripped = Vec::new();
@@ -1538,7 +1554,7 @@ pub fn sanitise_pdf_with_options(path: &Path, opts: &SanitiseOptions, out_path: 
 
         save_document(&mut doc, out_path)?;
         Ok(stripped)
-    })
+    }, |stripped: &Vec<String>| serde_json::json!({"items": stripped.len()}))
 }
 
 // ── PDF/A conformance metadata (P26.5) ──────────────────────────────
@@ -1630,7 +1646,7 @@ pub struct PdfSignatureInfo {
 /// validity (would need a PKCS#7/CMS library); reports what signatures
 /// exist and their metadata.
 pub fn detect_signatures(path: &Path) -> Result<Vec<PdfSignatureInfo>, String> {
-    with_operation("pdf.detect_signatures", |log| {
+    with_operation_receipt("pdf.detect_signatures", serde_json::Value::Null, |log| {
         log.step("processing", serde_json::Value::Null);
         let doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
         let mut sigs = Vec::new();
@@ -1723,7 +1739,7 @@ pub fn detect_signatures(path: &Path) -> Result<Vec<PdfSignatureInfo>, String> {
         }
 
         Ok(sigs)
-    })
+    }, |signatures: &Vec<PdfSignatureInfo>| serde_json::json!({"count": signatures.len()}))
 }
 
 // ── PII redaction (P26.7) ────────────────────────────────────────────
@@ -1802,14 +1818,14 @@ pub fn black_out_regions(
     regions: &[RedactionSpec],
     out_path: &Path,
 ) -> Result<usize, String> {
-    with_operation("pdf.black_out_regions", |log| {
+    with_operation_receipt("pdf.black_out_regions", serde_json::json!({"regions": regions.len()}), |log| {
         log.step("processing", serde_json::Value::Null);
         let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
         let count = black_out_regions_doc(&mut doc, regions)?;
         log.step("publishing", serde_json::Value::Null);
         save_document(&mut doc, out_path)?;
         Ok(count)
-    })
+    }, |covered: &usize| serde_json::json!({"count": *covered}))
 }
 
 /// Deprecated alias kept so existing callers keep compiling.
@@ -1839,7 +1855,7 @@ pub fn redact_text_patterns(
     patterns: &[String],
     out_path: &Path,
 ) -> Result<usize, String> {
-    with_operation("pdf.redact_text_patterns", |log| {
+    with_operation_receipt("pdf.redact_text_patterns", serde_json::json!({"items": patterns.len()}), |log| {
         log.step("processing", serde_json::Value::Null);
         // For text-level redaction without bounding boxes, we strip matching
         // text from the /Info dictionary and add visual redaction boxes as a
@@ -1870,7 +1886,7 @@ pub fn redact_text_patterns(
 
         save_document(&mut doc, out_path)?;
         Ok(patterns.len())
-    })
+    }, |covered: &usize| serde_json::json!({"count": *covered}))
 }
 
 // ── Digital signature creation (P27.12) ─────────────────────────────

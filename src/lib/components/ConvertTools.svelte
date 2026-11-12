@@ -116,6 +116,9 @@
         const converted = await actions.run({
             operation: 'document.convert', fields: { format: snapshot.emit }, isCurrent: current, writesOutput,
             onError: (e) => { error = String(e); },
+            // Sizes only: neither the converted text nor its headings.
+            receipt: (c: ConvertOutput) => ({ characters: c.content?.length ?? 0, results: c.headings.length,
+                ...(typeof c.slides === 'number' ? { pages: c.slides } : {}) }),
         }, async (entry) => {
             error = ''; success = ''; result = null;
             let outPath: string | null = null;

@@ -82,6 +82,49 @@ fn from_vault(e: vault::Error) -> SecretError {
     }
 }
 
+// ── Operation-log vocabulary ────────────────────────────────────────
+//
+// Secret operations log *that* they happened, which kind of store served
+// them and a fixed failure code. Never an account name, service, path,
+// passphrase or the store's own error text.
+
+/// Closed log vocabulary for a store kind ([`vault::BackendChoice::kind`]).
+pub(crate) fn store_log_kind(kind: &str) -> &'static str {
+    match kind {
+        "os-default" => "os_default",
+        "mac-keychain" => "mac_keychain",
+        "file" => "file",
+        "session" => "session",
+        _ => "unknown",
+    }
+}
+
+/// The active store, as log context.
+pub(crate) fn active_store_log_kind() -> &'static str {
+    store_log_kind(vault::active_kind())
+}
+
+/// Fixed failure code for a [`SecretError`].
+pub(crate) fn secret_error_code(e: &SecretError) -> &'static str {
+    match e {
+        SecretError::Denied(_) => "store_denied",
+        SecretError::Backend(_) => "store_unavailable",
+        SecretError::NotFound => "not_found",
+        SecretError::Other(_) => "store_failed",
+    }
+}
+
+/// Fixed failure code for a [`vault::Error`].
+pub(crate) fn vault_error_code(e: &vault::Error) -> &'static str {
+    match e {
+        vault::Error::NoEntry => "not_found",
+        vault::Error::Denied(_) => "store_denied",
+        vault::Error::Locked(_) => "store_locked",
+        vault::Error::Backend(_) => "store_unavailable",
+        vault::Error::Other(_) => "store_failed",
+    }
+}
+
 // ── Entry-taking primitives ─────────────────────────────────────────
 //
 // The functions below take a `&Entry`. They predate the vault layer,

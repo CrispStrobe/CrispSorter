@@ -10,7 +10,7 @@ export function requireCurrentDocument(isCurrent: () => boolean): void {
     if (!isCurrent()) throw cancelledDocumentAction();
 }
 
-interface ActionOptions {
+interface ActionOptions<T = unknown> {
     operation: OperationName;
     fields?: OperationFields;
     isCurrent?: () => boolean;
@@ -19,6 +19,9 @@ interface ActionOptions {
     /** A successful native write remains successful even if its view was replaced. */
     writesOutput?: boolean;
     onError?: (error: unknown) => void;
+    /** Counts for the completion receipt (never paths, text or raw errors).
+     * A throwing receipt is only a missing count, never a failed action. */
+    receipt?: (result: T) => OperationFields;
 }
 
 /** One shared busy boundary and one lifecycle receipt per document action.
@@ -32,7 +35,7 @@ export function createDocumentActions(onPending: (count: number) => void) {
         whenIdle(): Promise<void> {
             return pending === 0 ? Promise.resolve() : new Promise((resolve) => { idleWaiters.push(resolve); });
         },
-        async run<T>(options: ActionOptions, task: (operation: OperationLog) => Promise<T>): Promise<T | undefined> {
+        async run<T>(options: ActionOptions<T>, task: (operation: OperationLog) => Promise<T>): Promise<T | undefined> {
             if (pending > 0 && !options.concurrent) return undefined;
             const isCurrent = options.isCurrent ?? (() => true);
             const operation = beginOperation(options.operation, options.fields);
@@ -40,12 +43,14 @@ export function createDocumentActions(onPending: (count: number) => void) {
             onPending(++pending);
             try {
                 const result = await task(operation);
+                let counts: OperationFields = {};
+                try { counts = options.receipt?.(result) ?? {}; } catch { operation.stage('warning', {}, 'warn'); }
                 if (!isCurrent()) {
-                    if (options.writesOutput) operation.complete({ saved: true });
+                    if (options.writesOutput) operation.complete({ ...counts, saved: true });
                     else operation.cancel();
                     return undefined;
                 }
-                operation.complete(options.writesOutput ? { saved: true } : {});
+                operation.complete(options.writesOutput ? { ...counts, saved: true } : counts);
                 return result;
             } catch (error) {
                 operation.fail(error);

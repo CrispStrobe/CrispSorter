@@ -15,6 +15,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
+import { beginOperation } from './operationLog';
 
 export type Writability =
     | { state: 'writable' }
@@ -77,6 +78,9 @@ export type RequestOutcome =
  * outcome than being told.
  */
 export async function requestFolderAccess(path: string): Promise<RequestOutcome> {
+    // Picker → grant → writability check spans the UI and several invokes.
+    // The receipt carries only stages and outcome; folder paths stay out.
+    const operation = beginOperation('storage.folder_access');
     let picked: string | null;
     try {
         picked = (await openDialog({
@@ -86,14 +90,20 @@ export async function requestFolderAccess(path: string): Promise<RequestOutcome>
             title: 'Grant CrispSorter access to this folder'
         })) as string | null;
     } catch (e) {
+        operation.fail();
         return { ok: false, reason: 'failed', message: String(e) };
     }
-    if (!picked) return { ok: false, reason: 'cancelled' };
+    if (!picked) {
+        operation.cancel();
+        return { ok: false, reason: 'cancelled' };
+    }
 
     // A grant only helps if it covers the destination. Compare as path
     // components, not as a string prefix, so `/a/texte-backup` is not
     // mistaken for a grant over `/a/texte`.
     if (!pathContains(picked, path)) {
+        operation.stage('warning', {}, 'warn');
+        operation.fail();
         return {
             ok: false,
             reason: 'wrong-folder',
@@ -102,16 +112,20 @@ export async function requestFolderAccess(path: string): Promise<RequestOutcome>
     }
 
     try {
+        operation.stage('saving');
         const status = await invoke<FolderStatus>('folder_access_grant', { path: picked });
         if (!status.writability || status.writability.state !== 'writable') {
             const reason =
                 status.writability && 'reason' in status.writability
                     ? status.writability.reason
                     : 'still not writable';
+            operation.fail(undefined, { saved: true });
             return { ok: false, reason: 'failed', message: reason };
         }
+        operation.complete({ saved: true });
         return { ok: true, granted: picked };
     } catch (e) {
+        operation.fail();
         return { ok: false, reason: 'failed', message: String(e) };
     }
 }

@@ -102,6 +102,7 @@ pub struct TranslateProgress {
 /// This requires the binary to be built with `--features translate-align`;
 /// otherwise the flag is rejected with an error.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn translate_docx(
     app: tauri::AppHandle,
     input: String,
@@ -113,6 +114,43 @@ pub async fn translate_docx(
     preserve_formatting: Option<bool>,
     align_model_path: Option<String>,
 ) -> Result<TranslateResult, String> {
+    // Counts and timing only: never paragraph text, provider keys, models,
+    // base URLs or file paths. `safe_context` drops a malformed language.
+    let log = crate::operation_log::OperationLog::start(
+        "translate.docx",
+        serde_json::json!({
+            "kind": "document", "format": "docx", "surface": "native",
+            "language": target_lang.as_str(), "models": providers.len(),
+        }),
+    );
+    let result = translate_docx_inner(
+        &log, app, input, output, source_lang, target_lang, providers, concurrency,
+        preserve_formatting, align_model_path,
+    )
+    .await;
+    match &result {
+        Ok(r) => log.succeed(serde_json::json!({
+            "total": r.total, "completed": r.succeeded, "failed": r.failed, "partial": r.failed > 0,
+        })),
+        Err(_) => log.fail("translate_failed"),
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn translate_docx_inner(
+    log: &crate::operation_log::OperationLog,
+    app: tauri::AppHandle,
+    input: String,
+    output: String,
+    source_lang: String,
+    target_lang: String,
+    providers: Vec<ProviderSpec>,
+    concurrency: Option<usize>,
+    preserve_formatting: Option<bool>,
+    align_model_path: Option<String>,
+) -> Result<TranslateResult, String> {
+    log.step("checking_purpose", serde_json::Value::Null);
     // Writes a machine-translated document to disk — the output that most
     // needs to carry the notice, since it leaves the app. `translate_docx`
     // takes an `AppHandle` rather than `State`, so resolve the state here.
@@ -123,6 +161,7 @@ pub async fn translate_docx(
     }
     use tauri::Emitter;
 
+    log.step("preparing", serde_json::Value::Null);
     let translator = build_translator(providers)?;
     let in_path = PathBuf::from(&input);
     let out_path = PathBuf::from(&output);
@@ -157,13 +196,15 @@ pub async fn translate_docx(
                 report.issues.len(),
                 report.issues.join("; ")
             );
-            crate::app_log!("warn", "{warning}");
+            // The issue texts go to the UI only; the log keeps the count.
+            log.warn("docx_preflight_issues", serde_json::json!({"warnings": report.issues.len()}));
             let _ = app.emit("translate://warning", warning);
         }
     }
 
     let paragraphs = crisp_docx_core::extract_paragraph_texts(&pkg).map_err(|e| e.to_string())?;
     let total = paragraphs.len();
+    log.step("translating", serde_json::json!({"total": total}));
 
     // Wrap the translator so each spawned future can clone an Arc.
     let translator = std::sync::Arc::new(translator);
@@ -211,6 +252,7 @@ pub async fn translate_docx(
         }
     }
 
+    log.step("writing", serde_json::json!({"completed": succeeded, "failed": failed}));
     #[cfg(feature = "translate-align")]
     if preserve_formatting {
         let model_path = align_model_path
@@ -238,15 +280,14 @@ pub async fn translate_docx(
     // A stamping failure must not discard a translation the user waited for, so
     // it is reported rather than propagated — but it is reported loudly, because
     // a silently unmarked artifact is exactly the outcome to avoid.
-    if let Err(e) = crate::ai_provenance::stamp_docx(
+    if crate::ai_provenance::stamp_docx(
         std::path::Path::new(&out_path),
         crate::ai_provenance::DOCX_MARK,
-    ) {
-        crate::app_log!(
-            "warn",
-            "translate_docx: wrote {} but could not stamp AI provenance: {e}",
-            out_path.display()
-        );
+    )
+    .is_err()
+    {
+        // Loud but content-free: the path and native error stay out of the log.
+        log.warn("provenance_stamp_failed", serde_json::Value::Null);
     }
 
     Ok(TranslateResult {

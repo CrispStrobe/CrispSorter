@@ -22,6 +22,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { writable, derived, get } from 'svelte/store';
 import { supportsOcrWorkbench } from './workflow';
+import { beginOperation } from './operationLog';
 
 export interface Capabilities {
 	platform: string;
@@ -131,6 +132,7 @@ let probe: Promise<Capabilities> | null = null;
 export async function loadCapabilities(): Promise<Capabilities> {
 	if (probe) return probe;
 	capsLoading.set(true);
+	const operation = beginOperation('app.capabilities');
 	probe = invoke<unknown>('build_capabilities')
 		.then((c) => {
 			if (!c || typeof c !== 'object' || Array.isArray(c)) throw new Error('Invalid app capabilities response.');
@@ -145,12 +147,14 @@ export async function loadCapabilities(): Promise<Capabilities> {
 			caps.set(capabilities);
 			capsError.set(null);
 			capsLoaded.set(true);
+			operation.complete();
 			return capabilities;
 		})
 		.catch((e) => {
 			// Keep gated tools unavailable until a valid response arrives.
 			// The shell exposes this failure and can retry the probe alone.
 			console.error('[capabilities] probe failed; conditional UI stays hidden', e);
+			operation.fail(e);
 			caps.set(UNKNOWN);
 			capsError.set(e instanceof Error ? e.message : String(e));
 			probe = null;

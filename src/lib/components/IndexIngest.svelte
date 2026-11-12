@@ -44,6 +44,7 @@
     import CorpusDashboard from './CorpusDashboard.svelte';
     import Duplicates from './Duplicates.svelte';
     import { logInfo, logWarn, logError } from '$lib/log';
+    import { beginOperation } from '$lib/operationLog';
 
     // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -1015,10 +1016,10 @@
             let cfg: RegisteredDrive;
             if (driveEditId) {
                 cfg = await invoke<RegisteredDrive>('drive_update', { id: driveEditId, expected: driveEditSnapshot, ...args });
-                logInfo(`Laufwerk aktualisiert: ${cfg.label} (${cfg.kind})`);
+                logInfo(`Laufwerk aktualisiert (${cfg.kind})`);
             } else {
                 cfg = await invoke<RegisteredDrive>('drive_create', args);
-                logInfo(`Laufwerk angelegt: ${cfg.label} (${cfg.kind})`);
+                logInfo(`Laufwerk angelegt (${cfg.kind})`);
             }
             availableDrives = await invoke<RegisteredDrive[]>('drive_list');
             driveDialogId   = cfg.id;
@@ -1126,7 +1127,7 @@
         driveDeletingId = d.id;
         try {
             const removed = await invoke<boolean>('drive_delete', { id: d.id });
-            if (removed) logInfo(`Laufwerk entfernt: ${d.label}`);
+            if (removed) logInfo('Laufwerk entfernt');
             availableDrives = await invoke<RegisteredDrive[]>('drive_list');
             if (driveDialogId === d.id) {
                 driveDialogId = availableDrives[0]?.id ?? '';
@@ -1136,7 +1137,7 @@
                 driveCreateOpen = false;
             }
         } catch (e: any) {
-            logError(`Drive-Löschen fehlgeschlagen: ${e?.message ?? e}`);
+            logError('Drive-Löschen fehlgeschlagen');
         } finally {
             driveDeletingId = null;
         }
@@ -1152,7 +1153,6 @@
                 .split(',')
                 .map(s => s.trim().toLowerCase().replace(/^\./, ''))
                 .filter(Boolean);
-            logInfo(`P11: drive ingest — ${driveDialogId} ${driveDialogPath} (exts=${exts.join(',') || 'any'})`);
             const result = await invoke<{
                 ingested: number;
                 walked:   number;
@@ -1169,14 +1169,12 @@
                 `${result.ingested} indexiert · ${result.walked} durchsucht · ${result.errors} Fehler`;
             logInfo(`P11: drive ingest done — ${driveScanResult}`);
             if (result.walk_errors?.length) {
-                for (const we of result.walk_errors.slice(0, 5)) {
-                    logWarn(`P11 walk error: ${we}`);
-                }
+                logWarn(`P11: ${result.walk_errors.length} Ordner konnten nicht gelesen werden`);
             }
             await loadContents();
         } catch (e: any) {
             driveScanResult = `Fehler: ${e?.message ?? e}`;
-            logError(`P11 drive ingest failed: ${e?.message ?? e}`);
+            logError('P11 drive ingest failed');
         } finally {
             driveScanning = false;
         }
@@ -1189,11 +1187,13 @@
 
     async function scanFolderToQueue(folderPath: string) {
         scanningFolder = folderPath;
+        const operation = beginOperation('index.folder_scan');
+        let unreadable = 0;
         try {
             const paths: string[] = [];
             async function collect(dir: string) {
                 let items: DirEntry[];
-                try { items = await readDir(dir); } catch { return; }
+                try { items = await readDir(dir); } catch { unreadable++; return; }
                 for (const item of items) {
                     const itemPath = `${dir}/${item.name}`;
                     if (item.isDirectory) {
@@ -1205,6 +1205,7 @@
                 }
             }
             await collect(folderPath);
+            operation.stage('progress', { count: paths.length, warnings: unreadable });
             await addPaths(paths);
 
             // Update folder metadata
@@ -1213,6 +1214,10 @@
                 : f
             );
             await saveFolders();
+            operation.complete({ count: paths.length, warnings: unreadable, partial: unreadable > 0 });
+        } catch (error) {
+            operation.fail(error);
+            throw error;
         } finally {
             scanningFolder = null;
         }
@@ -1279,7 +1284,7 @@
     function reportQueueError(context: string, error: unknown) {
         const detail = error instanceof Error ? error.message : String(error);
         queueError = `${context}: ${detail}`;
-        logError(`Hinzufügen: ${queueError}`);
+        logError(`Hinzufügen: ${context}`);
     }
 
     async function loadEntriesFromQueue(): Promise<void> {
@@ -1492,7 +1497,7 @@
                 logError('Catalog: timed out waiting for the in-progress init to finish');
                 return false;
             }
-            logError(`Catalog: auto-init failed — ${msg}`);
+            logError('Catalog: auto-init failed');
             alert(`Catalog initialisation failed: ${msg}\n\nOpen Settings → Search Index for manual setup.`);
             return false;
         }
@@ -1508,8 +1513,10 @@
         stopping = false;
         abortCtrl = new AbortController();
         const signal = abortCtrl.signal;
+        const operation = beginOperation('index.metadata_run', { level });
+        let completed = 0, failed = 0;
         try {
-            if (!(await ensureIndexReady(false))) return;
+            if (!(await ensureIndexReady(false))) { operation.fail(); return; }
             await beginQueuedRun(jobId);
             while (!signal.aborted) {
                 const batch = await invoke<QueuedFile[]>('jobs_claim_batch', { jobId, batchSize: 64 });
@@ -1542,6 +1549,7 @@
                             volumeId: volumeByDirectory.get(parentDir) ?? undefined,
                         } });
                     } catch (error) {
+                        failed++;
                         await invoke('jobs_mark_error', { jobId, rowId: file.rowId, error: String(error), maxRetries: 0 });
                         updateEntry(String(file.rowId), { status: 'error', error: String(error) });
                     }
@@ -1557,13 +1565,14 @@
                                 sourcePaths: prepared.map(item => item.file.filePath),
                             });
                         }
-                    } catch (error) { stageError = String(error); }
+                    } catch (error) { stageError = String(error); operation.stage('warning', { count: prepared.length }, 'warn'); }
                     const done: number[] = [];
                     for (const [position, item] of prepared.entries()) {
                         const outcome = outcomes?.[position];
                         const error = stageError ?? (level === 2
                             ? (outcome ? outcome.error : 'Kein Ergebnis für die Metadaten-Extraktion erhalten.') : null);
                         if (error) {
+                            failed++;
                             await invoke('jobs_mark_error', { jobId, rowId: item.file.rowId, error, maxRetries: 0 });
                             updateEntry(String(item.file.rowId), { status: 'error', error });
                         } else {
@@ -1572,10 +1581,15 @@
                         }
                     }
                     if (done.length > 0) await invoke('jobs_mark_done', { jobId, rowIds: done });
+                    completed += done.length;
+                    operation.stage('progress', { completed, failed });
                 }
                 await loadEntriesFromQueue();
             }
+            if (signal.aborted) operation.cancel({ completed, failed });
+            else operation.complete({ completed, failed, partial: failed > 0 });
         } catch (error) {
+            operation.fail(error, { completed, failed });
             reportQueueError('Indexierung wurde unterbrochen; offene Dateien bleiben für den nächsten Versuch gespeichert', error);
         } finally {
             try { await finishQueuedRun(jobId); }
@@ -1616,11 +1630,16 @@
             };
         };
 
+        const operation = beginOperation('index.ingest_run', { level: 3 });
+        let completed = 0, failed = 0;
+        let wasPaused = false;
         try {
-            if (!(await ensureIndexReady(true))) return;
+            if (!(await ensureIndexReady(true))) { operation.fail(); return; }
             await beginQueuedRun(jobId);
             while (!signal.aborted) {
+                if (paused && !wasPaused) { wasPaused = true; operation.stage('paused', { completed, failed }, 'info'); }
                 while (paused && !signal.aborted) await new Promise(r => setTimeout(r, 200));
+                if (wasPaused && !paused) { wasPaused = false; operation.stage('resumed', {}, 'info'); }
                 if (signal.aborted) break;
 
                 const batch = await invoke<QueuedFile[]>('jobs_claim_batch', {
@@ -1640,7 +1659,6 @@
                     const ext = filename.split('.').pop()?.toLowerCase() ?? '';
 
                     updateEntry(String(qf.rowId), { status: 'extracting', error: undefined });
-                    logInfo(`Extract: ${qf.filePath} (.${ext})`);
 
                     try {
                         let bytes: Uint8Array;
@@ -1648,7 +1666,7 @@
                             bytes = usesNativePathExtraction(filename) ? new Uint8Array(0) : await readFile(qf.filePath);
                         } catch (fsErr: any) {
                             const msg = `Read failed: ${fsErr?.message ?? fsErr}`;
-                            logError(`${msg}: ${qf.filePath}`);
+                            operation.stage('extraction_failed', {}, 'warn');
                             errored.push({ rowId: qf.rowId, error: msg });
                             updateEntry(String(qf.rowId), { status: 'error', error: msg });
                             continue;
@@ -1664,11 +1682,11 @@
                             arrayBuffer: bytes.buffer as ArrayBuffer,
                             path: qf.filePath,
                         }, { signal });
-                        logInfo(`Extracted ${filename}: ${result.text?.length ?? 0} chars`);
+                        operation.stage('text_ready', { characters: result.text?.length ?? 0 });
 
                         if (!result.text?.trim() && !result.members?.length) {
                             const message = 'Kein durchsuchbarer Text erkannt. OCR aktivieren oder die Extraktionseinstellungen prüfen und erneut versuchen.';
-                            logWarn(`${filename}: ${message}`);
+                            operation.stage('extraction_failed', { characters: 0 }, 'warn');
                             errored.push({ rowId: qf.rowId, error: message });
                             updateEntry(String(qf.rowId), { status: 'error', error: message });
                             continue;
@@ -1703,7 +1721,7 @@
 
                     } catch (err: any) {
                         const msg = String(err?.message ?? err);
-                        logError(`Extract failed for ${filename}: ${msg}`);
+                        operation.stage('extraction_failed', {}, 'warn');
                         errored.push({ rowId: qf.rowId, error: msg });
                         updateEntry(String(qf.rowId), { status: 'error', error: msg });
                     }
@@ -1735,7 +1753,7 @@
                             });
                         }
                     } catch (e: any) {
-                        logError(`Batch write failed: ${e?.message ?? e}`);
+                        operation.stage('warning', { count: pendingWrites.length }, 'warn');
                         for (const w of pendingWrites) {
                             errored.push({ rowId: w.rowId, error: String(e) });
                             updateEntry(String(w.rowId), { status: 'error', error: String(e) });
@@ -1747,11 +1765,17 @@
                 for (const { rowId, error } of errored) {
                     await invoke('jobs_mark_error', { jobId, rowId, error, maxRetries: 0 });
                 }
+                failed += errored.length;
+                completed += pendingWrites.length - errored.filter(e => pendingWrites.some(w => w.rowId === e.rowId)).length;
+                operation.stage('progress', { completed, failed });
 
                 await loadEntriesFromQueue();
             }
+            if (signal.aborted) operation.cancel({ completed, failed });
+            else operation.complete({ completed, failed, partial: failed > 0 });
 
         } catch (error) {
+            operation.fail(error, { completed, failed });
             reportQueueError('Indexierung wurde unterbrochen; offene Dateien bleiben für den nächsten Versuch gespeichert', error);
         } finally {
             try { await finishQueuedRun(jobId); }
@@ -1882,7 +1906,7 @@
                 limit: 200,
             });
         } catch (e: any) {
-            logError(`Übersicht: tag facets failed -- ${String(e?.message ?? e ?? '')}`);
+            logError('Übersicht: tag facets failed');
             tagFacets = [];
         } finally {
             tagFacetsLoading = false;
@@ -1947,7 +1971,7 @@
             // line per distinct error per session is enough to debug
             // and not enough to bury other useful messages.
             if (msg !== _lastQueryError) {
-                logError(`Übersicht: query failed -- ${msg}`);
+                logError('Übersicht: query failed');
                 _lastQueryError = msg;
             }
             if (!append) {
@@ -1993,7 +2017,7 @@
         } catch (e: any) {
             const msg = String(e?.message ?? e ?? '');
             if (msg !== _lastImagesError) {
-                logError(`Images: list failed -- ${msg}`);
+                logError('Images: list failed');
                 _lastImagesError = msg;
             }
             if (!append) {
@@ -2468,7 +2492,6 @@
         if (!parts) return;
         promotingIds = new Set([...promotingIds, doc.doc_id]);
         try {
-            logInfo(`P11: promoting ${parts.remotePath} from drive ${parts.driveId}`);
             const result = await invoke<{ doc_id: string; chunks: number }>('index_promote_drive_archive', {
                 docId:      doc.doc_id,
                 driveId:    parts.driveId,
@@ -2478,7 +2501,7 @@
             logInfo(`P11: promoted to L3: ${result.chunks} chunks`);
             await loadContents();
         } catch (e: any) {
-            logError(`P11 drive-promote failed: ${e?.message ?? e}`);
+            logError('P11 drive-promote failed');
         } finally {
             promotingIds.delete(doc.doc_id);
             promotingIds = new Set(promotingIds);
@@ -2503,7 +2526,6 @@
 
         promotingIds = new Set([...promotingIds, doc.doc_id]);
         try {
-            logInfo(`P12: promoting ${originalPath} via retrieve.py`);
             const result = await invoke<{ doc_id: string; chunks: number }>('index_promote_cb_archive', {
                 docId: doc.doc_id,
                 originalPath,
@@ -2514,14 +2536,14 @@
             logInfo(`P12: promoted to L3: ${result.chunks} chunks`);
             await loadContents();
         } catch (e: any) {
-            logError(`P12 promote failed: ${e?.message ?? e}`);
+            logError('P12 promote failed');
         } finally {
             promotingIds.delete(doc.doc_id);
             promotingIds = new Set(promotingIds);
         }
     }
 
-    async function deleteFromIndex(docId: string, occurrence?: { owner_id: string; location_uri: string }) {
+    async function deleteFromIndex(docId: string, occurrence?: { owner_id: string; location_uri: string }): Promise<boolean> {
         deletingIds = new Set([...deletingIds, docId]);
         contentsActionError = '';
         try {
@@ -2533,9 +2555,11 @@
             selectedDocIds.delete(docId);
             selectedDocIds = new Set(selectedDocIds);
             await loadContents();
+            return true;
         } catch (e) {
             contentsActionError = `Die Quelle konnte nicht aus dem Index entfernt werden: ${String(e)}`;
-            logError(contentsActionError);
+            logError('Übersicht: Quelle konnte nicht aus dem Index entfernt werden');
+            return false;
         } finally {
             deletingIds.delete(docId);
             deletingIds = new Set(deletingIds);
@@ -2544,9 +2568,14 @@
 
     async function deleteSelected() {
         const ids = [...selectedDocIds];
+        const operation = beginOperation('index.delete_selection', { total: ids.length });
+        let completed = 0;
         for (const docId of ids) {
-            await deleteFromIndex(docId);
+            if (await deleteFromIndex(docId)) completed++;
         }
+        const failed = ids.length - completed;
+        if (completed === 0 && failed > 0) operation.fail(undefined, { failed });
+        else operation.complete({ completed, failed, partial: failed > 0 });
     }
 
     let promotingL3 = $state(false);
@@ -2581,7 +2610,6 @@
         cafBusy = true;
         cafLastResult = null;
         try {
-            logInfo(`CAF: importing ${sel}`);
             const result = await invoke<{
                 ingested: number; skipped: number; errors: number;
                 volume_label: string; volume_serial: number; volume_date: number;
@@ -2589,11 +2617,11 @@
             cafLastResult = `Imported ${result.ingested} entries from "${result.volume_label || sel}"`
                 + (result.errors ? ` (${result.errors} errors)` : '')
                 + (result.skipped ? ` (${result.skipped} skipped)` : '');
-            logInfo(`CAF: ${cafLastResult}`);
+            logInfo(`CAF: imported ${result.ingested} entries (${result.errors} errors, ${result.skipped} skipped)`);
             await loadContents();
         } catch (e: any) {
             cafLastResult = `Import failed: ${e?.message ?? e}`;
-            logError(`CAF import failed: ${e?.message ?? e}`);
+            logError('CAF import failed');
         } finally {
             cafBusy = false;
         }
@@ -2620,7 +2648,7 @@
             await loadContents();
         } catch (e: any) {
             cafLastResult = `Fehler: ${e?.message ?? e}`;
-            logError(`cloud-backup manifest import failed: ${e?.message ?? e}`);
+            logError('cloud-backup manifest import failed');
         } finally {
             cafBusy = false;
         }
@@ -2640,6 +2668,7 @@
 
         cidxPromoting = true;
         const selected = [...cidxSelected];
+        const operation = beginOperation('index.promote_archive_selection', { total: selected.length });
         let ok = 0; let errs = 0;
         for (const docId of selected) {
             const doc = cidxContents.find(d => d.doc_id === docId);
@@ -2651,15 +2680,14 @@
                     docId, originalPath, retrievePyPath: effectivePyPath, outputDir: null, ownerId: null,
                 });
                 ok++;
-                logInfo(`Promoted ${originalPath}`);
-            } catch (e: any) {
+            } catch {
                 errs++;
-                logError(`Promote failed ${originalPath}: ${e?.message ?? e}`);
             }
         }
         cidxSelected = new Set();
         cidxPromoting = false;
-        logInfo(`Archiv-Promote: ${ok} ok, ${errs} Fehler`);
+        if (ok === 0 && errs > 0) operation.fail(undefined, { failed: errs });
+        else operation.complete({ completed: ok, failed: errs, partial: errs > 0 });
         if (ok > 0) await loadContents(); // refresh main catalog
     }
 
@@ -2723,7 +2751,6 @@
         try {
             // Export all rows (no volume filter from UI; use CLI for per-volume export).
             const volumeId: string | null = null;
-            logInfo(`cidx: exporting all rows → ${savePath}`);
             const rows = await invoke<number>('index_export_cidx', {
                 destPath: savePath,
                 volumeId,
@@ -2731,10 +2758,10 @@
                 includeFts: cidxIncludeFts,
             });
             cidxLastResult = `Exportiert: ${rows} Einträge → ${savePath}${cidxIncludeFts ? ' (+ Volltextsuche)' : ''}`;
-            logInfo(`cidx: ${cidxLastResult}`);
+            logInfo(`cidx: exported ${rows} rows`);
         } catch (e: any) {
             cidxLastResult = `Export fehlgeschlagen: ${e?.message ?? e}`;
-            logError(`cidx export failed: ${e?.message ?? e}`);
+            logError('cidx export failed');
         } finally {
             cidxBusy = false;
         }
@@ -2759,16 +2786,15 @@
         cafBusy = true;
         cafLastResult = null;
         try {
-            logInfo(`CAF: exporting${filterDocIds ? ' selection' : ' all rows'} to ${savePath}`);
             const written = await invoke<number>('index_export_caf', {
                 path: savePath,
                 docIds: filterDocIds,
             });
             cafLastResult = `Exported ${written} entries to ${savePath}`;
-            logInfo(`CAF: ${cafLastResult}`);
+            logInfo(`CAF: exported ${written} entries`);
         } catch (e: any) {
             cafLastResult = `Export failed: ${e?.message ?? e}`;
-            logError(`CAF export failed: ${e?.message ?? e}`);
+            logError('CAF export failed');
         } finally {
             cafBusy = false;
         }
@@ -2789,9 +2815,10 @@
         let ok = 0, fail = 0;
         contentsActionError = '';
         let lastFailure = '';
+        const operation = beginOperation('index.promote_l3_selection', { total: ids.length, level: 3 });
         try {
             // L3 promotion needs the embedder — attach it now.
-            if (!(await ensureIndexReady(true))) return;
+            if (!(await ensureIndexReady(true))) { operation.fail(); return; }
 
             const BATCH_SIZE = 16;
             type L3Input = Omit<ContainerIngestContent, 'title' | 'author' | 'year'> & {
@@ -2811,7 +2838,7 @@
                     ok += batch.length;
                 } catch (e) {
                     lastFailure = String(e);
-                    logError(`[L3] ${lastFailure}`);
+                    operation.stage('warning', { count: batch.length }, 'warn');
                     fail += batch.length;
                 }
             };
@@ -2861,14 +2888,19 @@
                     if (l3Buffer.length >= BATCH_SIZE) await flushL3();
                 } catch (e) {
                     lastFailure = String(e);
-                    logError(`[L3] ${id}: ${lastFailure}`);
+                    operation.stage('extraction_failed', {}, 'warn');
                     fail++;
                 }
                 l3Progress = { done: (l3Progress?.done ?? 0) + 1, total: ids.length, current: row.filename ?? id };
             }
             await flushL3();
+            if (ok === 0 && fail > 0) operation.fail(undefined, { failed: fail });
+            else operation.complete({ completed: ok, failed: fail, partial: fail > 0 });
             await loadContents();
             if (fail > 0) contentsActionError = `${ok} Quellen aktualisiert, ${fail} fehlgeschlagen. ${lastFailure || 'Quelle nicht verfügbar; Übersicht neu laden und erneut versuchen.'}`;
+        } catch (error) {
+            operation.fail(error, { completed: ok, failed: fail });
+            throw error;
         } finally {
             promotingL3 = false;
             l3Progress = null;

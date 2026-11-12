@@ -10,13 +10,29 @@
 //! await invoke('secret_delete', { account: 'llm-provider:openai' });
 //! ```
 
-use super::{delete_secret, get_secret, set_secret, SecretError};
+use super::{
+    active_store_log_kind, delete_secret, get_secret, secret_error_code, set_secret, SecretError,
+};
+use crate::operation_log::OperationLog;
+use serde_json::json;
 
 /// Store a secret under the given account name. Overwrites any
 /// existing value. Returns `Ok(())` on success.
 #[tauri::command]
 pub async fn secret_set(account: String, value: String) -> Result<(), String> {
-    set_secret(&account, &value).map_err(|e| e.to_string())
+    // Logs that a write happened and on which kind of store — never the
+    // account name or value.
+    let log = OperationLog::start("secrets.store", json!({"store": active_store_log_kind()}));
+    match set_secret(&account, &value) {
+        Ok(()) => {
+            log.succeed(json!({}));
+            Ok(())
+        }
+        Err(e) => {
+            log.fail(secret_error_code(&e));
+            Err(e.to_string())
+        }
+    }
 }
 
 /// Read a secret. Returns `null` (JS) / `None` (Rust) when nothing is
@@ -29,7 +45,17 @@ pub async fn secret_get(account: String) -> Result<Option<String>, String> {
 /// Delete a stored secret. Idempotent.
 #[tauri::command]
 pub async fn secret_delete(account: String) -> Result<(), String> {
-    delete_secret(&account).map_err(|e| e.to_string())
+    let log = OperationLog::start("secrets.delete", json!({"store": active_store_log_kind()}));
+    match delete_secret(&account) {
+        Ok(()) => {
+            log.succeed(json!({}));
+            Ok(())
+        }
+        Err(e) => {
+            log.fail(secret_error_code(&e));
+            Err(e.to_string())
+        }
+    }
 }
 
 /// Migration helper: takes a list of `(account, plaintext)` pairs and
@@ -44,7 +70,13 @@ pub async fn secret_delete(account: String) -> Result<(), String> {
 /// failing key in plain text, which is the previous status quo.
 #[tauri::command]
 pub async fn secrets_bulk_set(items: Vec<(String, String)>) -> Result<Vec<String>, String> {
+    let log = OperationLog::start(
+        "secrets.bulk_store",
+        json!({"store": active_store_log_kind(), "total": items.len()}),
+    );
     let mut stored = Vec::with_capacity(items.len());
+    let mut failed = 0usize;
+    let mut stopped = false;
     for (account, value) in items {
         if value.is_empty() {
             continue;
@@ -55,13 +87,24 @@ pub async fn secrets_bulk_set(items: Vec<(String, String)>) -> Result<Vec<String
             // refused once will refuse the rest, one dialog at a time.
             Err(e @ SecretError::Denied(_)) => {
                 eprintln!("secrets_bulk_set: store refused, stopping: {e}");
+                log.warn("store_denied", json!({}));
+                failed += 1;
+                stopped = true;
                 break;
             }
             Err(e) => {
-                eprintln!("secrets_bulk_set: failed for account={account}: {e}");
+                // The account name is a credential label; keep it out of logs.
+                eprintln!("secrets_bulk_set: one entry failed: {e}");
+                log.warn(secret_error_code(&e), json!({}));
+                failed += 1;
             }
         }
     }
+    log.succeed(json!({
+        "completed": stored.len(),
+        "failed": failed,
+        "partial": failed > 0 || stopped,
+    }));
     Ok(stored)
 }
 
@@ -103,9 +146,34 @@ pub async fn secrets_list_known(accounts: Vec<String>) -> Result<Vec<String>, St
                 break;
             }
             Err(e) => {
-                eprintln!("secrets_list_known: failed for account={account}: {e}");
+                eprintln!("secrets_list_known: one entry failed: {e}");
             }
         }
     }
     Ok(found)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn secret_writes_log_the_store_kind_but_never_the_account_or_value() {
+        let (result, events) = crate::operation_log::capture(|| {
+            futures::executor::block_on(async {
+                secret_set("llm-provider:private-account".into(), "sk-private-value".into()).await?;
+                secret_delete("llm-provider:private-account".into()).await
+            })
+        });
+        result.unwrap();
+        let completed: Vec<&str> = events
+            .iter()
+            .filter(|e| e.phase == "completed")
+            .map(|e| e.operation.as_str())
+            .collect();
+        assert_eq!(completed, ["secrets.store", "secrets.delete"]);
+        assert!(events.iter().all(|e| e.context.get("store").is_some()));
+        let text = serde_json::to_string(&events).unwrap();
+        assert!(!text.contains("private"), "{text}");
+    }
 }
