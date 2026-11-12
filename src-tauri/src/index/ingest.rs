@@ -328,7 +328,28 @@ pub(crate) async fn acquire_index_guard(path: &std::path::Path) -> Result<IndexW
 }
 
 fn apply_fts_write(fts: &FtsIndex, pending: &PendingFtsWrite) -> Result<()> {
-    let mut writer = fts.writer().context("opening full-text writer for repair")?;
+    let writer = fts.writer().context("opening full-text writer for repair")?;
+    commit_fts_write(fts, pending, writer)
+}
+
+fn replay_fts_write(fts: &FtsIndex, pending: &PendingFtsWrite) -> Result<()> {
+    let writer = fts.writer().context("opening full-text writer for recovery")?;
+    // A failed meta.json publication can leave managed deletion files at an
+    // opstamp that replay will reuse. Under the exclusive writer lock, Tantivy
+    // scopes cleanup through managed/live segment tracking and protects reader
+    // opening with its metadata lock. Never remove paths ourselves or proceed
+    // after partial GC.
+    let cleanup = writer.garbage_collect_files().wait()
+        .context("collecting orphaned full-text files before recovery")?;
+    // Conservative availability tradeoff: an unrelated obsolete mapped file
+    // can block Windows cleanup until its reader closes. Keep the journal and
+    // committed postings intact rather than attempting a partially clean replay.
+    anyhow::ensure!(cleanup.failed_to_delete_files.is_empty(),
+        "Full-text recovery cleanup is incomplete; repair intent retained");
+    commit_fts_write(fts, pending, writer)
+}
+
+fn commit_fts_write(fts: &FtsIndex, pending: &PendingFtsWrite, mut writer: tantivy::IndexWriter) -> Result<()> {
     for doc_id in &pending.replace_ids {
         fts.delete_document(&mut writer, doc_id)?;
     }
@@ -338,6 +359,8 @@ fn apply_fts_write(fts: &FtsIndex, pending: &PendingFtsWrite) -> Result<()> {
     Ok(())
 }
 
+/// The caller holds the index's local and cross-process write leases while
+/// proving vector generations and replaying their retained full-text intents.
 pub(crate) async fn repair_fts_writes(fts: &FtsIndex, vector: &LocalIndex) -> Result<()> {
     for pending in pending_fts_writes(vector.ingest_journal_path())? {
         let committed = if pending.delete_only && !pending.absent_occurrences.is_empty() {
@@ -352,7 +375,7 @@ pub(crate) async fn repair_fts_writes(fts: &FtsIndex, vector: &LocalIndex) -> Re
         if committed {
             anyhow::ensure!(vector.occurrences_absent(&pending.absent_occurrences).await?,
                 "Incomplete source occurrence replacement; full-text repair retained");
-            apply_fts_write(fts, &pending)?;
+            replay_fts_write(fts, &pending)?;
         }
         // A noncommitted intent never changes the last good full-text entry.
         finish_fts_intent(vector.ingest_journal_path(), &pending.generation)?;
