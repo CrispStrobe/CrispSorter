@@ -89,6 +89,7 @@
     if (file.phase === "complete") return "Ready";
     if (file.phase === "verified") return "Verified";
     if (file.phase === "checking") return "Checking";
+    if (file.phase === "waiting") return "Waiting for another CrispSorter process to finish this download";
     if (file.phase === "failed") return "Failed";
     if (file.phase === "cancelled") return "Cancelled";
     return `${formatBytes(file.downloaded)} of ${formatBytes(file.total ?? model.size_bytes)}`;

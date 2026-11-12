@@ -253,7 +253,8 @@ fn offered_engines(native: bool, system: bool, ocrs: bool, paddle: bool) -> Vec<
 pub fn ocr_workspace_capabilities() -> Value {
     let native = cfg!(feature = "crispembed");
     let system = crate::ocr_word_evidence::capabilities();
-    let ocrs = crate::extractors::ocr_ocrs::is_ocrs_available();
+    // Offered when compiled: the model manager installs missing weights.
+    let ocrs = crate::extractors::ocr_ocrs::is_ocrs_offered();
     let paddle = crate::extractors::ocr_paddle::is_paddle_ocr_available();
     let engines = offered_engines(native, system.available, ocrs, paddle);
     let available = native || system.available || ocrs || paddle;

@@ -404,7 +404,12 @@ enum Command {
         #[arg(long, value_name = "FILE")]
         ocr_config: Option<PathBuf>,
     },
-    /// OCR model management: install the models an engine needs.
+    /// OCR model management: show (`plan`) or install (`pull`) the models an
+    /// engine needs. OCR commands never download during recognition: they
+    /// print the missing models first, ask [y/N] on a terminal, and need
+    /// `--yes` in scripts (`--offline` never downloads). Models are SHA-256
+    /// verified, resumable, and shared with the app (CRISPEMBED_CACHE_DIR,
+    /// default ~/.cache/crispembed).
     Models {
         #[command(subcommand)]
         cmd: ModelsCmd,

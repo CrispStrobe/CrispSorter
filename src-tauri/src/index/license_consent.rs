@@ -370,6 +370,14 @@ pub fn license_for_registry_name(name: &str) -> ModelLicense {
         // PP-OCRv6 det/rec and EasyOCR English Gen2 are apache-2.0 in the pinned
         // registry (`model_mgr.cpp`), and both engines are offered in Settings.
         | "easyocr-english-g2"
+        // Pinned non-registry OCR weights (`ocr_builtin_models`): PaddleOCR v4
+        // (Apache-2.0) and ocrs (CC-BY-SA-4.0, attribution/share-alike only).
+        | "paddleocr-det-v4"
+        | "paddleocr-rec-v4-en"
+        | "paddleocr-rec-v4-ch"
+        | "paddleocr-slanet-v2"
+        | "ocrs-detection"
+        | "ocrs-recognition"
         | "ppocrv6-tiny-det"
         | "ppocrv6-tiny-rec"
         | "qari-ocr"

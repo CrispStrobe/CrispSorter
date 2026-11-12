@@ -32,6 +32,9 @@ describe("model plan helpers", () => {
     expect(missingModels(plan(models)).map((m) => m.name)).toEqual(["tesseract-deu"]);
     expect(planSummary(plan(models))).toEqual({ ready: false, label: "1 model missing (10 MB)" });
     expect(planSummary(plan([model("a", { installed: true })]))).toEqual({ ready: true, label: "Models ready" });
+    // A registered model without a download (EasyOCR) is reported, not "ready".
+    expect(planSummary(plan([model("dbnet-det", { installed: true }), model("easyocr-english-g2", { downloadable: false })])))
+      .toEqual({ ready: false, label: "1 model unavailable", unavailable: true });
   });
 
   it("formats sizes and detects a disk-space shortfall", () => {

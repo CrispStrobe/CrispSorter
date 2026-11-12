@@ -58,6 +58,27 @@ pub fn init_process() {
     if let Ok(value) = std::env::var("CRISPSORTER_MODEL_CACHE_DIR") {
         if !value.trim().is_empty() { add_legacy_dir(PathBuf::from(value.trim())); }
     }
+    // A child process (the isolated OCR worker) inherits every location the
+    // parent searched, so a model the plan reports installed is usable there.
+    if let Some(value) = std::env::var_os(SEARCH_PATH_ENV) {
+        for path in std::env::split_paths(&value) { add_legacy_dir(path); }
+    }
+}
+
+/// Environment variable carrying [`search_dirs`] to OCR child processes.
+pub const SEARCH_PATH_ENV: &str = "CRISPSORTER_MODEL_SEARCH_PATH";
+
+/// [`search_dirs`] encoded for [`SEARCH_PATH_ENV`] (platform path-list syntax).
+pub fn search_path_value() -> std::ffi::OsString {
+    std::env::join_paths(search_dirs()).unwrap_or_default()
+}
+
+/// Environment for an OCR child process: the canonical cache, every search
+/// location and the offline switch. Apply with `Command::envs`.
+pub fn child_env() -> Vec<(&'static str, std::ffi::OsString)> {
+    let mut env = vec![(ENV, dir().into_os_string()), (SEARCH_PATH_ENV, search_path_value())];
+    if offline() { env.push(("CRISPEMBED_OFFLINE", "1".into())); }
+    env
 }
 
 /// The canonical cache directory. Falls back to resolving lazily (without
@@ -145,6 +166,18 @@ mod tests {
         // Empty files (an interrupted native download) are not installs.
         std::fs::write(legacy.path().join(&primary), b"").unwrap();
         assert!(locate_files(&[&primary]).is_none());
+    }
+
+    #[test]
+    fn child_processes_receive_every_search_location() {
+        let legacy = tempfile::tempdir().unwrap();
+        add_legacy_dir(legacy.path().to_path_buf());
+        let env = child_env();
+        let (_, list) = env.iter().find(|(key, _)| *key == SEARCH_PATH_ENV).expect("search path exported");
+        let paths: Vec<PathBuf> = std::env::split_paths(list).collect();
+        assert_eq!(paths[0], dir(), "the canonical cache stays first");
+        assert!(paths.contains(&legacy.path().to_path_buf()));
+        assert_eq!(env.iter().find(|(key, _)| *key == ENV).map(|(_, v)| PathBuf::from(v)), Some(dir()));
     }
 
     #[test]

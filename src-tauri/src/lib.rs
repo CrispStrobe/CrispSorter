@@ -35,6 +35,7 @@ mod ocr_text_export;
 pub mod model_provisioning;
 pub mod model_cache;
 pub mod ocr_models;
+pub mod ocr_builtin_models;
 pub mod operation_log;
 pub mod ocr_word_evidence;
 pub mod ocr_document;

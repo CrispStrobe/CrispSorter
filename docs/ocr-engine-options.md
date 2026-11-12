@@ -34,6 +34,21 @@ it is not a full-transcription score or an evaluation of every OCR engine.
 This continuation has not run a comparative accuracy panel across the other
 engines below.
 
+## Model downloads
+
+OCR never downloads a model while recognizing. Every task first asks the
+model manager what it needs (`ocr_models_required`): name, purpose, size,
+licence and install state. Missing models are shown in one dialog (or, on
+the CLI, as a plan with a `[y/N]` prompt, `--yes` / `--download-models`, or
+`--offline`). Installation verifies pinned SHA-256 hashes, resumes an
+interrupted `.part` with HTTP Range, can be cancelled, checks free disk
+space, and holds a per-model lock file so the app and the CLI never write the
+same download. Everything lands in one cache (`CRISPEMBED_CACHE_DIR`, default
+`~/.cache/crispembed`); folders earlier releases downloaded to stay readable
+and are passed to the isolated OCR worker. Settings > OCR models lists each
+engine's models with Download and Remove; `crispsorter models plan|pull`
+does the same from a shell.
+
 ## Workbench: Recognize choices
 
 A CrispEmbed-enabled build advertises **20 non-experimental embedded choices**,
@@ -51,11 +66,11 @@ are added when their respective runtime capabilities are available. The
 | DBNet + TrOCR | Embedded detection and recognition stages. |
 | PARSeq scene text | Embedded detector/recognizer option. |
 | PP-OCRv6 (CJK lines) | Embedded PP-OCRv6 path with its own model requirements. |
-| EasyOCR | Embedded DBNet/CRNN path. |
+| EasyOCR | Embedded DBNet/CRNN path. No published GGUF exists for its recognizer (`easyocr-english-g2`), so it is not downloadable: place the file in the model folder. Automatic never selects it. |
 | Document and vision models | GOT OCR, GLM OCR, Qwen2 VL, InternVL2, DeepSeek OCR 2, Pix2Struct, Granite Vision, LightOnOCR, Qwen3 VL, Unlimited OCR, olmOCR 2 (7B), and LFM2.5 VL. These are local model choices. The UI labels GOT as non-commercial; model-specific licence gates remain in force. |
 | Custom-model choices | Surya and Unified are available in the shared catalog; supply their required model files in a matching advanced stage. |
 | Experimental choices | Unlimited-OCR-2 and MiniCPM-OCR-1.0 appear when their runtime enablement flags are set. |
-| Legacy local recognizers | ocrs and PaddleOCR v4 can be selected explicitly when available. Their plain-text review adapter supplies an unscored page block. |
+| Legacy local recognizers | ocrs and PaddleOCR v4 can be selected explicitly when compiled. Their plain-text review adapter supplies an unscored page block. Their pinned weights (ocrs ONNX, PaddleOCR v4 det/rec/SLANet + vocabularies) are installed by the OCR model manager like every other model; usls never downloads on its own. |
 | Automatic pipeline | A routing policy. Unconfigured embedded OCR selects Tesseract; an enabled configured pipeline retains its stages. Disabled advanced stages do not reactivate implicitly. Explicit legacy tiers remain meaningful. |
 
 The pinned embedded runtime is CrispEmbed 0.17.19; the

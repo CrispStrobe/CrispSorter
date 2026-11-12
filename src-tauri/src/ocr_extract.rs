@@ -151,7 +151,9 @@ pub async fn ocr_extract_image(state: State<'_, AppState>, request: tauri::ipc::
             "stages":config.stages.len(),"cpu_budget":config.cpu_pixel_budget}));
         // Never download implicitly: ask the user first (the UI shows the
         // model dialog for MODEL_DOWNLOAD_REQUIRED and retries).
-        let plan = crate::ocr_models::plan(&config, &[]);
+        // PaddleOCR picks its recognizer from the script (here: the name).
+        let extras: Vec<String> = if options.ocr_rec_lang == extractors::OcrRecLang::Cjk { vec!["paddle_cjk".into()] } else { Vec::new() };
+        let plan = crate::ocr_models::plan(&config, &extras);
         crate::ocr_models::ensure_or_gate(&plan.models, allow_downloads, &worker_log)?;
         worker_log.step("staging_image",serde_json::json!({"bytes":owned.len()}));
         with_image(&owned, |path| {

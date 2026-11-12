@@ -28,7 +28,7 @@ export interface ModelPlan {
   offline: boolean;
 }
 
-export type InstallPhase = "checking" | "downloading" | "verified" | "complete" | "failed" | "cancelled";
+export type InstallPhase = "checking" | "waiting" | "downloading" | "verified" | "complete" | "failed" | "cancelled";
 export interface InstallProgress {
   request_id: string | null;
   model: string;
@@ -84,8 +84,13 @@ export function formatBytes(bytes: number | null | undefined): string {
 }
 
 /** Short chip text: "Models ready" / "2 models missing (1.7 GB)". */
-export function planSummary(plan: ModelPlan | null | undefined): { ready: boolean; label: string } {
+export function planSummary(plan: ModelPlan | null | undefined): { ready: boolean; label: string; unavailable?: boolean } {
   const missing = missingModels(plan);
+  // Registered but not downloadable (e.g. EasyOCR): say so, the run would fail.
+  const unavailable = plan?.models?.filter((m) => m.managed !== false && !m.downloadable && !m.installed) ?? [];
+  if (plan && !missing.length && unavailable.length) {
+    return { ready: false, label: `${unavailable.length} ${unavailable.length === 1 ? "model" : "models"} unavailable`, unavailable: true };
+  }
   if (!plan || !missing.length) return { ready: true, label: "Models ready" };
   const size = totalBytes(missing);
   return { ready: false, label: `${missing.length} ${missing.length === 1 ? "model" : "models"} missing${size ? ` (${formatBytes(size)})` : ""}` };

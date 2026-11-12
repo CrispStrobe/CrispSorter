@@ -562,6 +562,9 @@
   let modelPlanRevision = $state(0);
   let awaitingModels = $state(false);
   const modelChip = $derived(modelPlan && modelPlan.models.length ? planSummary(modelPlan) : null);
+  const modelChipTitle = $derived(!modelChip || modelChip.ready ? "Every model this engine and profile need is installed."
+    : modelChip.unavailable ? (modelPlan?.models.find((m) => !m.downloadable && !m.installed)?.note ?? "A model of this engine has no registered download.")
+    : "Download the missing models now");
   function modelRequest(options: { config: Record<string, unknown>; engine: string; language: string; cpuPixelBudget?: boolean }): ModelPlanRequest {
     return { surface: "workspace", config: options.config, engine: options.engine,
       language: recognitionLanguage(options.engine, options.language, options.config), cpuPixelBudget: options.cpuPixelBudget ?? false };
@@ -3816,8 +3819,8 @@
                   >{#each ocrEngineOptions(capabilities, engine) as option}<option
                     value={option.value} disabled={option.disabled}>{option.label}</option>{/each}</select
                 >{#if modelChip}<button type="button" class="model-chip" class:missing={!modelChip.ready}
-                    data-model-chip aria-live="polite" disabled={modelChip.ready || locked}
-                    title={modelChip.ready ? "Every model this engine and profile need is installed." : "Download the missing models now"}
+                    data-model-chip aria-live="polite" disabled={modelChip.ready || modelChip.unavailable || locked}
+                    title={modelChipTitle}
                     onclick={downloadSelectedModels}>{awaitingModels ? "Waiting for models…" : modelChip.label}</button>{/if}</label
               ><label class="field-label"
                 >Document language<select

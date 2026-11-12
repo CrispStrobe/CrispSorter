@@ -350,9 +350,23 @@ jobs:
         run: cargo test -p crispsorter --lib --features desktop,sidecars,audio-glint,aitoolkit,cloud-backup,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,ocr-reviewed-pdf,crispembed-license-api,ocr-photo-tools,crispasr,translate-align,translate-nmt,pdf-render,anydoc,fuse,paddle-ocr
 
       # PaddleOCR ships in no other job; prove it really recognises text.
-      - name: Live PaddleOCR recognition (downloads ~60 MB of models)
+      # Its pinned models now come from the OCR model manager (~20 MB),
+      # never from usls' own hub.
+      - name: Live PaddleOCR recognition (installs pinned models through the manager)
         working-directory: repos/CrispSorter
         run: cargo test -p crispsorter --lib --features desktop,sidecars,audio-glint,aitoolkit,cloud-backup,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,ocr-reviewed-pdf,crispembed-license-api,ocr-photo-tools,crispasr,translate-align,translate-nmt,pdf-render,anydoc,fuse,paddle-ocr -- --ignored live_paddle_recognises_the_fixture_sentence
+
+      # The OCR model manager against the real network: installs tesseract-eng
+      # + dbnet-det into a temporary cache, resumes a deliberately truncated
+      # `.part`, checks the SHA-256 pins and recognises the fixture. Run on its
+      # own: the test pins the process-wide model cache.
+      - name: Live OCR model manager (download, resume, verify, recognise)
+        working-directory: repos/CrispSorter
+        run: cargo test -p crispsorter --lib --features desktop,sidecars,audio-glint,aitoolkit,cloud-backup,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,ocr-reviewed-pdf,crispembed-license-api,ocr-photo-tools,crispasr,translate-align,translate-nmt,pdf-render,anydoc,fuse,paddle-ocr -- --ignored live_model_manager_installs_resumes_and_recognises
+
+      - name: Live ocrs recognition (installs pinned ONNX models through the manager)
+        working-directory: repos/CrispSorter
+        run: cargo test -p crispsorter --lib --features desktop,sidecars,audio-glint,aitoolkit,cloud-backup,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,ocr-reviewed-pdf,crispembed-license-api,ocr-photo-tools,crispasr,translate-align,translate-nmt,pdf-render,anydoc,fuse,paddle-ocr -- --ignored live_ocrs_installs_and_recognises_the_fixture_sentence
 
       - name: Batch sorting script tests
         working-directory: repos/CrispSorter
@@ -383,6 +397,33 @@ jobs:
       - name: Verify CLI results and operation diagnostics remain separate
         working-directory: repos/CrispSorter
         run: python3 scripts/verify_cli_operations.py --cli target/debug/crispsorter
+
+      - name: CLI OCR model manager smoke (offline refusal, pull, offline recognition)
+        working-directory: repos/CrispSorter
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CRISPEMBED_CACHE_DIR="${RUNNER_TEMP}/ocr-models-cli"
+          export CRISPSORTER_ACCEPT_INTENDED_PURPOSE=1
+          cli=target/debug/crispsorter
+          # Without the model, --offline must fail and name what is missing.
+          if out=$("$cli" -f json ocr tests/quality/ocr-task.png --engine tesseract --language eng --offline 2>&1 </dev/null); then
+            echo "expected --offline without models to fail"; echo "$out"; exit 1
+          fi
+          echo "$out" | grep -q "tesseract-eng" || { echo "missing model not listed: $out"; exit 1; }
+          # A non-terminal run without --yes refuses to download.
+          if "$cli" -f json ocr tests/quality/ocr-task.png --engine tesseract --language eng </dev/null >/dev/null 2>&1; then
+            echo "expected a non-terminal run without --yes to refuse"; exit 1
+          fi
+          "$cli" --yes models pull tesseract --language eng
+          "$cli" -f json ocr tests/quality/ocr-task.png --engine tesseract --language eng --offline </dev/null > "${RUNNER_TEMP}/ocr-cli.json"
+          python3 - "${RUNNER_TEMP}/ocr-cli.json" <<'PY'
+          import json, sys
+          text = json.load(open(sys.argv[1]))["text"].lower()
+          missing = [w for w in ("cobalt", "warranty", "november", "2031") if w not in text]
+          assert not missing, (missing, text)
+          print("offline OCR after `models pull`:", text.strip())
+          PY
 
       - name: Compile the generated OCR qualification tools against the pinned runtime
         working-directory: repos/CrispSorter

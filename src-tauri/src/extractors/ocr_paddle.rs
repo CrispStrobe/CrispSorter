@@ -7,8 +7,11 @@
 //!      - `Cjk` (Chinese, Japanese, Korean) → `ppocr_rec_v4_ch`
 //!      - `Auto` → heuristic from path (CJK codepoints in filename/parent → ch model)
 //!
-//! Models auto-download from HuggingFace on first use (~50 MB det + ~10 MB rec).
-//! Gated behind the `paddle-ocr` Cargo feature.
+//! Models are pinned and installed by the OCR model manager
+//! (`ocr_builtin_models`: ~5 MB detection + ~8-11 MB recognition, plus
+//! SLANet for tables) into the shared cache, after the user agreed. usls only
+//! receives local files and never downloads. Loaded sessions are cached
+//! across pages. Gated behind the `paddle-ocr` Cargo feature.
 
 use anyhow::Result;
 #[cfg(feature = "paddle-ocr")]
@@ -53,53 +56,115 @@ pub fn paddle_language_for_name(name: &str) -> OcrRecLang {
     if path_looks_cjk(Path::new(name)) { OcrRecLang::Cjk } else { OcrRecLang::Latin }
 }
 
+/// Loaded PaddleOCR sessions, reused across pages and files. Each slot is
+/// keyed by the exact model file it holds, so a reinstall reloads it and a
+/// script switch only replaces the recognizer.
+#[cfg(feature = "paddle-ocr")]
+mod sessions {
+    use super::super::context_cache::CachedContext;
+    use std::sync::{Mutex, OnceLock};
+    pub static DET: OnceLock<Mutex<Option<CachedContext<usls::models::vision::DB>>>> = OnceLock::new();
+    pub static REC: OnceLock<Mutex<Option<CachedContext<usls::models::vision::SVTR>>>> = OnceLock::new();
+    pub static TABLE: OnceLock<Mutex<Option<CachedContext<usls::models::vision::SLANet>>>> = OnceLock::new();
+}
+
+/// Read a usls vocabulary (one class per line) from a local file.
+#[cfg(feature = "paddle-ocr")]
+fn read_vocabulary(path: &Path) -> Result<Vec<String>> {
+    let text = std::fs::read_to_string(path).context("reading the PaddleOCR vocabulary")?;
+    let lines: Vec<String> = text.lines().map(str::to_owned).collect();
+    anyhow::ensure!(!lines.is_empty(), "the PaddleOCR vocabulary is empty");
+    Ok(lines)
+}
+
+#[cfg(feature = "paddle-ocr")]
+fn path_str(path: &Path) -> Result<String> {
+    path.to_str().map(str::to_owned).context("the PaddleOCR model path is not valid UTF-8")
+}
+
+/// Installed model files, or the `MODEL_DOWNLOAD_REQUIRED:` error the app
+/// turns into its download dialog. usls is only ever given local files, so
+/// it never reaches its own GitHub/Hugging Face hub.
+#[cfg(feature = "paddle-ocr")]
+fn installed(name: &str) -> Result<Vec<std::path::PathBuf>> {
+    crate::ocr_builtin_models::require(name).map_err(anyhow::Error::msg)
+}
+
 /// Run the DB+SVTR PaddleOCR pipeline on a single image file.
 ///
 /// `rec_lang` controls which recognition model is used:
 /// - `Latin` → `ppocr_rec_v4_en` (EN/DE/FR/…)
 /// - `Cjk`   → `ppocr_rec_v4_ch` (Chinese/Japanese/Korean)
 /// - `Auto`  → guess from path heuristic (CJK codepoints → ch, otherwise en)
+///
+/// Models come from the shared model manager (`ocr_builtin_models`); a
+/// missing model is reported, never downloaded here.
 #[cfg(feature = "paddle-ocr")]
 pub fn ocr_via_paddle(path: &Path, rec_lang: OcrRecLang) -> Result<ExtractedDocument> {
-    use usls::{models::Model, Config, Device, Image};
-    use usls::models::vision::{DB, SVTR};
-
-    // Resolve effective language.
+    use crate::operation_log::OperationLog;
+    use serde_json::json;
     let use_cjk = match rec_lang {
         OcrRecLang::Cjk   => true,
         OcrRecLang::Latin => false,
         OcrRecLang::Auto  => path_looks_cjk(path),
     };
+    let log = OperationLog::start("ocr.paddle", json!({"engine": "paddle", "kind": "image"}));
+    let result = recognize_paddle(path, use_cjk, &log);
+    match &result {
+        Ok((doc, regions, cache_hit)) => log.succeed(json!({"pages": 1, "regions": regions,
+            "characters": doc.full_text.chars().count(), "cache_hit": cache_hit})),
+        Err(error) => {
+            let text = format!("{error:#}");
+            log.fail(if text.contains(crate::ocr_models::MODEL_DOWNLOAD_REQUIRED) { "model_missing" }
+                else if text.contains("loading image") { "image_unreadable" }
+                else if text.contains("initialising") || text.contains("loading PaddleOCR") { "model_load_failed" }
+                else { "recognition_failed" });
+        }
+    }
+    result.map(|(doc, _, _)| doc)
+}
 
-    // ── Text detection ─────────────────────────────────────────────────────
-    let det_config = Config::ppocr_det_v4_ch()
-        .with_device_all(Device::Cpu(0))
-        .with_num_dry_run_all(0)
-        .commit()
-        .context("loading PaddleOCR detection model")?;
-    let mut detector = DB::new(det_config)
-        .context("initialising DB text detector")?;
+#[cfg(feature = "paddle-ocr")]
+fn recognize_paddle(path: &Path, use_cjk: bool, log: &crate::operation_log::OperationLog) -> Result<(ExtractedDocument, usize, bool)> {
+    use usls::{models::Model, Config, Device, Image};
+    use usls::models::vision::{DB, SVTR};
+    use serde_json::json;
 
-    // ── Text recognition (model depends on script) ─────────────────────────
-    let rec_config = if use_cjk {
-        Config::ppocr_rec_v4_ch()
-    } else {
-        Config::ppocr_rec_v4_en()
-    };
-    let rec_config = rec_config
-        .with_device_all(Device::Cpu(0))
-        .with_num_dry_run_all(0)
-        .commit()
-        .context("loading PaddleOCR recognition model")?;
-    let mut recogniser = SVTR::new(rec_config)
-        .context("initialising SVTR text recogniser")?;
+    log.step("checking", json!({}));
+    let det_files = installed(crate::ocr_builtin_models::PADDLE_DET)?;
+    let rec_files = installed(crate::ocr_builtin_models::paddle_recognizer(use_cjk))?;
+    let det_path = path_str(&det_files[0])?;
+    let rec_path = path_str(&rec_files[0])?;
+
+    let mut det_built = false;
+    let mut rec_built = false;
+    log.step("loading", json!({}));
+    let mut detector = super::context_cache::acquire(&sessions::DET, det_path.clone(), || {
+        det_built = true;
+        let config = Config::db().with_model_file(det_path.as_str())
+            .with_device_all(Device::Cpu(0)).with_num_dry_run_all(0)
+            .commit().map_err(|e| format!("loading PaddleOCR detection model: {e:#}"))?;
+        DB::new(config).map_err(|e| format!("initialising DB text detector: {e:#}"))
+    }).map_err(anyhow::Error::msg)?;
+    let mut recogniser = super::context_cache::acquire(&sessions::REC, rec_path.clone(), || {
+        rec_built = true;
+        let vocabulary = read_vocabulary(&rec_files[1]).map_err(|e| format!("loading PaddleOCR recognition model: {e:#}"))?;
+        let config = Config::svtr().with_class_names_owned(vocabulary).with_model_file(rec_path.as_str())
+            .with_device_all(Device::Cpu(0)).with_num_dry_run_all(0)
+            .commit().map_err(|e| format!("loading PaddleOCR recognition model: {e:#}"))?;
+        SVTR::new(config).map_err(|e| format!("initialising SVTR text recogniser: {e:#}"))
+    }).map_err(anyhow::Error::msg)?;
+    let cache_hit = !det_built && !rec_built;
+    log.step("loaded", json!({"cache_hit": cache_hit}));
+    let detector = &mut detector.as_mut().context("PaddleOCR detector was not initialised")?.context;
+    let recogniser = &mut recogniser.as_mut().context("PaddleOCR recogniser was not initialised")?.context;
 
     // ── Load image ─────────────────────────────────────────────────────────
-    let img = Image::try_read(path)
-        .with_context(|| format!("loading image for OCR: {}", path.display()))?;
+    let img = Image::try_read(path).context("loading image for OCR")?;
     let images = vec![img];
 
     // ── Detection ──────────────────────────────────────────────────────────
+    log.step("recognizing", json!({}));
     let det_results = detector
         .forward(&images)
         .context("DB text detection failed")?;
@@ -115,9 +180,10 @@ pub fn ocr_via_paddle(path: &Path, rec_lang: OcrRecLang) -> Result<ExtractedDocu
             region_pairs.push((yc, crop));
         }
     }
+    let regions = region_pairs.len();
 
     if region_pairs.is_empty() {
-        return Ok(ExtractedDocument { full_text: String::new(), headings: vec![], ext: extension_of(path), language: None, translated_text: None, translated_to_lang: None, audio: None, image_exif: None, source_url: None, tags: vec![], audio_pcm: None, ..Default::default() });
+        return Ok((ExtractedDocument { full_text: String::new(), headings: vec![], ext: extension_of(path), language: None, translated_text: None, translated_to_lang: None, audio: None, image_exif: None, source_url: None, tags: vec![], audio_pcm: None, ..Default::default() }, 0, cache_hit));
     }
 
     region_pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
@@ -134,7 +200,7 @@ pub fn ocr_via_paddle(path: &Path, rec_lang: OcrRecLang) -> Result<ExtractedDocu
         }
     }
 
-    Ok(ExtractedDocument { full_text: lines.join("\n"), headings: vec![], ext: extension_of(path), language: None, translated_text: None, translated_to_lang: None, audio: None, image_exif: None, source_url: None, tags: vec![], audio_pcm: None, ..Default::default() })
+    Ok((ExtractedDocument { full_text: lines.join("\n"), headings: vec![], ext: extension_of(path), language: None, translated_text: None, translated_to_lang: None, audio: None, image_exif: None, source_url: None, tags: vec![], audio_pcm: None, ..Default::default() }, regions, cache_hit))
 }
 
 #[cfg(feature = "paddle-ocr")]
@@ -151,36 +217,39 @@ fn extension_of(path: &Path) -> String {
 pub fn detect_table_structure(path: &Path) -> Result<Option<String>> {
     use usls::{models::Model, Config, Device, Image};
     use usls::models::vision::SLANet;
+    use crate::operation_log::OperationLog;
+    use serde_json::json;
 
-    let config = Config::slanet_lcnet_v2_mobile_ch()
-        .with_device_all(Device::Cpu(0))
-        .with_num_dry_run_all(0)
-        .commit()
-        .context("loading SLANet table detection model")?;
-    let mut slanet = SLANet::new(config)
-        .context("initialising SLANet table detector")?;
-
-    let img = Image::try_read(path)
-        .with_context(|| format!("loading image for table detection: {}", path.display()))?;
-    let images = vec![img];
-
-    let results = slanet
-        .forward(&images)
-        .context("SLANet table detection failed")?;
-
-    // SLANet returns HTML table tokens (<table>, <tr>, <td>, etc.)
-    // and keypoints for cell bounding boxes.
-    for y in &results {
-        if y.texts.is_empty() {
-            continue;
+    let log = OperationLog::start("ocr.paddle", json!({"engine": "paddle", "kind": "table"}));
+    let result = (|| -> Result<(Option<String>, bool)> {
+        let files = installed(crate::ocr_builtin_models::PADDLE_SLANET)?;
+        let model_path = path_str(&files[0])?;
+        let mut built = false;
+        let mut slanet = super::context_cache::acquire(&sessions::TABLE, model_path.clone(), || {
+            built = true;
+            let vocabulary = read_vocabulary(&files[1]).map_err(|e| format!("loading SLANet table detection model: {e:#}"))?;
+            let config = Config::slanet().with_class_names_owned(vocabulary).with_model_file(model_path.as_str())
+                .with_device_all(Device::Cpu(0)).with_num_dry_run_all(0)
+                .commit().map_err(|e| format!("loading SLANet table detection model: {e:#}"))?;
+            SLANet::new(config).map_err(|e| format!("initialising SLANet table detector: {e:#}"))
+        }).map_err(anyhow::Error::msg)?;
+        let slanet = &mut slanet.as_mut().context("SLANet was not initialised")?.context;
+        let img = Image::try_read(path).context("loading image for table detection")?;
+        let results = slanet.forward(&[img]).context("SLANet table detection failed")?;
+        // SLANet returns HTML table tokens (<table>, <tr>, <td>, etc.)
+        // and keypoints for cell bounding boxes.
+        for y in &results {
+            if y.texts.is_empty() { continue; }
+            let html: String = y.texts.iter().map(|t| t.text().to_string()).collect::<Vec<_>>().join("");
+            if html.contains("<table>") { return Ok((Some(html), !built)); }
         }
-        let html: String = y.texts.iter().map(|t| t.text().to_string()).collect::<Vec<_>>().join("");
-        if html.contains("<table>") {
-            return Ok(Some(html));
-        }
+        Ok((None, !built))
+    })();
+    match &result {
+        Ok((table, cache_hit)) => log.succeed(json!({"pages": 1, "results": usize::from(table.is_some()), "cache_hit": cache_hit})),
+        Err(error) => log.fail(if format!("{error:#}").contains(crate::ocr_models::MODEL_DOWNLOAD_REQUIRED) { "model_missing" } else { "table_detection_failed" }),
     }
-
-    Ok(None)
+    result.map(|(table, _)| table)
 }
 
 /// Run full OCR with table structure detection.
@@ -253,12 +322,39 @@ mod tests {
     #[test]
     #[ignore = "live: downloads PaddleOCR models"]
     fn live_paddle_recognises_the_fixture_sentence() {
+        use crate::ocr_builtin_models as builtin;
+        // Through the model manager (pinned SHA-256), never usls' own hub.
+        let names = [builtin::PADDLE_DET.to_string(), builtin::PADDLE_REC_EN.to_string(), builtin::PADDLE_SLANET.to_string()];
+        crate::ocr_models::install_models(&names, None, &|_| {}).expect("install pinned PaddleOCR models");
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/quality/ocr-task.png");
-        let doc = ocr_via_paddle(&fixture, OcrRecLang::Latin).expect("paddle OCR runs");
+        let (doc, events) = crate::operation_log::capture(|| ocr_via_paddle(&fixture, OcrRecLang::Latin));
+        let doc = doc.expect("paddle OCR runs");
         let text = doc.full_text.to_lowercase();
         for word in ["cobalt", "warranty", "november", "2031"] {
             assert!(text.contains(word), "missing {word:?} in {text:?}");
         }
+        let done = events.iter().find(|e| e.operation == "ocr.paddle" && e.phase == "completed").expect("receipt");
+        assert!(done.context.get("characters").and_then(|v| v.as_u64()).unwrap_or(0) > 20);
+        // The second page reuses the loaded sessions.
+        let (again, events) = crate::operation_log::capture(|| ocr_via_paddle(&fixture, OcrRecLang::Latin));
+        assert_eq!(again.unwrap().full_text, doc.full_text);
+        let done = events.iter().find(|e| e.operation == "ocr.paddle" && e.phase == "completed").unwrap();
+        assert_eq!(done.context.get("cache_hit"), Some(&serde_json::Value::Bool(true)));
+        // Table structure loads SLANet from the same cache.
+        detect_table_structure(&fixture).expect("SLANet runs on a page without a table");
+    }
+
+    #[cfg(feature = "paddle-ocr")]
+    #[test]
+    fn missing_paddle_models_ask_instead_of_downloading() {
+        use crate::ocr_builtin_models as builtin;
+        if builtin::locate(builtin::PADDLE_REC_CH).is_some() { return; }
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/quality/ocr-task.png");
+        let (result, events) = crate::operation_log::capture(|| ocr_via_paddle(&fixture, OcrRecLang::Cjk));
+        let error = format!("{:#}", result.unwrap_err());
+        assert!(error.contains(crate::ocr_models::MODEL_DOWNLOAD_REQUIRED) || error.contains("not installed"), "{error}");
+        let last = events.last().unwrap();
+        assert_eq!((last.operation.as_str(), last.code.as_deref()), ("ocr.paddle", Some("model_missing")));
     }
 
     // ── is_cjk ────────────────────────────────────────────────────────────────

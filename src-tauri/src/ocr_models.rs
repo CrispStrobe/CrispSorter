@@ -151,25 +151,48 @@ pub(crate) fn plan_models(
     }).collect()
 }
 
-/// Models for legacy adapters that are not CrispEmbed registry entries.
-fn legacy_models(engine: &str) -> Vec<PlannedModel> {
-    let model = |name: &str, purpose: &str, installed: bool, note: &str| PlannedModel {
-        name: name.into(), purpose: purpose.into(), engine: engine.into(), size_bytes: None,
-        license: Some("apache-2.0".into()), requires_consent: false, consent_accepted: false,
-        downloadable: false, installed, managed: false, note: Some(note.into()),
-    };
-    match engine {
-        "ocrs" => vec![model("ocrs-models", "text detection and recognition",
-            crate::extractors::ocr_ocrs::is_ocrs_available(),
-            "Place text-detection.rten and text-recognition.rten in the ocrs model folder (CRISPSORTER_OCRS_MODEL_DIR).")],
-        "paddle" => vec![model("paddleocr", "text detection and recognition", true,
-            "The PaddleOCR engine fetches its own weights (about 60 MB) on first use; they are not managed here.")],
-        _ => Vec::new(),
+/// Pinned non-registry models (PaddleOCR, ocrs) are managed on desktop; the
+/// mobile profile keeps them out of the gate (its private store is registry
+/// only), so they are listed but never block there.
+fn builtins_managed() -> bool { !crate::model_provisioning::enabled() }
+
+/// The planned entry of a pinned non-registry model.
+pub(crate) fn planned_builtin(model: &crate::ocr_builtin_models::BuiltinModel, installed: bool) -> PlannedModel {
+    PlannedModel {
+        name: model.name.into(), purpose: model.purpose.into(), engine: model.engine.into(),
+        size_bytes: Some(model.size()), license: Some(model.license.into()),
+        requires_consent: false, consent_accepted: false, downloadable: true, installed,
+        managed: builtins_managed(),
+        note: (!builtins_managed()).then(|| "Install these weights in the engine's model folder on this device.".to_owned()),
     }
 }
 
+/// Models of engines outside the CrispEmbed registry (PaddleOCR, ocrs).
+fn builtin_requirements(config: &OcrPipelineConfig, extras: &[String]) -> Vec<ModelRequirement> {
+    use crate::ocr_builtin_models as builtin;
+    let requirement = |name: &str| {
+        let model = builtin::find(name).expect("builtin model name");
+        ModelRequirement { name: model.name.into(), purpose: model.purpose, engine: model.engine.into() }
+    };
+    let mut list = Vec::new();
+    match config.engine.as_deref().unwrap_or("auto") {
+        "ocrs" => { list.push(requirement(builtin::OCRS_DET)); list.push(requirement(builtin::OCRS_REC)); }
+        "paddle" if crate::extractors::ocr_paddle::is_paddle_ocr_available() => {
+            let all = extras.iter().any(|e| e == "paddle_all");
+            let cjk = extras.iter().any(|e| e == "paddle_cjk")
+                || crate::extractors::ocr_policy::paddle_language(config, crate::extractors::OcrRecLang::Latin) == crate::extractors::OcrRecLang::Cjk;
+            list.push(requirement(builtin::PADDLE_DET));
+            if all { list.push(requirement(builtin::PADDLE_REC_EN)); list.push(requirement(builtin::PADDLE_REC_CH)); }
+            else { list.push(requirement(builtin::paddle_recognizer(cjk))); }
+            if all || extras.iter().any(|e| e == "paddle_tables") { list.push(requirement(builtin::PADDLE_SLANET)); }
+        }
+        _ => {}
+    }
+    list
+}
+
 /// Every model a resolved OCR configuration needs, plus explicit extras
-/// (`kie`, `math`) for specialist tools.
+/// (`kie`, `math`, `layout`) for specialist tools.
 pub fn requirements(config: &OcrPipelineConfig, extras: &[String]) -> Vec<ModelRequirement> {
     #[cfg(feature = "crispembed")]
     let mut list = crate::extractors::ocr_crispembed::required_models(config);
@@ -179,6 +202,8 @@ pub fn requirements(config: &OcrPipelineConfig, extras: &[String]) -> Vec<ModelR
         if !list.iter().any(|m| m.name == extra.name) { list.push(extra); }
     }
     if !cfg!(feature = "crispembed") { list.clear(); }
+    // Not CrispEmbed weights: planned in every build that has the engine.
+    list.extend(builtin_requirements(config, extras));
     list
 }
 
@@ -200,15 +225,22 @@ fn extra_requirements(extras: &[String]) -> Vec<ModelRequirement> {
     list
 }
 
-#[cfg(feature = "crispembed")]
 fn registry_facts(name: &str) -> Option<RegistryFacts> {
+    if let Some(model) = crate::ocr_builtin_models::find(name) {
+        return Some(RegistryFacts { size_bytes: Some(model.size()), license: Some(model.license.into()), downloadable: true, note: None });
+    }
+    native_registry_facts(name)
+}
+
+#[cfg(feature = "crispembed")]
+fn native_registry_facts(name: &str) -> Option<RegistryFacts> {
     let row = crispembed::CrispEmbed::list_models().into_iter().find(|m| m.name == name)?;
     let info = crispembed::CrispEmbed::model_download_info(name).ok().flatten();
     let pinned = |file: &crispembed::ModelDownloadFile| !file.url.is_empty()
         && file.sha256.as_deref().is_some_and(|sha| sha.len() == 64);
     let (downloadable, note) = match &info {
         Some(info) if pinned(&info.primary) && info.companions.iter().all(pinned) => (true, None),
-        Some(info) if info.primary.url.is_empty() => (false, Some("No download is registered for this model. Place its GGUF file in the model folder, or choose another engine.".to_owned())),
+        Some(info) if info.primary.url.is_empty() => (false, Some(no_download_note(name))),
         Some(_) => (false, Some("No checksum pin is registered for this model, so it cannot be downloaded safely.".to_owned())),
         None => (false, None),
     };
@@ -219,9 +251,20 @@ fn registry_facts(name: &str) -> Option<RegistryFacts> {
     })
 }
 #[cfg(not(feature = "crispembed"))]
-fn registry_facts(_name: &str) -> Option<RegistryFacts> { None }
+fn native_registry_facts(_name: &str) -> Option<RegistryFacts> { None }
+
+/// Why a registered model cannot be downloaded, in words the dialog shows.
+fn no_download_note(name: &str) -> String {
+    if name.starts_with("easyocr-") {
+        // No published GGUF exists (checked: CrispEmbed registry and the
+        // `cstr/` Hugging Face repositories, 2026-11-12).
+        return "EasyOCR's recognizer is a local conversion with no published download. Place easyocr-english-g2-f16.gguf in the model folder, or choose PP-OCRv6 or Tesseract.".into();
+    }
+    "No download is registered for this model. Place its GGUF file in the model folder, or choose another engine.".into()
+}
 
 pub fn is_installed(name: &str) -> bool {
+    if crate::ocr_builtin_models::is_builtin(name) { return crate::ocr_builtin_models::locate(name).is_some(); }
     #[cfg(feature = "ocr-mobile")]
     { crate::model_provisioning::is_installed(name) }
     #[cfg(all(feature = "crispembed", not(feature = "ocr-mobile")))]
@@ -251,11 +294,14 @@ fn summarize(engine: String, models: Vec<PlannedModel>) -> ModelPlan {
     let missing: Vec<&PlannedModel> = models.iter().filter(|m| needs_download(m)).collect();
     let missing_bytes = missing.iter().filter_map(|m| m.size_bytes).sum();
     let missing_names = missing.iter().map(|m| m.name.clone()).collect();
-    ModelPlan {
+    let plan = ModelPlan {
         engine, missing: missing_names, missing_bytes,
         free_bytes: free_bytes(&crate::model_cache::dir()),
         offline: crate::model_cache::offline(), models,
-    }
+    };
+    let log = OperationLog::start("models.plan", json!({"engine": plan.engine}));
+    log.succeed(json!({"models": plan.models.len(), "pending": plan.missing.len(), "bytes": plan.missing_bytes}));
+    plan
 }
 
 fn needs_download(model: &PlannedModel) -> bool { model.managed && model.downloadable && !model.installed }
@@ -264,7 +310,9 @@ fn needs_download(model: &PlannedModel) -> bool { model.managed && model.downloa
 pub fn plan(config: &OcrPipelineConfig, extras: &[String]) -> ModelPlan {
     let engine = config.engine.clone().unwrap_or_else(|| "auto".into());
     let mut models = plan_models(&requirements(config, extras), &registry_facts, &is_installed);
-    models.extend(legacy_models(&engine));
+    for model in &mut models {
+        if crate::ocr_builtin_models::is_builtin(&model.name) { model.managed = builtins_managed(); }
+    }
     summarize(engine, models)
 }
 
@@ -307,7 +355,7 @@ pub struct InstallProgress {
     pub count: usize,
     pub downloaded: u64,
     pub total: Option<u64>,
-    /// checking | downloading | verified | complete | failed | cancelled
+    /// checking | waiting | downloading | verified | complete | failed | cancelled
     pub phase: &'static str,
     pub message: Option<String>,
 }
@@ -317,7 +365,10 @@ pub(crate) struct Artifact {
     pub filename: String,
     pub url: String,
     pub sha256: String,
+    /// Committed last: its presence marks the model installed.
     pub primary: bool,
+    /// Check the GGUF magic (CrispEmbed weights); ONNX/text files rely on SHA-256.
+    pub gguf: bool,
 }
 
 /// One HTTP(S) response body, opened at a byte offset.
@@ -375,6 +426,13 @@ pub(crate) fn download_artifact(
     fetch: &dyn Fetch, dir: &Path, file: &Artifact, cancel: &AtomicBool,
     progress: &mut dyn FnMut(u64, Option<u64>),
 ) -> Result<u64, String> {
+    download_artifact_logged(fetch, dir, file, cancel, progress, None)
+}
+
+fn download_artifact_logged(
+    fetch: &dyn Fetch, dir: &Path, file: &Artifact, cancel: &AtomicBool,
+    progress: &mut dyn FnMut(u64, Option<u64>), log: Option<&OperationLog>,
+) -> Result<u64, String> {
     validate_artifact(file)?;
     let part = part_path(dir, file);
     let mut offset = match part.symlink_metadata() {
@@ -392,12 +450,16 @@ pub(crate) fn download_artifact(
         if offset > 0 && format!("{:x}", hasher.clone().finalize()) == file.sha256.to_ascii_lowercase() {
             already_complete = true;
         } else {
+            if let Some(log) = log { log.warn("resume_restarted", json!({"bytes": offset})); }
             offset = 0; hasher = Sha256::new();
             response = fetch.open(&file.url, 0)?;
         }
     } else if offset > 0 && !response.resumed {
         // The server ignored the range: it is sending the whole file.
+        if let Some(log) = log { log.warn("resume_restarted", json!({"bytes": offset})); }
         offset = 0; hasher = Sha256::new();
+    } else if offset > 0 {
+        if let Some(log) = log { log.step("resuming", json!({"bytes": offset})); }
     }
     if response.total.is_some_and(|total| total == 0 || total > MAX_MODEL_BYTES) {
         return Err(format!("{} is empty or larger than the 16 GiB download limit.", file.filename));
@@ -437,7 +499,7 @@ pub(crate) fn download_artifact(
         drop(output); let _ = std::fs::remove_file(&part);
         return Err(format!("SHA-256 verification failed for {}. The download was discarded; retry, or report the registry mismatch.", file.filename));
     }
-    if file.primary {
+    if file.primary && file.gguf {
         let mut magic = [0u8; 4];
         let ok = std::fs::File::open(&part).and_then(|mut f| f.read_exact(&mut magic)).is_ok() && &magic == b"GGUF";
         if !ok { drop(output); let _ = std::fs::remove_file(&part); return Err(format!("{} is not a GGUF model.", file.filename)); }
@@ -463,6 +525,31 @@ fn model_lock(name: &str) -> Arc<Mutex<()>> {
     locks.entry(name.to_owned()).or_default().clone()
 }
 
+/// How often a process waiting for another process's download re-checks.
+const LOCK_POLL: Duration = Duration::from_millis(250);
+
+/// Cross-process lock on one model's files: `<primary>.lock` next to the
+/// target, so the app and the CLI never write the same `.part`. The lock is
+/// released when the returned file is dropped (or the process dies). While
+/// another process holds it, this one waits (cancellable) and is told so.
+fn lock_model_files(dir: &Path, primary: &Artifact, cancel: &AtomicBool, waiting: &mut dyn FnMut()) -> Result<std::fs::File, String> {
+    let file = std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true)
+        .open(dir.join(format!("{}.lock", primary.filename)))
+        .map_err(|e| format!("Open the model download lock: {e}"))?;
+    let mut announced = false;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(std::fs::TryLockError::WouldBlock) => {
+                if !announced { waiting(); announced = true; }
+                if cancel.load(Ordering::SeqCst) { return Err(CANCELLED.into()); }
+                std::thread::sleep(LOCK_POLL);
+            }
+            Err(std::fs::TryLockError::Error(error)) => return Err(format!("Lock the model download: {error}")),
+        }
+    }
+}
+
 fn cancels() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
     static CANCELS: OnceLock<Mutex<HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
     CANCELS.get_or_init(Default::default)
@@ -471,7 +558,10 @@ fn cancels() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
 /// Request cancellation of an install. `true` when the request was running.
 pub fn cancel(request_id: &str) -> bool {
     let cancels = cancels().lock().unwrap_or_else(|e| e.into_inner());
-    cancels.get(request_id).map(|flag| flag.store(true, Ordering::SeqCst)).is_some()
+    let found = cancels.get(request_id).map(|flag| flag.store(true, Ordering::SeqCst)).is_some();
+    let log = OperationLog::start("models.cancel", json!({}));
+    if found { log.succeed(json!({"accepted": true})); } else { log.succeed(json!({"accepted": false})); }
+    found
 }
 
 /// A model to install: its exact name, registry estimate and artifacts
@@ -496,14 +586,16 @@ fn remaining_bytes(dir: &Path, items: &[InstallItem]) -> u64 {
 }
 
 /// Core installer, independent of the registry and the network for tests.
+/// Every step is recorded on `log` with fixed codes and counts only.
 pub(crate) fn install_with(
     fetch: &dyn Fetch, dir: &Path, items: &[InstallItem], cancel: &AtomicBool,
-    free: Option<u64>, request_id: Option<&str>, emit: &dyn Fn(InstallProgress),
+    free: Option<u64>, request_id: Option<&str>, emit: &dyn Fn(InstallProgress), log: &OperationLog,
 ) -> Result<Vec<PathBuf>, String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("Create the model folder: {e}"))?;
     let needed = remaining_bytes(dir, items);
     if let Some(free) = free {
         if needed.saturating_add(DISK_MARGIN) > free {
+            log.warn("insufficient_space", json!({"bytes": needed}));
             return Err(format!("Not enough disk space for the OCR models: {} MB needed, {} MB free. Free some space and retry.",
                 needed.div_ceil(1_000_000), free / 1_000_000));
         }
@@ -511,17 +603,26 @@ pub(crate) fn install_with(
     let count = items.len();
     let mut installed = Vec::new();
     for (index, item) in items.iter().enumerate() {
-        let primary = item.files.first().ok_or("The model registry declares no file.")?;
+        let primary = item.files.iter().find(|f| f.primary).or(item.files.first()).ok_or("The model registry declares no file.")?;
         let event = |phase: &'static str, filename: &str, downloaded: u64, total: Option<u64>, message: Option<String>| emit(InstallProgress {
             request_id: request_id.map(str::to_owned), model: item.name.clone(), filename: filename.to_owned(),
             index, count, downloaded, total, phase, message,
         });
         event("checking", &primary.filename, 0, item.estimate, None);
-        // Concurrent tasks needing the same model wait here, then find it installed.
+        log.step("checking", json!({"count": index + 1, "total": count}));
+        // Same process: concurrent tasks wait here, then find it installed.
         let lock = model_lock(&item.name);
         let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+        // Other processes (app + CLI): a lock file next to the target.
+        let _file_lock = lock_model_files(dir, primary, cancel, &mut || {
+            log.step("lock_wait", json!({"count": index + 1}));
+            event("waiting", &primary.filename, 0, item.estimate, Some("Another CrispSorter process is downloading this model.".into()));
+        }).inspect_err(|error| {
+            if error == CANCELLED { event("cancelled", &primary.filename, 0, None, None); }
+        })?;
         if present(dir, &item.files) {
             event("complete", &primary.filename, item.estimate.unwrap_or(0), item.estimate, None);
+            log.step("already_installed", json!({"count": index + 1}));
             installed.push(dir.join(&primary.filename));
             continue;
         }
@@ -532,17 +633,20 @@ pub(crate) fn install_with(
         for file in order {
             if crate::model_cache::usable_file(&dir.join(&file.filename)) && !file.primary { continue; }
             let mut last = Instant::now().checked_sub(Duration::from_secs(1)).unwrap_or_else(Instant::now);
-            let result = download_artifact(fetch, dir, file, cancel, &mut |downloaded, total| {
+            log.step("downloading", json!({"count": index + 1}));
+            let result = download_artifact_logged(fetch, dir, file, cancel, &mut |downloaded, total| {
                 if last.elapsed() >= Duration::from_millis(150) {
                     event("downloading", &file.filename, downloaded, total, None);
                     last = Instant::now();
                 }
-            });
+            }, Some(log));
             match result {
                 Ok(bytes) => {
                     model_bytes += bytes;
                     event("verified", &file.filename, bytes, Some(bytes), None);
+                    log.step("verified", json!({"bytes": bytes}));
                     commit_artifact(dir, file)?;
+                    log.step("committed", json!({"count": index + 1}));
                 }
                 Err(error) => {
                     let phase = if error == CANCELLED { "cancelled" } else { "failed" };
@@ -552,6 +656,7 @@ pub(crate) fn install_with(
             }
         }
         event("complete", &primary.filename, model_bytes, Some(model_bytes), None);
+        log.step("model_complete", json!({"count": index + 1, "bytes": model_bytes}));
         installed.push(dir.join(&primary.filename));
     }
     Ok(installed)
@@ -592,22 +697,51 @@ impl Fetch for HttpFetch {
     }
 }
 
-#[cfg(all(feature = "crispembed", not(feature = "ocr-mobile")))]
+/// The artifacts of one model: pinned builtins, or the CrispEmbed registry.
 fn install_item(name: &str) -> Result<InstallItem, String> {
     crate::index::license_consent::ensure_registry_download_allowed(name).map_err(|e| e.to_string())?;
+    if let Some(model) = crate::ocr_builtin_models::find(name) {
+        let files: Vec<Artifact> = model.files.iter().enumerate().map(|(i, file)| Artifact {
+            filename: file.filename.into(), url: file.url.into(), sha256: file.sha256.into(), primary: i == 0, gguf: false,
+        }).collect();
+        for file in &files { validate_artifact(file)?; }
+        return Ok(InstallItem { name: name.to_owned(), estimate: Some(model.size()), files });
+    }
+    registry_install_item(name)
+}
+
+#[cfg(feature = "crispembed")]
+fn registry_install_item(name: &str) -> Result<InstallItem, String> {
     let info = crispembed::CrispEmbed::model_download_info(name)?
         .ok_or_else(|| format!("'{name}' is not a registered model name."))?;
-    let artifact = |file: crispembed::ModelDownloadFile, primary| Artifact {
-        filename: file.filename, url: file.url, sha256: file.sha256.unwrap_or_default().to_ascii_lowercase(), primary,
+    let artifact = |file: crispembed::ModelDownloadFile, primary: bool| Artifact {
+        filename: file.filename, url: file.url, sha256: file.sha256.unwrap_or_default().to_ascii_lowercase(), primary, gguf: true,
     };
     let mut files = vec![artifact(info.primary, true)];
     files.extend(info.companions.into_iter().map(|file| artifact(file, false)));
+    if files.iter().any(|f| f.url.is_empty()) { return Err(no_download_note(name)); }
     for file in &files { validate_artifact(file)?; }
     Ok(InstallItem { name: name.to_owned(), estimate: registry_facts(name).and_then(|f| f.size_bytes), files })
 }
+#[cfg(not(feature = "crispembed"))]
+fn registry_install_item(name: &str) -> Result<InstallItem, String> {
+    Err(format!("'{name}' needs a build with CrispEmbed."))
+}
 
-/// Install registry models explicitly (after the user agreed). Already
-/// installed models are skipped. Emits [`InstallProgress`] through `emit`.
+/// Stable failure code of an installer error (logs carry codes, not text).
+pub(crate) fn failure_code(error: &str) -> &'static str {
+    if error == CANCELLED { "cancelled" }
+    else if error.starts_with("Not enough disk space") { "insufficient_space" }
+    else if error.contains("SHA-256 verification") { "checksum_mismatch" }
+    else if error.starts_with("Offline mode") { "offline" }
+    else if error.contains("licen") { "consent_required" }
+    else if error.contains("not a GGUF") { "format_mismatch" }
+    else if error.contains("interrupted") || error.contains("incomplete") { "interrupted" }
+    else { "download_failed" }
+}
+
+/// Install models explicitly (after the user agreed). Already installed
+/// models are skipped. Emits [`InstallProgress`] through `emit`.
 pub fn install_models(names: &[String], request_id: Option<&str>, emit: &(dyn Fn(InstallProgress) + Sync)) -> Result<Vec<String>, String> {
     let log = OperationLog::start("models.download", json!({"models": names.len()}));
     let flag = Arc::new(AtomicBool::new(false));
@@ -616,16 +750,17 @@ pub fn install_models(names: &[String], request_id: Option<&str>, emit: &(dyn Fn
     }
     let result = install_models_inner(names, request_id, &flag, emit, &log);
     if let Some(id) = request_id { cancels().lock().unwrap_or_else(|e| e.into_inner()).remove(id); }
-    match &result {
-        Ok(paths) => log.succeed(json!({"models": paths.len()})),
-        Err(error) if error == CANCELLED => log.cancel(),
-        Err(error) if error.starts_with("Not enough disk space") => log.fail("insufficient_space"),
-        Err(error) if error.contains("SHA-256") => log.fail("checksum_mismatch"),
-        Err(error) if error.contains("Offline mode") => log.fail("offline"),
-        Err(error) if error.contains("licen") => log.fail("consent_required"),
-        Err(_) => log.fail("download_failed"),
-    }
+    finish_install(&log, &result);
     result
+}
+
+/// The terminal receipt of an install: completed, cancelled, or a fixed code.
+fn finish_install<T: AsRef<[U]>, U>(log: &OperationLog, result: &Result<T, String>) {
+    match result {
+        Ok(paths) => log.succeed(json!({"models": paths.as_ref().len()})),
+        Err(error) if error == CANCELLED => log.cancel(),
+        Err(error) => log.fail(failure_code(error)),
+    }
 }
 
 fn install_models_inner(
@@ -647,62 +782,68 @@ fn install_models_inner(
         }
         return Ok(paths);
     }
-    #[cfg(all(feature = "crispembed", not(feature = "ocr-mobile")))]
+    #[cfg(not(feature = "ocr-mobile"))]
     {
         let dir = crate::model_cache::dir();
         let mut items = Vec::new();
         for name in names {
             if is_installed(name) {
-                let primary = crate::model_cache::locate_registry(name).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
-                emit(InstallProgress { request_id: request_id.map(str::to_owned), model: name.clone(), filename: primary,
+                emit(InstallProgress { request_id: request_id.map(str::to_owned), model: name.clone(), filename: String::new(),
                     index: 0, count: names.len(), downloaded: 0, total: None, phase: "complete", message: None });
                 continue;
             }
             items.push(install_item(name)?);
         }
+        log.step("planned", json!({"models": items.len(), "bytes": remaining_bytes(&dir, &items)}));
         if items.is_empty() { return Ok(Vec::new()); }
         if crate::model_cache::offline() {
-            return Err(format!("Offline mode is enabled and {} model(s) are not installed: {}. Turn off offline mode, or copy the GGUF files into the model folder.",
+            return Err(format!("Offline mode is enabled and {} model(s) are not installed: {}. Turn off offline mode, or copy the model files into the model folder.",
                 items.len(), items.iter().map(|i| i.name.as_str()).collect::<Vec<_>>().join(", ")));
         }
-        if let Some(problem) = crate::extractors::ocr_crispembed::cache_problem() { return Err(problem); }
-        log.step("downloading", json!({"models": items.len(), "bytes": remaining_bytes(&dir, &items)}));
+        #[cfg(feature = "crispembed")]
+        {
+            if let Some(problem) = crate::extractors::ocr_crispembed::cache_problem() { return Err(problem); }
+        }
         let fetch = HttpFetch::new()?;
-        let paths = install_with(&fetch, &dir, &items, flag, free_bytes(&dir), request_id, emit)?;
-        return Ok(paths.into_iter().map(|p| p.to_string_lossy().into_owned()).collect());
-    }
-    #[cfg(not(feature = "crispembed"))]
-    {
-        let _ = (request_id, flag, emit, log);
-        Err("OCR model downloads are unavailable in this build.".into())
+        let paths = install_with(&fetch, &dir, &items, flag, free_bytes(&dir), request_id, emit, log)?;
+        Ok(paths.into_iter().map(|p| p.to_string_lossy().into_owned()).collect())
     }
 }
 
-/// Remove an installed registry model from every cache directory.
+/// Remove an installed model from every cache directory.
 pub fn remove_model(name: &str) -> Result<u64, String> {
+    let log = OperationLog::start("models.remove", json!({"models": 1}));
+    let result = remove_model_inner(name);
+    match &result { Ok(freed) => log.succeed(json!({"bytes": freed})), Err(_) => log.fail("remove_refused") }
+    result
+}
+
+fn remove_model_inner(name: &str) -> Result<u64, String> {
     if !crate::index::license_consent::is_registry_name(name) { return Err("Only registry models can be removed here.".into()); }
-    #[cfg(all(feature = "crispembed", not(feature = "ocr-mobile")))]
-    {
-        let log = OperationLog::start("models.remove", json!({"models": 1}));
-        let files = crate::model_cache::registry_files(name).ok_or("This name is not in the model registry.")?;
-        let lock = model_lock(name);
-        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-        let mut freed = 0u64;
-        for dir in crate::model_cache::search_dirs() {
-            for file in &files {
-                for path in [dir.join(file), dir.join(format!("{file}.part"))] {
-                    if let Ok(meta) = path.symlink_metadata() {
-                        if meta.is_file() && std::fs::remove_file(&path).is_ok() { freed += meta.len(); }
-                    }
+    if crate::model_provisioning::enabled() { return Err("Use model storage to remove models in this build.".into()); }
+    let files: Vec<String> = match crate::ocr_builtin_models::find(name) {
+        Some(model) => model.files.iter().map(|f| f.filename.to_owned()).collect(),
+        None => registry_file_names(name).ok_or("This name is not in the model registry.")?,
+    };
+    let lock = model_lock(name);
+    let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let mut freed = 0u64;
+    for dir in crate::model_cache::search_dirs() {
+        for file in &files {
+            for path in [dir.join(file), dir.join(format!("{file}.part"))] {
+                if let Ok(meta) = path.symlink_metadata() {
+                    if meta.is_file() && std::fs::remove_file(&path).is_ok() { freed += meta.len(); }
                 }
             }
         }
-        log.succeed(json!({"bytes": freed}));
-        Ok(freed)
     }
-    #[cfg(not(all(feature = "crispembed", not(feature = "ocr-mobile"))))]
-    { Err("Use model storage to remove models in this build.".into()) }
+    Ok(freed)
 }
+
+#[cfg(feature = "crispembed")]
+fn registry_file_names(name: &str) -> Option<Vec<String>> { crate::model_cache::registry_files(name) }
+#[cfg(not(feature = "crispembed"))]
+fn registry_file_names(_name: &str) -> Option<Vec<String>> { None }
 
 // ── Tauri commands ───────────────────────────────────────────────────────────
 
@@ -743,7 +884,10 @@ pub(crate) fn resolve_request(saved: crate::extractors::ExtractOptions, request:
     };
     options = crate::ocr_extract::extraction_options(options, overrides, "")?;
     let (config, _) = crate::extractors::ocr_policy::resolve_extraction_config(&options)?;
-    Ok((config, request.extras))
+    let mut extras = request.extras;
+    // PaddleOCR's script choice lives in the extraction options, not the config.
+    if options.ocr_rec_lang == crate::extractors::OcrRecLang::Cjk { extras.push("paddle_cjk".into()); }
+    Ok((config, extras))
 }
 
 #[tauri::command]
@@ -756,12 +900,8 @@ pub async fn ocr_models_required(state: tauri::State<'_, crate::AppState>, reque
     }
     let saved = state.bg_ingest.lock().await.ocr_options();
     let (config, extras) = resolve_request(saved, request)?;
-    tokio::task::spawn_blocking(move || {
-        let log = OperationLog::start("models.plan", json!({"engine": config.engine}));
-        let plan = plan(&config, &extras);
-        log.succeed(json!({"models": plan.models.len(), "pending": plan.missing.len(), "bytes": plan.missing_bytes}));
-        plan
-    }).await.map_err(|e| format!("Model plan: {e}"))
+    // `plan` records its own `models.plan` receipt.
+    tokio::task::spawn_blocking(move || plan(&config, &extras)).await.map_err(|e| format!("Model plan: {e}"))
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -779,7 +919,9 @@ pub async fn ocr_models_catalog() -> Result<Vec<EngineModels>, String> {
         for engine in EMBEDDED_ENGINES.iter().chain(LEGACY_ENGINES.iter()) {
             if ["unified", "unlimited_ocr2", "minicpm_ocr", "system_tesseract"].contains(engine) { continue; }
             let Ok((config, _)) = crate::extractors::ocr_policy::recognition_config(OcrPipelineConfig::default(), Some(*engine), None) else { continue };
-            let plan = plan(&config, &[]);
+            // Settings offers every PaddleOCR file: both scripts and tables.
+            let extras: Vec<String> = if *engine == "paddle" { vec!["paddle_all".into()] } else { Vec::new() };
+            let plan = plan(&config, &extras);
             if !plan.models.is_empty() { out.push(EngineModels { engine: (*engine).to_owned(), models: plan.models }); }
         }
         out
@@ -844,6 +986,7 @@ fn cli_progress(update: InstallProgress) {
         "complete" => eprintln!("\r  [{}/{}] {} ready                              ", update.index + 1, update.count, update.model),
         "failed" => eprintln!("\r  [{}/{}] {} failed: {}", update.index + 1, update.count, update.model, update.message.unwrap_or_default()),
         "cancelled" => eprintln!("\r  [{}/{}] {} cancelled", update.index + 1, update.count, update.model),
+        "waiting" => eprintln!("\r  [{}/{}] {} is being downloaded by another CrispSorter process; waiting", update.index + 1, update.count, update.model),
         _ => {}
     }
 }
@@ -863,29 +1006,46 @@ pub fn cli_ensure_extras(extras: &[String]) -> Result<(), String> {
 fn cli_ensure_plan(plan: ModelPlan) -> Result<(), String> {
     use std::io::IsTerminal;
     if plan.missing.is_empty() { return Ok(()); }
+    let log = OperationLog::start("models.cli_check", json!({"surface": "cli", "models": plan.missing.len(), "bytes": plan.missing_bytes}));
     eprintln!("OCR with '{}' needs {} model(s) that are not installed ({}):", plan.engine, plan.missing.len(), human(plan.missing_bytes));
     eprint!("{}", describe_plan(&plan));
+    let decision = cli_decision(&plan, CLI_ASSUME_YES.load(Ordering::SeqCst),
+        std::io::stdin().is_terminal() && std::io::stderr().is_terminal(), &mut || {
+            eprint!("Download them now? [y/N] ");
+            let mut answer = String::new();
+            std::io::stdin().read_line(&mut answer).ok()?;
+            Some(matches!(answer.trim(), "y" | "Y" | "yes" | "Yes"))
+        });
+    match decision {
+        Ok(()) => {
+            log.step("downloading", json!({"models": plan.missing.len()}));
+            let result = install_models(&plan.missing, None, &cli_progress).map(|_| ());
+            match &result { Ok(()) => log.succeed(json!({"models": plan.missing.len()})), Err(error) => log.fail(failure_code(error)) }
+            result
+        }
+        Err((code, message)) => { log.fail(code); Err(message) }
+    }
+}
+
+/// The CLI's answer to missing models, with a fixed log code on refusal.
+fn cli_decision(plan: &ModelPlan, assume_yes: bool, interactive: bool, ask: &mut dyn FnMut() -> Option<bool>) -> Result<(), (&'static str, String)> {
     let list = plan.missing.join(", ");
     if plan.offline {
-        return Err(format!("offline mode: missing OCR models {list}. Install them first with `crispsorter models pull` while online."));
+        return Err(("offline", format!("offline mode: missing OCR models {list}. Install them first with `crispsorter models pull` while online.")));
     }
     let unconsented: Vec<&str> = plan.models.iter()
         .filter(|m| needs_download(m) && m.requires_consent && !m.consent_accepted).map(|m| m.name.as_str()).collect();
     if !unconsented.is_empty() {
-        return Err(format!("{} require(s) licence consent; pass --accept-license to download.", unconsented.join(", ")));
+        return Err(("consent_required", format!("{} require(s) licence consent; pass --accept-license to download.", unconsented.join(", "))));
     }
-    if !CLI_ASSUME_YES.load(Ordering::SeqCst) {
-        if !(std::io::stdin().is_terminal() && std::io::stderr().is_terminal()) {
-            return Err(format!("missing OCR models: {list}. Re-run with --yes (or --download-models), or install them with `crispsorter models pull <engine>`."));
-        }
-        eprint!("Download them now? [y/N] ");
-        let mut answer = String::new();
-        std::io::stdin().read_line(&mut answer).map_err(|e| format!("read answer: {e}"))?;
-        if !matches!(answer.trim(), "y" | "Y" | "yes" | "Yes") {
-            return Err(format!("download declined; missing OCR models: {list}."));
-        }
+    if assume_yes { return Ok(()); }
+    if !interactive {
+        return Err(("confirmation_required", format!("missing OCR models: {list}. Re-run with --yes (or --download-models), or install them with `crispsorter models pull <engine>`.")));
     }
-    install_models(&plan.missing, None, &cli_progress).map(|_| ())
+    match ask() {
+        Some(true) => Ok(()),
+        _ => Err(("declined", format!("download declined; missing OCR models: {list}."))),
+    }
 }
 
 /// `crispsorter models pull <engine> [--language L]`.
@@ -1086,8 +1246,10 @@ mod tests {
 
     fn artifact(bytes: &[u8]) -> Artifact {
         Artifact { filename: "ocr-test.gguf".into(), url: "https://example.invalid/ocr-test.gguf".into(),
-            sha256: format!("{:x}", Sha256::digest(bytes)), primary: true }
+            sha256: format!("{:x}", Sha256::digest(bytes)), primary: true, gguf: true }
     }
+
+    fn quiet() -> OperationLog { OperationLog::start("models.download", json!({})) }
 
     fn payload() -> Vec<u8> { let mut b = b"GGUF".to_vec(); b.extend((0..400u32).map(|i| (i % 251) as u8)); b }
 
@@ -1176,7 +1338,7 @@ mod tests {
         let items = [InstallItem { name: "installer-test".into(), estimate: Some(800), files: vec![artifact(&bytes), companion] }];
         let events = Mutex::new(Vec::new());
         let paths = install_with(&fetch, dir.path(), &items, &AtomicBool::new(false), None, Some("req"),
-            &|update| events.lock().unwrap().push((update.phase, update.filename))).unwrap();
+            &|update| events.lock().unwrap().push((update.phase, update.filename)), &quiet()).unwrap();
         assert_eq!(paths, [dir.path().join("ocr-test.gguf")]);
         let events = events.into_inner().unwrap();
         let verified: Vec<&str> = events.iter().filter(|e| e.0 == "verified").map(|e| e.1.as_str()).collect();
@@ -1185,7 +1347,7 @@ mod tests {
         assert_eq!(events.last().unwrap().0, "complete");
         // A second request finds the model installed and downloads nothing.
         let opens = fetch.opens.lock().unwrap().len();
-        install_with(&fetch, dir.path(), &items, &AtomicBool::new(false), None, None, &|_| {}).unwrap();
+        install_with(&fetch, dir.path(), &items, &AtomicBool::new(false), None, None, &|_| {}, &quiet()).unwrap();
         assert_eq!(fetch.opens.lock().unwrap().len(), opens);
     }
 
@@ -1194,7 +1356,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let bytes = payload();
         let items = [InstallItem { name: "disk-test".into(), estimate: Some(5_000_000_000), files: vec![artifact(&bytes)] }];
-        let error = install_with(&MemoryFetch::new(&bytes), dir.path(), &items, &AtomicBool::new(false), Some(1_000_000_000), None, &|_| {}).unwrap_err();
+        let error = install_with(&MemoryFetch::new(&bytes), dir.path(), &items, &AtomicBool::new(false), Some(1_000_000_000), None, &|_| {}, &quiet()).unwrap_err();
         assert!(error.starts_with("Not enough disk space"), "{error}");
     }
 
@@ -1206,7 +1368,7 @@ mod tests {
         let items = [InstallItem { name: "shared-test".into(), estimate: None, files: vec![artifact(&bytes)] }];
         std::thread::scope(|scope| {
             for _ in 0..4 {
-                scope.spawn(|| install_with(&fetch, dir.path(), &items, &AtomicBool::new(false), None, None, &|_| {}).unwrap());
+                scope.spawn(|| install_with(&fetch, dir.path(), &items, &AtomicBool::new(false), None, None, &|_| {}, &quiet()).unwrap());
             }
         });
         assert_eq!(fetch.opens.lock().unwrap().len(), 1, "only the first request downloads");
@@ -1242,4 +1404,245 @@ mod tests {
         let unknown = reqwest::header::HeaderValue::from_static("bytes 100-199/*");
         assert_eq!(content_range_total(Some(&unknown)), None);
     }
+
+    #[test]
+    fn a_download_held_by_another_process_waits_then_finds_the_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = payload();
+        let fetch = MemoryFetch::new(&bytes);
+        let file = artifact(&bytes);
+        let items = [InstallItem { name: "lock-test".into(), estimate: None, files: vec![file.clone()] }];
+        // The "other process": a separate open file description on the lock.
+        let other = std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true)
+            .open(dir.path().join("ocr-test.gguf.lock")).unwrap();
+        other.try_lock().unwrap();
+        let events = Mutex::new(Vec::new());
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| install_with(&fetch, dir.path(), &items, &AtomicBool::new(false), None, None,
+                &|update| events.lock().unwrap().push(update.phase), &quiet()));
+            // It announces the wait and does not touch the network meanwhile.
+            for _ in 0..200 {
+                if events.lock().unwrap().contains(&"waiting") { break; }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(events.lock().unwrap().contains(&"waiting"));
+            assert!(fetch.opens.lock().unwrap().is_empty());
+            // The other process commits the model, then releases its lock.
+            std::fs::write(dir.path().join("ocr-test.gguf"), &bytes).unwrap();
+            drop(other);
+            worker.join().unwrap().unwrap();
+        });
+        assert!(fetch.opens.lock().unwrap().is_empty(), "the committed file is reused, not downloaded again");
+        assert_eq!(events.into_inner().unwrap().last(), Some(&"complete"));
+    }
+
+    #[test]
+    fn waiting_for_another_process_can_be_cancelled() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = payload();
+        let items = [InstallItem { name: "lock-cancel-test".into(), estimate: None, files: vec![artifact(&bytes)] }];
+        let other = std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true)
+            .open(dir.path().join("ocr-test.gguf.lock")).unwrap();
+        other.try_lock().unwrap();
+        let cancel = AtomicBool::new(true);
+        let error = install_with(&MemoryFetch::new(&bytes), dir.path(), &items, &cancel, None, None, &|_| {}, &quiet()).unwrap_err();
+        assert_eq!(error, CANCELLED);
+    }
+
+    fn receipts(events: &[crate::operation_log::OperationEvent]) -> Vec<(String, String, Option<String>, Option<String>)> {
+        events.iter().map(|e| (e.operation.clone(), e.phase.clone(), e.stage.clone(), e.code.clone())).collect()
+    }
+
+    fn assert_no_leaks(events: &[crate::operation_log::OperationEvent], secrets: &[&str]) {
+        let text = serde_json::to_string(events).unwrap();
+        for secret in secrets { assert!(!text.contains(secret), "log leaked {secret}: {text}"); }
+        assert!(!text.contains("https://") && !text.contains("example.invalid"), "log leaked a URL: {text}");
+    }
+
+    #[test]
+    fn install_receipts_cover_every_step_without_paths_or_urls() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = payload();
+        let fetch = MemoryFetch::new(&bytes);
+        *fetch.cut_at.lock().unwrap() = Some(100);
+        let items = [InstallItem { name: "receipt-test".into(), estimate: Some(400), files: vec![artifact(&bytes)] }];
+        // Interrupted, then resumed from the partial file.
+        let (first, events) = crate::operation_log::capture(|| {
+            let log = quiet();
+            let result = install_with(&fetch, dir.path(), &items, &AtomicBool::new(false), None, None, &|_| {}, &log);
+            finish_install(&log, &result);
+            result
+        });
+        assert!(first.is_err());
+        let first_receipts = receipts(&events);
+        assert!(first_receipts.contains(&("models.download".into(), "failed".into(), Some("downloading".into()), Some("interrupted".into()))), "{first_receipts:?}");
+        let (second, events) = crate::operation_log::capture(|| {
+            let log = quiet();
+            let result = install_with(&fetch, dir.path(), &items, &AtomicBool::new(false), None, None, &|_| {}, &log);
+            finish_install(&log, &result);
+            result
+        });
+        second.unwrap();
+        let stages: Vec<Option<String>> = events.iter().map(|e| e.stage.clone()).collect();
+        for stage in ["checking", "downloading", "resuming", "verified", "committed", "model_complete"] {
+            assert!(stages.contains(&Some(stage.into())), "missing {stage}: {stages:?}");
+        }
+        assert_eq!(events.last().map(|e| e.phase.as_str()), Some("completed"));
+        let dir_text = dir.path().to_string_lossy().into_owned();
+        assert_no_leaks(&events, &[&dir_text, "ocr-test.gguf"]);
+    }
+
+    #[test]
+    fn failure_receipts_use_fixed_codes() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = payload();
+        let dir_text = dir.path().to_string_lossy().into_owned();
+        let run = |items: &[InstallItem], cancel: bool, free: Option<u64>| crate::operation_log::capture(|| {
+            let log = quiet();
+            let result = install_with(&MemoryFetch::new(&bytes), dir.path(), items, &AtomicBool::new(cancel), free, None, &|_| {}, &log);
+            finish_install(&log, &result);
+            result
+        });
+        let mut bad = artifact(&bytes);
+        bad.sha256 = format!("{:x}", Sha256::digest(b"other"));
+        let cases: [(Vec<InstallItem>, bool, Option<u64>, &str); 3] = [
+            (vec![InstallItem { name: "sha-receipt".into(), estimate: None, files: vec![bad] }], false, None, "checksum_mismatch"),
+            (vec![InstallItem { name: "space-receipt".into(), estimate: Some(9_000_000_000), files: vec![artifact(&bytes)] }], false, Some(1_000), "insufficient_space"),
+            (vec![InstallItem { name: "cancel-receipt".into(), estimate: None, files: vec![artifact(&bytes)] }], true, None, "cancelled"),
+        ];
+        for (items, cancel, free, code) in cases {
+            let (result, events) = run(&items, cancel, free);
+            assert!(result.is_err());
+            let last = events.last().expect("terminal event");
+            if code == "cancelled" { assert_eq!(last.phase, "cancelled"); }
+            else { assert_eq!((last.phase.as_str(), last.code.as_deref()), ("failed", Some(code))); }
+            assert_no_leaks(&events, &[&dir_text]);
+        }
+        assert_eq!(failure_code("Offline mode is enabled and 1 model(s) are not installed: x."), "offline");
+        assert_eq!(failure_code("Model \"x\" carries a CC licence that must be accepted"), "consent_required");
+    }
+
+    #[test]
+    fn plan_and_remove_receipts_are_recorded() {
+        let (plan, events) = crate::operation_log::capture(|| summarize("tesseract".into(),
+            plan_models(&required_models(&engine("tesseract", Some("de"))), &fake_facts, &|n| n == "dbnet-det")));
+        assert_eq!(plan.missing, ["tesseract-deu"]);
+        let done = events.iter().find(|e| e.operation == "models.plan" && e.phase == "completed").expect("plan receipt");
+        assert_eq!(done.context.get("pending").and_then(|v| v.as_u64()), Some(1));
+        assert_eq!(done.context.get("bytes").and_then(|v| v.as_u64()), Some(976_000));
+        let (removed, events) = crate::operation_log::capture(|| remove_model("../outside.gguf"));
+        assert!(removed.is_err());
+        let last = events.last().unwrap();
+        assert_eq!((last.operation.as_str(), last.phase.as_str(), last.code.as_deref()), ("models.remove", "failed", Some("remove_refused")));
+        assert_no_leaks(&events, &["outside"]);
+    }
+
+    #[test]
+    fn builtin_models_are_planned_for_paddle_and_ocrs() {
+        use crate::ocr_builtin_models as builtin;
+        let ocrs: Vec<String> = builtin_requirements(&engine("ocrs", None), &[]).into_iter().map(|m| m.name).collect();
+        assert_eq!(ocrs, [builtin::OCRS_DET, builtin::OCRS_REC]);
+        let paddle = |language: Option<&str>, extras: &[&str]| -> Vec<String> {
+            let extras: Vec<String> = extras.iter().map(|s| s.to_string()).collect();
+            builtin_requirements(&engine("paddle", language), &extras).into_iter().map(|m| m.name).collect()
+        };
+        if crate::extractors::ocr_paddle::is_paddle_ocr_available() {
+            assert_eq!(paddle(None, &[]), [builtin::PADDLE_DET, builtin::PADDLE_REC_EN]);
+            assert_eq!(paddle(Some("ja"), &[]), [builtin::PADDLE_DET, builtin::PADDLE_REC_CH]);
+            assert_eq!(paddle(None, &["paddle_cjk"]), [builtin::PADDLE_DET, builtin::PADDLE_REC_CH]);
+            assert_eq!(paddle(None, &["paddle_all"]).len(), 4);
+        } else {
+            assert!(paddle(None, &[]).is_empty(), "no PaddleOCR models without the engine");
+        }
+        // Builtins are pinned, downloadable and gate like registry models.
+        let planned = planned_builtin(builtin::find(builtin::OCRS_REC).unwrap(), false);
+        assert_eq!(planned.size_bytes, Some(9_713_177));
+        if builtins_managed() { assert!(gate(&[planned]).unwrap_err().starts_with(MODEL_DOWNLOAD_REQUIRED)); }
+        let item = install_item(builtin::PADDLE_REC_EN).unwrap();
+        assert_eq!(item.files.len(), 2);
+        assert!(item.files[0].primary && !item.files[0].gguf && !item.files[1].primary);
+    }
+
+    #[test]
+    fn onnx_and_text_files_skip_the_gguf_check_but_not_the_checksum() {
+        let dir = tempfile::tempdir().unwrap();
+        let onnx = b"\x08\x07onnx-protobuf".to_vec();
+        let mut file = artifact(&onnx);
+        file.filename = "model.onnx".into();
+        file.gguf = false;
+        download_artifact(&MemoryFetch::new(&onnx), dir.path(), &file, &AtomicBool::new(false), &mut |_, _| {}).unwrap();
+        file.sha256 = format!("{:x}", Sha256::digest(b"other"));
+        let _ = std::fs::remove_file(part_path(dir.path(), &file));
+        assert!(download_artifact(&MemoryFetch::new(&onnx), dir.path(), &file, &AtomicBool::new(false), &mut |_, _| {}).unwrap_err().contains("SHA-256"));
+    }
+
+    /// Live: downloads tesseract-eng + dbnet-det (a few MB) into a temporary
+    /// cache, resumes a deliberately truncated `.part`, verifies the pins and
+    /// recognises the quality fixture. Run alone (it pins the process cache):
+    /// `cargo test --lib --features ... -- --ignored live_model_manager_installs_resumes_and_recognises`
+    #[cfg(all(feature = "crispembed", not(feature = "ocr-mobile")))]
+    #[test]
+    #[ignore = "live: downloads OCR models"]
+    fn live_model_manager_installs_resumes_and_recognises() {
+        let cache = tempfile::tempdir().unwrap();
+        // Before anything resolves the cache: this test owns the process.
+        unsafe { std::env::set_var("CRISPEMBED_CACHE_DIR", cache.path()); }
+        assert_eq!(crate::model_cache::dir(), cache.path(), "run this test on its own");
+        let names = vec!["tesseract-eng".to_string(), "dbnet-det".to_string()];
+        // Truncate a partial download of the detector to prove resume.
+        let det = install_item("dbnet-det").unwrap();
+        let pin = det.files[0].clone();
+        let full = HttpFetch::new().unwrap();
+        let mut head = Vec::new();
+        full.open(&pin.url, 0).unwrap().body.take(4096).read_to_end(&mut head).unwrap();
+        std::fs::write(part_path(cache.path(), &pin), &head).unwrap();
+        let (installed, events) = crate::operation_log::capture(|| install_models(&names, None, &|_| {}));
+        let installed = installed.expect("live install");
+        assert_eq!(installed.len(), 2);
+        assert!(events.iter().any(|e| e.stage.as_deref() == Some("resuming")), "the truncated part was resumed");
+        for name in &names {
+            let item = install_item(name).unwrap();
+            for file in &item.files {
+                let bytes = std::fs::read(cache.path().join(&file.filename)).unwrap();
+                assert_eq!(format!("{:x}", Sha256::digest(&bytes)), file.sha256, "{name} pin");
+            }
+            assert!(is_installed(name));
+        }
+        let config = engine("tesseract", Some("eng"));
+        assert!(plan(&config, &[]).missing.is_empty());
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/quality/ocr-task.png");
+        let mut options = crate::extractors::ExtractOptions::default();
+        options.ocr_pipeline = config;
+        options.try_ocr = true;
+        let doc = crate::extractors::extract_text_from_path_with_opts(&fixture, options).expect("recognition");
+        let text = doc.full_text.to_lowercase();
+        for word in ["cobalt", "warranty", "november", "2031"] {
+            assert!(text.contains(word), "missing {word:?} in {text:?}");
+        }
+    }
+
+
+    #[test]
+    fn cli_decisions_refuse_with_fixed_codes() {
+        let models = plan_models(&required_models(&engine("tesseract", Some("de"))), &fake_facts, &|n| n == "dbnet-det");
+        let base = ModelPlan { engine: "tesseract".into(), missing: vec!["tesseract-deu".into()], missing_bytes: 976_000,
+            free_bytes: None, offline: false, models };
+        fn never() -> Option<bool> { panic!("must not prompt") }
+        assert!(cli_decision(&base, true, false, &mut never).is_ok(), "--yes downloads without asking");
+        let (code, message) = cli_decision(&base, false, false, &mut never).unwrap_err();
+        assert_eq!(code, "confirmation_required");
+        assert!(message.contains("tesseract-deu") && message.contains("--yes"));
+        assert_eq!(cli_decision(&base, false, true, &mut || Some(false)).unwrap_err().0, "declined");
+        assert!(cli_decision(&base, false, true, &mut || Some(true)).is_ok());
+        let offline = ModelPlan { offline: true, ..base.clone() };
+        let (code, message) = cli_decision(&offline, true, true, &mut never).unwrap_err();
+        assert_eq!(code, "offline");
+        assert!(message.contains("tesseract-deu"), "{message}");
+        let got = plan_models(&required_models(&engine("got", None)), &fake_facts, &|_| false);
+        let restricted = ModelPlan { missing: vec!["got-ocr2".into()], models: got, ..base };
+        if !crate::index::license_consent::is_accepted("got-ocr2") {
+            assert_eq!(cli_decision(&restricted, true, true, &mut never).unwrap_err().0, "consent_required");
+        }
+    }
+
 }

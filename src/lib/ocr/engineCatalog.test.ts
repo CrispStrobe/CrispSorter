@@ -39,6 +39,9 @@ describe('native OCR engine choices', () => {
   it('keeps custom-model, experimental and CPU requirements explicit', () => {
     expect(engineRequirement('unified')).toContain('explicit GGUF');
     expect(engineRequirement('minicpm_ocr')).toContain('CRISPEMBED_QWEN35_OCR=1');
+    // No published EasyOCR GGUF exists: say so instead of failing at run time.
+    expect(engineRequirement('easyocr')).toContain('no published model download');
+    expect(engineRequirement('ocrs')).toContain('downloaded after you confirm');
     expect(usesCpuBudget('qwen2vl')).toBe(true);
     expect(usesCpuBudget('tesseract')).toBe(false);
     expect(usesCpuBudget('unified')).toBe(false);
