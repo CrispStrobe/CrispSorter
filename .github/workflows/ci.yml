@@ -913,6 +913,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: CrispStrobe/crisp-cloud-rs
+          # Exact upstream validation source, including the Windows fix and clippy fix.
+          # This differs from the recorded vendored baseline; see VENDORED.md.
+          # Keep this pin in sync with provider-conformance.yml.
+          ref: 33bdc33f64d0a2f1144dceec8ed372d18c12b551
           path: crisp-cloud-rs
 
       - uses: dtolnay/rust-toolchain@stable

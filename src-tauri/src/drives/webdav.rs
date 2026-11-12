@@ -868,11 +868,12 @@ impl WebDavDrive {
     fn ensure_collection(&self, dir: &Path) -> Result<()> {
         let mut acc = std::path::PathBuf::new();
         for comp in dir.components() {
-            let s = comp.as_os_str().to_string_lossy();
-            // Skip the leading "/" component when the path is absolute.
-            if s == "/" || s.is_empty() {
+            // Skip the root (`/` on Unix, `\` plus a drive prefix on
+            // Windows) and `.`: only normal segments become collections.
+            let std::path::Component::Normal(s) = comp else {
                 continue;
-            }
+            };
+            let s = s.to_string_lossy();
             acc.push(s.as_ref());
             let url = self.url_for(&acc);
             let resp = self

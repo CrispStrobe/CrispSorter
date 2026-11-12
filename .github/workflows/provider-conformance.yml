@@ -1,9 +1,9 @@
 name: Dart and Rust provider compatibility
 on:
   push:
-    paths: ['crates/crisp-filen-native/**', 'crates/crisp-internxt-native/**', 'docs/STORAGE_ENGINE_ARCHITECTURE.md', '.github/workflows/provider-conformance.yml']
+    paths: ['crates/crisp-filen-native/**', 'crates/crisp-internxt-native/**', 'src-tauri/src/drives/**', 'docs/STORAGE_ENGINE_ARCHITECTURE.md', '.github/workflows/provider-conformance.yml']
   pull_request:
-    paths: ['crates/crisp-filen-native/**', 'crates/crisp-internxt-native/**', 'docs/STORAGE_ENGINE_ARCHITECTURE.md', '.github/workflows/provider-conformance.yml']
+    paths: ['crates/crisp-filen-native/**', 'crates/crisp-internxt-native/**', 'src-tauri/src/drives/**', 'docs/STORAGE_ENGINE_ARCHITECTURE.md', '.github/workflows/provider-conformance.yml']
   workflow_dispatch:
 concurrency:
   group: provider-conformance-${{ github.ref }}
@@ -17,7 +17,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: CrispStrobe/crisp-cloud-rs
-          ref: 6c1f351dbe0cb9efe2ecf19b009603907bf5cf2e
+          # Keep in sync with ci.yml; vendored baseline is recorded separately.
+          ref: 33bdc33f64d0a2f1144dceec8ed372d18c12b551
           path: _provider_conformance
       - uses: dart-lang/setup-dart@v1
         with:

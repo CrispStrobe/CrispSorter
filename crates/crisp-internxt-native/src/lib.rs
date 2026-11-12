@@ -2960,10 +2960,12 @@ impl InternxtNativeClient {
             modified_at: None,
         };
         for component in path.components() {
-            let component = component.as_os_str().to_string_lossy();
-            if component.is_empty() || component == "." || component == "/" {
+            // Only normal segments name folders: the root is `/` on Unix but
+            // `\` (plus a drive prefix) on Windows.
+            let std::path::Component::Normal(component) = component else {
                 continue;
-            }
+            };
+            let component = component.to_string_lossy();
             if !current.is_dir {
                 return Err(anyhow!("Internxt path traverses through a file"));
             }

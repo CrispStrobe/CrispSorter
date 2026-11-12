@@ -170,9 +170,13 @@ not an assumed outcome of sharing the Rust sources.
 ## Executable Dart / Rust package conformance
 
 `.github/workflows/provider-conformance.yml` runs the shared, pinned
-[provider conformance harness](https://github.com/CrispStrobe/crisp-cloud-rs/tree/6c1f351dbe0cb9efe2ecf19b009603907bf5cf2e/conformance).
+[provider conformance harness](https://github.com/CrispStrobe/crisp-cloud-rs/tree/33bdc33f64d0a2f1144dceec8ed372d18c12b551/conformance).
 It tests this repository’s actual native Filen/Internxt crate sources against
-the retained Dart SDKs, without replacing the Sorter crates.
+the retained Dart SDKs, without replacing the Sorter crates. A focused hosted CPU run
+at Sorter source `8b21ce57` and upstream `121bfa66` passed 131 cases and 363
+cross-decryptions with zero failures and ten reviewed gaps ([receipt](../tests/results/provider-conformance/remote-20261112.json)).
+The merged upstream pin `33bdc33f` has an identical source tree; no new Windows
+or macOS application result is inferred from the CPU run.
 
 The same independent fixtures run through real package APIs and compiled Dart
 CLI probes with software and native AES backends. Checks include password/key

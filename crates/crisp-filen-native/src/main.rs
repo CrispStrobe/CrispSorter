@@ -406,10 +406,11 @@ fn run() -> Result<()> {
             let (client, value) = open(&session)?;
             let mut parent = value.root_folder_uuid.clone();
             for component in remote.components() {
-                let name = component.as_os_str().to_string_lossy();
-                if name.is_empty() || name == "." || name == "/" {
+                // Only normal segments name folders (the root is `\` on Windows).
+                let std::path::Component::Normal(name) = component else {
                     continue;
-                }
+                };
+                let name = name.to_string_lossy();
                 parent = client.create_folder(&parent, &name)?;
             }
         }

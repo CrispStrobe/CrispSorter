@@ -30,6 +30,8 @@ pub mod internxt_native;
 pub mod internxt_native_drive;
 pub(crate) mod oauth;
 pub mod onedrive;
+#[cfg(any(feature = "drive-filen-native", feature = "drive-internxt-native", test))]
+pub(crate) mod provider_client;
 pub(crate) mod secret;
 pub mod tauri_commands;
 pub mod webdav;
