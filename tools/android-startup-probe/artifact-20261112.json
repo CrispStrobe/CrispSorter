@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "repository": "CrispStrobe/CrispSorter",
+  "run_id": 43229064896,
+  "job_id": 131227618898,
+  "application_source": "a34736b237ebc9bdacae652da5e95d494a7c8018",
+  "application_tree": "347f931543dbde68d881deeb10add785ae5f5b97",
+  "artifact_id": 13954173588,
+  "artifact_name": "ocr-mobile-android-x86_64",
+  "artifact_bytes": 154598829,
+  "artifact_sha256": "3a2a28c53a4154f196db8f5b4b80b06a626ad29db5afbd6c066b396de903d3df",
+  "apk_member": "ocr-mobile-app/CrispSorter-ocr.apk",
+  "apk_bytes": 514533255,
+  "apk_sha256": "8f8802077ad4960785eae00bf7e7a688b4a4641ef38dbfdaf81f9a23eab195ec",
+  "build_receipt_member": "ocr-mobile-app/build-receipt.json",
+  "build_receipt_sha256": "a8a36dc71e0a016afcc4288852b95a1406fa3569717eab81f78a56f303559efc",
+  "package": "com.crispstrobe.crispsorter",
+  "abi": "x86_64",
+  "scope": "Retained 2026-11-12 APK startup diagnosis only; no rebuild, full OCR workflow, or physical-device qualification."
+}

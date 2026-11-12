@@ -46,12 +46,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          artifact_id=$(python3 -c 'import json; print(json.load(open("tools/android-startup-probe/artifact.json"))["artifact_id"])')
+          pin=tools/android-startup-probe/artifact-20261112.json
+          artifact_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["artifact_id"])' "$pin")
           gh api "repos/CrispStrobe/CrispSorter/actions/artifacts/$artifact_id" > "$RUNNER_TEMP/ocr-android-startup-artifact.json"
           gh api "repos/CrispStrobe/CrispSorter/actions/artifacts/$artifact_id/zip" > "$RUNNER_TEMP/ocr-android-startup-artifact.zip"
           python3 tools/android-startup-probe/stage.py \
             --archive "$RUNNER_TEMP/ocr-android-startup-artifact.zip" \
             --metadata "$RUNNER_TEMP/ocr-android-startup-artifact.json" \
+            --pin "$pin" \
             --output "$RUNNER_TEMP/ocr-android-startup-probe"
           "$ANDROID_HOME/build-tools/36.0.0/aapt" dump xmltree \
             "$RUNNER_TEMP/ocr-android-startup-probe/CrispSorter-ocr.apk" AndroidManifest.xml \

@@ -14,7 +14,7 @@ flight, and a rerun with the same run id resumes.
 | `engines.json` | engine configurations: CLI engine, extra args/env, devices, timeouts, CPU job grouping |
 | `vendor/` | CrispEmbed's scorer and gold-corpus converter, verbatim at `c364feb9` (v0.17.19), sha256-pinned in `PINS.json` |
 | `package_build.py` / `fetch_build.py` | package a build with a CrispEmbed runtime / download + verify + unpack it |
-| `kaggle/` | GPU kernel (`kernel.py`, `kernel-metadata.json`) and `kpush.py` |
+| `kaggle/` | GPU kernel (`kernel.py`) and `kpush.py`, which renders submission metadata locally |
 | `tests/` | `python3 -m unittest discover -s bench/ocr/tests -v` (no binary, no network, HF mocked) |
 
 Workflows: `.github/workflows/ocr-bench-build.yml` (build + upload binaries) and
