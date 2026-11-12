@@ -1220,25 +1220,16 @@ async fn ensure_model_on_disk(spec: &ModelSpec, cache_dir: &Path) -> Result<Mode
         let base = cache_dir.join(subdir);
         let onnx = base.join(&spec.file);
         let tokenizer = base.join(&spec.tokenizer_file);
-        crate::app_log!(
-            "info",
-            "Embedder: using local model {} (subdir {})",
-            onnx.display(),
-            subdir
-        );
+        crate::app_log!("info", "Embedder: using a local model export");
         if !onnx.exists() {
-            crate::app_log!("error", "Embedder: local ONNX missing at {}", onnx.display());
+            crate::app_log!("error", "Embedder: local ONNX model file is missing");
             bail!(
                 "Local ONNX not found at {:?} — run the export script first",
                 onnx
             );
         }
         if !tokenizer.exists() {
-            crate::app_log!(
-                "error",
-                "Embedder: local tokenizer missing at {}",
-                tokenizer.display()
-            );
+            crate::app_log!("error", "Embedder: local tokenizer file is missing");
             bail!("Local tokenizer not found at {:?}", tokenizer);
         }
         return Ok(ModelPaths {
@@ -1260,10 +1251,9 @@ async fn ensure_model_on_disk(spec: &ModelSpec, cache_dir: &Path) -> Result<Mode
 
     crate::app_log!(
         "info",
-        "Embedder: prefetching {} files from {} into {}",
+        "Embedder: prefetching {} files from {}",
         required.len(),
-        spec.repo,
-        cache_dir.display()
+        spec.repo
     );
     let progress = make_prefetch_logger(&spec.repo);
     prefetch_repo_files(&spec.repo, &required, cache_dir, progress)
@@ -2260,7 +2250,21 @@ pub struct Embedder {
 }
 
 impl Embedder {
+    /// Model load receipt: one operation per load, with no model path or
+    /// cache location; the detailed error is still returned to the caller.
     pub async fn new(config: EmbedderConfig) -> Result<Self> {
+        let log = crate::operation_log::OperationLog::start("index.embedder_load", serde_json::json!({
+            "model_kind": if config.model_name_override.is_some() { "registry" } else { "default" },
+        }));
+        let result = Self::new_inner(config).await;
+        match &result {
+            Ok(_) => log.succeed(serde_json::Value::Null),
+            Err(_) => log.fail("load_failed"),
+        }
+        result
+    }
+
+    async fn new_inner(config: EmbedderConfig) -> Result<Self> {
         // License-consent gate — refuse non-commercial / use-restricted models
         // unless the operator accepted the license. Single choke point for every
         // backend below (GGUF/CrispEmbed, ONNX/fastembed, OrtPath, direct-HF),
@@ -2272,11 +2276,10 @@ impl Embedder {
         let eps = config.device.execution_providers();
         crate::app_log!(
             "info",
-            "Embedder: init model={:?} requested_device={:?} backend={:?} cache={}",
+            "Embedder: init model={:?} requested_device={:?} backend={:?}",
             config.model,
             config.device,
-            config.backend,
-            config.cache_dir.display()
+            config.backend
         );
         #[cfg(any(target_os = "android", target_os = "ios"))]
         crate::app_log!(
@@ -2362,10 +2365,9 @@ impl Embedder {
                 use super::hf_prefetch::prefetch_repo_files;
                 crate::app_log!(
                     "info",
-                    "Embedder: prefetching {} files from {repo} (~{} MB total) into {}",
+                    "Embedder: prefetching {} files from {repo} (~{} MB total)",
                     files.len(),
-                    config.model.approx_download_mb(),
-                    config.cache_dir.display()
+                    config.model.approx_download_mb()
                 );
                 let progress = make_prefetch_logger(repo);
                 prefetch_repo_files(repo, &files, &config.cache_dir, progress)

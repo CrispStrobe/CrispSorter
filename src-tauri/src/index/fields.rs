@@ -95,10 +95,14 @@ pub async fn index_get_fields(state: State<'_, AppState>, doc_id: String) -> Res
 }
 
 #[tauri::command]
-pub async fn index_review_field(
-    state: State<'_, AppState>, doc_id: String, field_id: String,
-    normalized_value: String, review_status: String, expected_revision: u64,
-) -> Result<Vec<FieldEvidence>, String> {
+pub async fn index_review_field(state: State<'_, AppState>, doc_id: String, field_id: String, normalized_value: String, review_status: String, expected_revision: u64) -> Result<Vec<FieldEvidence>, String> {
+    let log = crate::operation_log::OperationLog::start("index.field_review", serde_json::json!({"surface":"gui"}));
+    let result = index_review_field_inner(state, doc_id, field_id, normalized_value, review_status, expected_revision).await;
+    crate::index::finish_logged(log, result, "review_failed", |_| serde_json::Value::Null)
+}
+
+async fn index_review_field_inner(state: State<'_, AppState>, doc_id: String, field_id: String,
+    normalized_value: String, review_status: String, expected_revision: u64) -> Result<Vec<FieldEvidence>, String> {
     if !matches!(review_status.as_str(), "accepted" | "corrected" | "rejected" | "suggested") {
         return Err("Invalid field review status".into());
     }
@@ -156,6 +160,12 @@ fn approve_batch(fields: &mut Vec<FieldEvidence>, reviews: Vec<FieldReview>) -> 
 
 #[tauri::command]
 pub async fn index_approve_fields(state: State<'_, AppState>, doc_id: String, reviews: Vec<FieldReview>) -> Result<Vec<FieldEvidence>, String> {
+    let log = crate::operation_log::OperationLog::start("index.field_approve", serde_json::json!({"items":reviews.len()}));
+    let result = index_approve_fields_inner(state, doc_id, reviews).await;
+    crate::index::finish_logged(log, result, "review_failed", |_| serde_json::Value::Null)
+}
+
+async fn index_approve_fields_inner(state: State<'_, AppState>, doc_id: String, reviews: Vec<FieldReview>) -> Result<Vec<FieldEvidence>, String> {
     let lock = state.index.lock().await;
     let local = lock.local.clone().ok_or("Local index is not ready")?;
     drop(lock); // Keep the same configuration/index lease order as single-field review.

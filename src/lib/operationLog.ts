@@ -20,7 +20,11 @@ export type OperationName = 'ocr.session' | 'ocr.recognition' | 'ocr.worker' | '
   | 'chat.request'
   | 'settings.test_connection' | 'settings.refresh_models'
   | 'models.download' | 'models.delete' | 'models.pull'
-  | 'app.capabilities' | 'app.log_export' | 'app.provider_pick';
+  | 'app.capabilities' | 'app.log_export' | 'app.provider_pick'
+  | 'index.folder_scan' | 'index.metadata_run' | 'index.ingest_run' | 'index.delete_selection'
+  | 'index.promote_archive_selection' | 'index.promote_l3_selection' | 'index.catalog_create'
+  | 'index.catalog_refresh' | 'index.catalog_activate' | 'index.catalog_deactivate'
+  | 'index.catalog_import' | 'index.duplicates_scan' | 'index.deletion_script';
 export type OperationPhase = 'queued' | 'loading' | 'ready' | 'reused' | 'disposed'
   | 'dispatching' | 'recognizing' | 'rendering' | 'text_ready' | 'page_completed'
   | 'checking' | 'saving' | 'saved' | 'committing' | 'published' | 'progress'
@@ -40,10 +44,14 @@ export interface OperationFields {
   failed?: number; pending?: number; count?: number; revision?: number;
   cpuBudget?: boolean; forced?: boolean; partial?: boolean; saved?: boolean;
   reused?: boolean; nativeContinues?: boolean; pipeline?: boolean; stages?: number;
+  /** Index ingest level (1 = filesystem metadata, 2 = embedded metadata, 3 = full text). */
+  level?: 1 | 2 | 3;
+  /** Search channel only; the query itself is never logged. */
+  mode?: 'text' | 'vector' | 'hybrid';
 }
 
 const numeric = new Set(['page', 'pages', 'total', 'bytes', 'characters', 'regions', 'warnings',
-  'results', 'completed', 'failed', 'pending', 'count', 'revision', 'stages']);
+  'results', 'completed', 'failed', 'pending', 'count', 'revision', 'stages', 'level']);
 const boolean = new Set(['cpuBudget', 'forced', 'partial', 'saved', 'reused', 'nativeContinues', 'pipeline']);
 const formats = new Set(['text', 'txt', 'markdown', 'md', 'html', 'json', 'csv', 'pdf', 'pdfa', 'hocr', 'alto', 'docx', 'xlsx']);
 const kinds = new Set(['image', 'pdf', 'archive', 'mail', 'presentation', 'table', 'fields', 'formula', 'copy', 'move', 'script']);
@@ -62,6 +70,7 @@ function fieldsText(fields: OperationFields): string {
     else if (key === 'backend' && ['native', 'browser', 'local', 'remote'].includes(String(value))) parts.push(`backend=${value}`);
     else if (key === 'kind' && kinds.has(String(value))) parts.push(`kind=${value}`);
     else if (key === 'format' && formats.has(String(value))) parts.push(`format=${value}`);
+    else if (key === 'mode' && ['text', 'vector', 'hybrid'].includes(String(value))) parts.push(`mode=${value}`);
   }
   return parts.length ? ` ${parts.join(' ')}` : '';
 }

@@ -186,15 +186,19 @@ pub mod tauri_commands {
     }
 
     #[tauri::command]
-    pub async fn version_record(
-        state: State<'_, AppState>,
+    pub async fn version_record(state: State<'_, AppState>, canonical_path: String, doc_id: String, title: Option<String>, author: Option<String>, file_size: Option<i64>, file_hash: Option<String>) -> Result<i32, String> {
+        let log = crate::operation_log::OperationLog::start("index.version_record", serde_json::json!({}));
+        let result = version_record_inner(state, canonical_path, doc_id, title, author, file_size, file_hash).await;
+        crate::index::finish_logged(log, result, "version_failed", |revision| serde_json::json!({"revision": revision}))
+    }
+
+    async fn version_record_inner(state: State<'_, AppState>,
         canonical_path: String,
         doc_id: String,
         title: Option<String>,
         author: Option<String>,
         file_size: Option<i64>,
-        file_hash: Option<String>,
-    ) -> Result<i32, String> {
+        file_hash: Option<String>) -> Result<i32, String> {
         let store = get_store(&state).await?;
         store.record_version(
             &canonical_path, &doc_id,
