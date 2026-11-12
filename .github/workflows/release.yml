@@ -2064,6 +2064,7 @@ jobs:
           VERSION=$(jq -r .version src-tauri/tauri.conf.json)
           TAG="v${VERSION}"
           python3 scripts/check_desktop_release_assets.py --tag "$TAG" --repo "$GITHUB_REPOSITORY" --source "$(git rev-parse HEAD)" --version "$VERSION"
+          python3 scripts/check_mobile_release_assets.py --tag "$TAG" --repo "$GITHUB_REPOSITORY" --source "$(git rev-parse HEAD)" --version "$VERSION"
           echo "Publishing release ${TAG}…"
           gh release edit "${TAG}" --draft=false --latest
           echo "✓ Published ${TAG}"
