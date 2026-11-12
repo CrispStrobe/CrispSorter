@@ -1595,6 +1595,9 @@ jobs:
             --api-issuer "${{ env.APPLE_API_ISSUER_ID }}" 2>&1 | tail -15 \
             || echo "::warning::validate reported issues — proceeding to upload (real gate)"
           echo "=== Uploading to App Store Connect ==="
+          # Bind distribution to this upload, including its UTC lower bound.
+          echo "IOS_BUILD_NUMBER=$BV" >> "$GITHUB_ENV"
+          echo "IOS_UPLOADED_AFTER=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_ENV"
           xcrun altool --upload-package "$IPA" --type ios \
             --apple-id "${{ secrets.APPSTORE_APP_ID }}" \
             --bundle-id "com.crispstrobe.crispsorter" \
@@ -1623,6 +1626,7 @@ jobs:
         run: |
           python3 scripts/testflight_distribute.py \
             --platform IOS --mode internal \
+            --version "$IOS_BUILD_NUMBER" --uploaded-after "$IOS_UPLOADED_AFTER" \
             --notes "iOS build from CI."
 
       - name: Upload IPA to GitHub release
@@ -1961,6 +1965,7 @@ jobs:
           if [ "${{ inputs.publish }}" = "true" ] || \
              [ "${{ startsWith(github.ref, 'refs/tags/') }}" = "true" ]; then
             echo "=== uploading to App Store Connect ==="
+            echo "MACOS_UPLOADED_AFTER=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_ENV"
             xcrun altool --upload-package "$PKG" --type macos \
               --apple-id "${{ secrets.APPSTORE_APP_ID }}" --bundle-id "$BUNDLE_ID" \
               --bundle-version "$BV" --bundle-short-version-string "$SV" \
@@ -2009,7 +2014,7 @@ jobs:
           # `--mode external --public-link` once that agreement is signed.
           python3 scripts/testflight_distribute.py \
             --platform MAC_OS --mode internal \
-            --version "$BV" \
+            --version "$BV" --uploaded-after "$MACOS_UPLOADED_AFTER" \
             --notes "macOS build ${SV} (${BV}) from CI."
 
       # `always()` — keep the artifact even when a later step fails.
