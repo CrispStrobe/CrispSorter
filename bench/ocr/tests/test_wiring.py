@@ -1,6 +1,8 @@
 """Static wiring of the benchmark: pins, workflows, Kaggle kernel rendering. No network."""
 import json
 import re
+import runpy
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -43,12 +45,26 @@ class Wiring(unittest.TestCase):
                 self.assertNotRegex(t, r"hf_[A-Za-z0-9]{30,}", str(p))
 
     def test_kernel_metadata(self):
-        m = json.loads((BENCH / "kaggle/kernel-metadata.json").read_text())
+        m = runpy.run_path(str(BENCH / "kaggle/kpush.py"))["DEFAULT_METADATA"]
         self.assertTrue(m["id"].startswith("${KAGGLE_ACCOUNT}/"))
         self.assertEqual(m["dataset_sources"], ["${KAGGLE_ACCOUNT}/crispasr-hf-token"])
         for k in ("enable_gpu", "enable_internet", "is_private"):
             self.assertEqual(m[k], "true", k)  # strings, not booleans
         self.assertEqual(m["code_file"], "kernel.py")
+
+    def test_kpush_works_without_local_metadata(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            for name in ("kpush.py", "kernel.py"):
+                shutil.copy(BENCH / "kaggle" / name, root / name)
+            output = root / "rendered"
+            result = subprocess.run([sys.executable, str(root / "kpush.py"), "--run-id", "r1",
+                                     "--binary-sha", "a" * 40, "--dry-run", str(output)],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            metadata = json.loads((output / "kernel-metadata.json").read_text())
+            self.assertEqual(metadata["code_file"], "kernel.py")
+            self.assertEqual(metadata["enable_gpu"], "true")
 
     def test_kpush_renders_every_placeholder(self):
         with tempfile.TemporaryDirectory() as d:
