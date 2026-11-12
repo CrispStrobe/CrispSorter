@@ -135,6 +135,26 @@ identifiable so a later change can rerun the affected level.
 
 ## Current Android import follow-up
 
+The retained candidate replay used APK application source `a26ea397` and native
+candidate source `2d2ab327` with a separate updated harness at `a97fa9d2`; the APK
+and runtime were not rebuilt. It passed installation, independent model hashes,
+image import and all photo transforms, then reported a closed WebView/CDP before
+the settings-save command reached native logging. The retained app-PID logcat
+contains no fatal signal or Java crash, but omits renderer/system/OOM logs. The
+ADB forward was already missing at cleanup. These observations do not identify
+the underlying cause or exclude an app/renderer crash. Native candidate failure
+and valid-empty controls were not reached and remain unqualified.
+
+The harness now records page crash/close and CDP-disconnect events separately
+from intentional cleanup, checks original connection health before further IPC,
+and retains original-process, forward and debug-socket observations plus crash
+and filtered system logcat before disconnecting the driver. A live main PID
+does not establish renderer health. Lost connections remain failures: there is
+no reconnect, app restart, replacement page or automatic command replay. This
+is a diagnostic/fail-closed harness change, not evidence of an application fix
+or a passing retained replay. The retained logs are synthetic-test diagnostics;
+they do not establish real-document, physical-device or OCR quality behavior.
+
 The Android WebView uses Tauri postMessage, which delivers JSON rather than a
 raw byte body. The application now sends bounded base64 for Android and an
 unknown platform, while retaining raw bytes on known desktop and iOS targets.

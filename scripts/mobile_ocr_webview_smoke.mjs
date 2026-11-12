@@ -38,6 +38,7 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { verifyAndroidSandbox, canonicalAppPath, isWithinAppRoot, probeOptions, processMemory, summarizeMemory, textErrorRate, validateBuildSource, validatePackagedAndroidLibraries } from './mobile_ocr_probe_utils.mjs';
 import { assessQualityFixture } from './mobile_ocr_quality.mjs';
+import { connectionHealth, monitorConnection } from './mobile_ocr_connection_health.mjs';
 import { checkCandidateOcrBoundary } from './mobile_ocr_candidate_boundary.mjs';
 
 const PACKAGE = 'com.crispstrobe.crispsorter';
@@ -113,7 +114,9 @@ async function main() {
     limits: { repeated_inference_pages: opt['repeat-pages'], maximum_process_rss_mib: opt['max-rss-mib'] },
   };
   const consoleLog = [];
-  let browser, page, forwardPort, pid, privateRoot, appData, exportPath;
+  let browser, page, forwardPort, pid, privateRoot, appData, exportPath, connectionMonitor;
+  const connectionEvents = [];
+  receipt.connection_lifecycle = connectionEvents;
   let pickerFixturePath, pickerDumpPath;
   const privateAliases = [];
   const canonicalPrivateAlias = value => canonicalAppPath(remotePath(value), privateRoot, privateAliases);
@@ -282,6 +285,7 @@ async function main() {
     }
   }
   const invoke = (command, args = {}, timeout = 30_000) => {
+    connectionMonitor?.assertHealthy();
     const milliseconds = budget(timeout, command);
     return bounded(page.evaluate(
       ({ command, args }) => window.__TAURI_INTERNALS__.invoke(command, args), { command, args },
@@ -289,6 +293,7 @@ async function main() {
   };
   const importBytes = (command, bytes, metadata, timeout = 90_000) => {
     assert(['ocr_workspace_import_bytes', 'ocr_workspace_import_image'].includes(command));
+    connectionMonitor?.assertHealthy();
     return bounded(page.evaluate(async ({ command, base64, metadata }) => {
       const header = btoa(Array.from(new TextEncoder().encode(JSON.stringify(metadata)), byte => String.fromCharCode(byte)).join(''));
       return window.__TAURI_INTERNALS__.invoke(command, { base64 }, { headers: { 'x-ocr-metadata': header } });
@@ -459,8 +464,10 @@ async function main() {
       browser = await playwright.chromium.connectOverCDP('ws://127.0.0.1:' + forwardPort + '/devtools/browser', {
         noDefaults: true, timeout: budget(30_000, 'connect CDP'),
       });
+      connectionMonitor = monitorConnection(browser, connectionEvents);
       const pageDeadline = Math.min(deadline, Date.now() + 30_000);
       while (Date.now() < pageDeadline && !page) {
+        connectionMonitor.assertHealthy();
         for (const candidate of browser.contexts().flatMap(context => context.pages())) {
           const candidateUrl = new URL(candidate.url());
           if (!['tauri.localhost', 'localhost'].includes(candidateUrl.hostname)) continue;
@@ -476,6 +483,7 @@ async function main() {
         if (!page) await delay(500);
       }
       assert(page, 'The debug WebView did not expose the real Tauri bridge.');
+      connectionMonitor.attachPage(page);
       const appUrl = new URL(page.url());
       assert(['tauri.localhost', 'localhost'].includes(appUrl.hostname) && ['http:', 'https:', 'tauri:'].includes(appUrl.protocol),
         'Unexpected application origin: ' + appUrl.origin);
@@ -1324,6 +1332,41 @@ async function main() {
         await fs.writeFile(path.join(output, 'application-logcat.txt'), logs.stdout);
       } catch (error) { receipt.cleanup_errors.push('Capture logcat: ' + String(error)); }
     }
+    try { connectionMonitor?.assertHealthy(); }
+    catch (error) {
+      if (receipt.status === 'passed') {
+        receipt.status = 'failed';
+        receipt.error = String(error?.stack ?? error).slice(0, 32_768);
+        process.exitCode = 1;
+      }
+    }
+    // Observe loss before intentional driver cleanup. Never reconnect or replay
+    // a possibly completed native command, and never infer renderer health from
+    // the main process alone.
+    if (receipt.status === 'failed' && pid) {
+      if (receipt.connection?.socket && forwardPort) {
+        try {
+          receipt.connection_failure = await connectionHealth({
+            serial: opt.serial, packageName: PACKAGE, pid, socket: receipt.connection.socket,
+            forwardPort, browser, page,
+            adbText: args => adbText(args, { timeout: 10_000, maxBuffer: 256 * 1024 }),
+            runAs: args => runAs(args, { timeout: 10_000, maxBuffer: 128 * 1024 }),
+          });
+        } catch (error) { receipt.cleanup_errors.push('Capture connection health: ' + String(error)); }
+      }
+      for (const [filename, args] of [
+        ['application-crash-logcat.txt', ['logcat', '-b', 'crash', '-d', '-v', 'threadtime', '-t', '300']],
+        ['application-system-logcat.txt', ['logcat', '-b', 'main', '-b', 'system', '-d', '-v', 'threadtime', '-t', '1000',
+          'ActivityManager:I', 'ActivityTaskManager:I', 'lmkd:I', 'lowmemorykiller:I', 'chromium:E', 'AndroidRuntime:E', 'libc:F', 'DEBUG:F', '*:S']],
+      ]) {
+        try {
+          const logs = await adb(args, { timeout: 10_000, maxBuffer: 2 * 1024 * 1024 });
+          await fs.writeFile(path.join(output, filename), logs.stdout);
+        } catch (error) { receipt.cleanup_errors.push('Capture crash/system logcat: ' + String(error)); }
+      }
+    }
+    connectionMonitor?.beginCleanup();
+    receipt.connection_lifecycle = connectionEvents;
     if (browser) {
       try { await bounded(browser.close(), 10_000, 'disconnect CDP'); }
       catch (error) { receipt.cleanup_errors.push('Disconnect CDP: ' + String(error)); }
