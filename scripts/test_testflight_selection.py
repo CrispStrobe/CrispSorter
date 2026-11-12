@@ -62,7 +62,7 @@ class WorkflowBinding(unittest.TestCase):
         self.assertLess(job.index('echo "IOS_UPLOADED_AFTER=$(date -u'),
                         job.index('xcrun altool --upload-package "$IPA"'))
         self.assertIn('--version "$IOS_BUILD_NUMBER" --uploaded-after "$IOS_UPLOADED_AFTER"', job)
-        self.assertIn("if: env.IPA_UPLOADED == 'true'", job)
+        self.assertIn("if: env.CRISPSORTER_MOBILE_RELEASE_PROFILE != 'ocr-draft' && env.IPA_UPLOADED == 'true'", job)
 
     def test_macos_cutoff_precedes_upload_and_distribution_requires_success(self):
         job = self.job('release-macos-appstore', 'publish')

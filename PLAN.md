@@ -1,5 +1,19 @@
 # CrispSorter — Development Plan
 
+## Signed OCR draft build route prepared — 12 November 2026
+
+Release now has explicit manual Android/iOS OCR draft selectors, restricted to
+publish=false and mac_appstore=false. They reuse clean committed sibling sources,
+stage the existing production-pin native runtime and pinned ORT, build the
+ocr-mobile feature with exact license metadata, require retained signing, and
+verify final signed artifact/app native/ORT provenance before emitting a success
+record. Only explicitly unqualified workflow artifacts are retained; drafts
+cannot upload to ASC/TestFlight or GitHub releases. Failed provenance remains a
+failed job with unqualified binary/failure evidence and no success marker.
+Public OCR remains refused and no candidate source is promoted. These are
+prepared source changes with mocked checks, not a platform build/signing result.
+See [draft controls and remaining execution gates](docs/ocr-device-qualification.md#production-pinned-signed-ocr-drafts-prepared-not-executed).
+
 ## Source-bound Android crop gate evidence — 12 November 2026
 
 [Manual Android run 43298111978](https://github.com/CrispStrobe/CrispSorter/actions/runs/43298111978)

@@ -357,3 +357,60 @@ To complete a signed OCR-capable **draft** recipe next:
    Only replace an unsupported OCR-profile refusal with objective checks after
    those build/provenance paths exist. A passed preparation test is neither a
    signed platform build nor an application/quality qualification result.
+
+## Production-pinned signed OCR drafts (prepared, not executed)
+
+The Release workflow now has two explicit manual selectors:
+`android_ocr_draft` and `ios_ocr_draft`. Each runs only its named mobile job,
+requires `publish=false` and `mac_appstore=false`, and retains a workflow artifact
+named `signed-ocr-draft-TARGET-unqualified`. Public `mobile_profile: ocr` remains
+unsupported. The selectors do not create/alter a GitHub release, upload to App
+Store Connect, assign TestFlight groups or invoke the desktop matrix. Invalid
+publish/App Store combinations fail the draft preflight; they cannot divert the
+request into a separate Mac App Store build. Existing standard builds and
+TestFlight retain their own behavior.
+
+`prepare_signed_mobile_ocr_draft.py` requires the committed production and
+mobile runtime locks to select the same source/ggml identity and validates the
+clean sibling layout with `--require-ocr-lock`. There is no candidate source,
+lock or artifact override. It builds the existing production-source native
+runtime with two jobs, stages the pinned official ORT through the existing
+archive/header/library/notice checks, forces runtime/protoc/ORT Cargo paths,
+stages native/ORT notices and records preparation identity outside application
+source. Native license metadata is collected from the locked exact target/feature
+graph. Android adds the qualification recipe's 16 KiB native linker settings and
+native/ORT libraries; iOS adds the mobile configuration and exact device ORT
+framework before the existing archive-unsigned/manual-sign-at-export procedure.
+The new route requires the retained signing configuration; it cannot silently
+fall back to a development Android key or unsigned iOS app.
+
+`record_signed_mobile_ocr_draft.py` independently rechecks the Android APK
+signature/production signing record or the provisioned iOS app signature, then
+runs the existing final-app native/ORT code/data and notice provenance recorder.
+It requires the same prepared application/runtime identity and binds the final
+signed APK/IPA bytes to the app-build receipt. Only after every validation and
+metadata copy succeeds does it write `signed-draft.json` with
+`validation_status: passed`. This is a **provenance** result, never device or OCR
+quality qualification. Binary names and artifact names remain explicitly
+unqualified even on success. A failure retains the binary with that label and
+`failure.json`, raises the error, and omits the success marker; partial output
+must not be interpreted as verified. The artifact retention path is an explicit
+allowlist of signed package and build records, never keychains, P12/P8 material
+or provisioning secret directories.
+
+This implementation has only focused mocked preparation/provenance and selector
+safety tests. No new native build, platform signing, upload or device execution
+was performed to prepare it. In particular, linking/stripping behavior of the
+signed iOS OCR-device app is not yet verified; required native symbol/provenance
+checks fail rather than being bypassed if export strips needed evidence.
+
+Next, run one selector at a time on the exact committed source when platform
+work is authorized. Inspect the retained build/provenance result and original
+failure logs before running application cases. The iOS artifact is not in
+TestFlight; uploading an OCR-capable IPA requires a later explicitly scoped
+source/hash-bound route after its actual build and application evidence exist.
+Current-default Android recognition, the two-column case, representative corpus,
+physical camera/provider behavior and signed iOS application execution retain
+the separate qualification requirements above. This draft implementation does
+not move runtime pins, turn on experimental crop behavior or remove the public
+OCR profile refusal.
