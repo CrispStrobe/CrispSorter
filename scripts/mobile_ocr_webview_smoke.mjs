@@ -36,7 +36,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { canonicalAppPath, isWithinAppRoot, probeOptions, processMemory, summarizeMemory, textErrorRate, validateBuildSource, validatePackagedAndroidLibraries } from './mobile_ocr_probe_utils.mjs';
+import { verifyAndroidSandbox, canonicalAppPath, isWithinAppRoot, probeOptions, processMemory, summarizeMemory, textErrorRate, validateBuildSource, validatePackagedAndroidLibraries } from './mobile_ocr_probe_utils.mjs';
 import { assessQualityFixture } from './mobile_ocr_quality.mjs';
 
 const PACKAGE = 'com.crispstrobe.crispsorter';
@@ -218,7 +218,7 @@ async function main() {
     const expected = canonicalPrivateAlias(value);
     assert(expected.startsWith(privateRoot + '/'), 'Refusing to inspect a file outside the dedicated test app.');
     const resolved = (await runAs(['realpath', value])).stdout.trim();
-    assert.equal(resolved, expected, 'Private file unexpectedly resolves through a symlink.');
+    assert.equal(canonicalPrivateAlias(resolved), expected, 'Private file unexpectedly resolves through a symlink.');
     return resolved;
   }
   async function privateBytes(value, limit = 16 * 1024 * 1024) {
@@ -390,18 +390,11 @@ async function main() {
       if (opt['device-kind'] === 'emulator') assert.equal(build.runtime.target, 'android-x86_64');
       await fs.writeFile(path.join(output, 'application-build-receipt.json'), buildBytes);
       receipt.source.app_build_receipt_sha256 = digest(buildBytes);
-      const reportedRoot = remotePath(await adbText(['exec-out', 'run-as', PACKAGE, 'pwd']));
-      assert(['/data/user/0/' + PACKAGE, '/data/data/' + PACKAGE].includes(reportedRoot), 'Unexpected app sandbox.');
-      privateRoot = remotePath((await runAs(['realpath', reportedRoot])).stdout.trim());
-      assert(['/data/user/0/' + PACKAGE, '/data/data/' + PACKAGE].includes(privateRoot), 'Unexpected canonical app sandbox.');
-      // Rust/libc and toybox realpath can choose different Android sandbox aliases.
-      // Accept only these exact package roots after this device proves equivalence.
-      for (const alias of ['/data/user/0/' + PACKAGE, '/data/data/' + PACKAGE]) {
-        const resolved = remotePath((await runAs(['realpath', alias])).stdout.trim());
-        assert.equal(resolved, privateRoot, 'Android sandbox alias did not resolve to the dedicated app.');
-        privateAliases.push(alias);
-      }
-      receipt.private_path_aliases = { canonical_root: privateRoot, verified_roots: privateAliases };
+      receipt.private_path_aliases = {};
+      const sandbox = await verifyAndroidSandbox(PACKAGE,
+        async args => (await runAs(args)).stdout.trim(), receipt.private_path_aliases);
+      privateRoot = sandbox.canonical_root;
+      privateAliases.push(...sandbox.verified_roots);
       const apkPaths = (await adbText(['shell', 'pm', 'path', PACKAGE])).split(/\r?\n/).filter(Boolean);
       assert.equal(apkPaths.length, 1, 'Install the single debug APK produced by this CI build.');
       assert(apkPaths[0].startsWith('package:'));
@@ -496,8 +489,8 @@ async function main() {
       assert.equal(value.docx_export, true, 'The mobile reviewed Word writer is unavailable.');
       assert(value.formats.includes('docx'), 'Word export is not advertised by this mobile build.');
       assert(value.engines.includes('tesseract'));
-      const rawAppData = remotePath(await invoke('get_app_data_dir'));
-      appData = remotePath((await runAs(['realpath', rawAppData])).stdout.trim());
+      const rawAppData = canonicalPrivateAlias(remotePath(await invoke('get_app_data_dir')));
+      appData = canonicalPrivateAlias(remotePath((await runAs(['realpath', rawAppData])).stdout.trim()));
       receipt.app_data_scope = { is_root: appData === privateRoot, is_descendant: appData.startsWith(privateRoot + '/') };
       assert(isWithinAppRoot(privateRoot, appData), 'Native app data is outside the app sandbox.');
       const projects = await invoke('ocr_workspace_list');

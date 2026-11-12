@@ -1,6 +1,69 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { canonicalAppPath, isWithinAppRoot, probeOptions, processMemory, summarizeMemory, textErrorRate, validateBuildSource, validatePackagedAndroidLibraries } from '../../scripts/mobile_ocr_probe_utils.mjs';
+import { verifyAndroidSandbox, canonicalAppPath, isWithinAppRoot, probeOptions, processMemory, summarizeMemory, textErrorRate, validateBuildSource, validatePackagedAndroidLibraries } from '../../scripts/mobile_ocr_probe_utils.mjs';
+
+const sandboxPackage = 'com.crispstrobe.crispsorter';
+const sandboxRoot = '/data/user/0/' + sandboxPackage;
+const sandboxAlias = '/data/data/' + sandboxPackage;
+const sandboxIdentity = '123:456:10123:10123:41c0';
+function sandboxDevice(overrides = {}) {
+  const replies = {
+    pwd: sandboxRoot, 'id -u': '10123',
+    ['realpath ' + sandboxRoot]: sandboxRoot,
+    ['realpath ' + sandboxAlias]: sandboxAlias,
+    ['stat -L -c %d:%i:%u:%g:%f ' + sandboxRoot]: sandboxIdentity,
+    ['stat -L -c %d:%i:%u:%g:%f ' + sandboxAlias]: sandboxIdentity,
+    ...overrides,
+  };
+  const calls = [];
+  return { calls, read: async args => {
+    calls.push(args);
+    const key = args.join(' ');
+    assert(Object.hasOwn(replies, key), 'Unexpected device command: ' + key);
+    return replies[key];
+  } };
+}
+
+test('distinct realpath spellings require device evidence of the same app-owned directory', async () => {
+  // The retained emulator returned these two distinct spellings. Matching
+  // identity below is a simulated prerequisite, not retained device evidence.
+  const device = sandboxDevice();
+  const evidence = await verifyAndroidSandbox(sandboxPackage, device.read);
+  assert.deepEqual(evidence.verified_roots, [sandboxRoot, sandboxAlias]);
+  assert.equal(evidence.canonical_identity, sandboxIdentity);
+  assert.deepEqual(evidence.observations.map(item => item.realpath), [sandboxRoot, sandboxAlias]);
+  assert(evidence.observations.every(item => item.identity === sandboxIdentity && item.resolved_identity === sandboxIdentity));
+  const file = '/ocr-workspace/assets/scan.png';
+  assert.equal(canonicalAppPath(sandboxAlias + file, evidence.canonical_root, evidence.verified_roots), sandboxRoot + file);
+  // A device that uses one realpath spelling also needs matching stat evidence.
+  const canonicalDevice = sandboxDevice({ ['realpath ' + sandboxAlias]: sandboxRoot });
+  await verifyAndroidSandbox(sandboxPackage, canonicalDevice.read);
+  const aliasDevice = sandboxDevice({ pwd: sandboxAlias });
+  assert.equal((await verifyAndroidSandbox(sandboxPackage, aliasDevice.read)).canonical_root, sandboxAlias);
+});
+
+test('matching root spellings cannot bypass device, inode, owner or directory checks', async () => {
+  for (const identity of ['999:456:10123:10123:41c0', '123:999:10123:10123:41c0',
+    '123:456:10999:10123:41c0', '123:456:10123:10999:41c0', '123:456:10123:10123:81c0', 'invalid']) {
+    const evidence = {};
+    const device = sandboxDevice({ ['realpath ' + sandboxAlias]: sandboxRoot,
+      ['stat -L -c %d:%i:%u:%g:%f ' + sandboxAlias]: identity });
+    await assert.rejects(verifyAndroidSandbox(sandboxPackage, device.read, evidence));
+    assert(!evidence.verified_roots.includes(sandboxAlias));
+    assert.equal(evidence.observations.at(-1).identity, identity);
+  }
+});
+
+test('sandbox verification refuses other packages, users, siblings and unexpected realpaths', async () => {
+  for (const outside of [sandboxRoot + '-other', '/data/user/10/' + sandboxPackage, '/data/data/other.app', '/sdcard']) {
+    const device = sandboxDevice({ ['realpath ' + sandboxAlias]: outside });
+    await assert.rejects(verifyAndroidSandbox(sandboxPackage, device.read));
+    assert(!device.calls.some(args => args[0] === 'stat' && args.at(-1) === outside));
+    await assert.rejects(verifyAndroidSandbox(sandboxPackage, sandboxDevice({ pwd: outside }).read));
+  }
+  await assert.rejects(verifyAndroidSandbox(sandboxPackage, sandboxDevice({ 'id -u': '0' }).read));
+  await assert.rejects(verifyAndroidSandbox(sandboxPackage, sandboxDevice({ 'id -u': 'not-a-uid' }).read));
+});
 
 test('canonical app data may be the sandbox root or a descendant, never a sibling prefix', () => {
   assert.equal(isWithinAppRoot('/sandbox/app', '/sandbox/app'), true);

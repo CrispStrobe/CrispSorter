@@ -145,8 +145,19 @@ size is a validation limit, not a measured device-memory guarantee.
 
 The rebuilt Android x86_64 emulator run verified installed model hashes and
 imported an image through the fixed IPC, then failed a sandbox-path assertion.
-The harness now validates device-proven aliases. Run the retained full WebView
-flow using the newly pinned APK; do not count the failed attempt as a pass. The mobile native
+The subsequent retained flow failed earlier because the device's `realpath`
+preserved different spellings for `/data/data/<package>` and
+`/data/user/0/<package>`. That receipt establishes the spelling difference but
+does not establish that the directories share an identity. The harness now
+requires matching device/inode/owner/directory identities for both exact roots
+and their resolved paths, checked through the dedicated package's `run-as`
+namespace. It records the observations and rejects unexpected roots or identity
+mismatches before accepting either alias. Per-file resolution still rejects
+redirects to a different relative path or outside those verified roots.
+
+The new identity gate has focused simulated tests; matching directory identities
+have not yet been observed on the retained emulator. Run the retained full WebView
+flow using the newly pinned APK; do not count either failed attempt as a pass. The mobile native
 workflow supports a single-target manual run (Android x86_64 by default),
 while push runs retain the complete target matrix. Record its source revision,
 artifact hash, actual import, recognition, export and recovery results before

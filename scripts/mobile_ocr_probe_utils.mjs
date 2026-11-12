@@ -9,7 +9,44 @@ export function isWithinAppRoot(root, candidate) {
     && (candidate === root || candidate.startsWith(root + '/'));
 }
 
-/** Aliases must first be proven by device realpath to resolve to canonicalRoot. */
+/** Verify exact package roots by directory identity in this device's run-as namespace.
+ * Android bind mounts may retain distinct realpath spellings for one directory.
+ * read executes an argument array as the dedicated package, never a shell string. */
+export async function verifyAndroidSandbox(packageName, read, evidence = {}) {
+  assert(/^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$/.test(packageName), 'Invalid Android package.');
+  const roots = ['/data/user/0/' + packageName, '/data/data/' + packageName];
+  const reported = await read(['pwd']);
+  assert(roots.includes(reported), 'Unexpected app sandbox.');
+  const canonical = await read(['realpath', reported]);
+  assert(roots.includes(canonical), 'Unexpected canonical app sandbox.');
+  Object.assign(evidence, { canonical_root: canonical, verified_roots: [], observations: [] });
+  const uid = await read(['id', '-u']);
+  assert(/^[1-9][0-9]*$/.test(uid), 'Invalid dedicated app UID.');
+  const stat = root => read(['stat', '-L', '-c', '%d:%i:%u:%g:%f', root]);
+  const directoryIdentity = value => {
+    assert(/^\d+:\d+:\d+:\d+:[0-9a-f]+$/i.test(value), 'Invalid sandbox directory identity.');
+    const fields = value.split(':');
+    assert.equal(fields[2], uid, 'Sandbox directory is not owned by the dedicated app.');
+    assert.equal(Number.parseInt(fields[4], 16) & 0xf000, 0x4000, 'Sandbox root is not a directory.');
+    return value;
+  };
+  evidence.canonical_identity = await stat(canonical);
+  const identity = directoryIdentity(evidence.canonical_identity);
+  for (const root of roots) {
+    const observation = { root, realpath: await read(['realpath', root]) };
+    evidence.observations.push(observation);
+    // Never inspect an unexpected resolved path, even if its inode might match.
+    assert(roots.includes(observation.realpath), 'Android sandbox resolved outside the dedicated app roots.');
+    observation.identity = await stat(root);
+    observation.resolved_identity = await stat(observation.realpath);
+    assert.equal(directoryIdentity(observation.identity), identity, 'Android sandbox alias identifies a different directory.');
+    assert.equal(directoryIdentity(observation.resolved_identity), identity, 'Resolved Android sandbox identifies a different directory.');
+    evidence.verified_roots.push(root);
+  }
+  return evidence;
+}
+
+/** Aliases must first be proven by device directory identity to share canonicalRoot. */
 export function canonicalAppPath(value, canonicalRoot, verifiedAliases) {
   assert(typeof value === 'string' && value.startsWith('/') && path.posix.normalize(value) === value,
     'Private path must be absolute and normalized.');
