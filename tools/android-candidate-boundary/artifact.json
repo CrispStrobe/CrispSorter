@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "repository": "CrispStrobe/CrispSorter",
+  "run_id": 43313212722,
+  "application_source": "a26ea39776b5510f55a73f0a0fde3f54b0724b20",
+  "application_tree": "009b2f649140f3562b31ab4eed505120dc07fbf9",
+  "artifact_id": 13991450588,
+  "artifact_name": "ocr-mobile-android-x86_64",
+  "artifact_bytes": 153833904,
+  "artifact_sha256": "4480becdcd0736acb8f857a7dc7e1eb59238ff166fb1ec6b04a8a17a41b02d9f",
+  "apk_member": "ocr-mobile-app/CrispSorter-ocr.apk",
+  "apk_bytes": 507746439,
+  "apk_sha256": "576530d424b879d7ed3cbf839df106345ea47f5b8e689039f99725ddfcbe481d",
+  "build_receipt_member": "ocr-mobile-app/build-receipt.json",
+  "build_receipt_sha256": "4d283eecf87edb77b123eff204a8ad4409e5752104c55e09b78ca4458ad652e6",
+  "package": "com.crispstrobe.crispsorter",
+  "abi": "x86_64",
+  "runtime_lock": "scripts/ocr-mobile-error-propagation-candidate-lock.json",
+  "native_source": "2d2ab3275022e095f4a8f580e276bb2e3aa3f59c",
+  "ggml_source": "3a27b6c665b191cb230be367db5c52d81dd3e2ac",
+  "staged_members": {
+    "ocr-mobile-runtime/runtime-build.json": {
+      "destination": "runtime-build.json",
+      "bytes": 4181,
+      "sha256": "49c034be44f0509da1c2f74f147b71d92907a8a8b8276e2b82f05e4a3323e3b7"
+    },
+    "ocr-mobile-inputs/inputs.json": {
+      "destination": "inputs/inputs.json",
+      "bytes": 7889,
+      "sha256": "55f69534f214c1ca6a78989f9213a81a69b6d3dbf566dd94e989b6a3ecea481b"
+    },
+    "ocr-mobile-evidence/app-native-commands/synthetic-input.png": {
+      "destination": "inputs/page.png",
+      "bytes": 27930,
+      "sha256": "279881db58bbf42a01683ecdc552f774bea20e03cd38cac9c601aa81cad03b96"
+    }
+  }
+}

@@ -374,6 +374,19 @@ and WebView IPC in run `43313212722`. The run failed on an obsolete harness
 error-context assertion; the exact current context is now checked against the
 actual Rust source and frozen rejection. The blank and subsequent gates did not
 execute. The corrected harness has not been rerun on an emulator.
+The manual `ocr-mobile-native.yml` route with `candidate_replay: true` reuses the exact APK,
+receipts and retained PNG from that run, recording original application and
+corrected harness source identities separately. Its explicit
+`candidate-boundary` qualification mode requires emulator/candidate provenance
+and stops after the native rejection and Tesseract blank controls. It installs
+only the already pinned English baseline through the app and has no app/native
+build or host model-fixture download step. It does not report completion of the
+default full OCR/UI/document/export flow. The original artifact must remain
+available, with its committed hash pins intact; no replay has been executed.
+Set `target: android-x86_64` for replay. This explicit input skips the registered
+workflow's contracts and normal mobile build jobs; default dispatches and pushes
+retain their existing path. Replay shares the original, unchanged workflow
+concurrency block.
 
 The [build/link qualification](https://github.com/CrispStrobe/CrispSorter/actions/runs/40875226935)
 completed successfully for Android ARM64, iOS ARM64, and iOS ARM64 simulator.

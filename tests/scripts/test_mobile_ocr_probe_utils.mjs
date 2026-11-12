@@ -181,6 +181,17 @@ test('sample summaries cannot turn an unobserved metric into zero', () => {
   assert.equal(observed.sampled_peak_pss_kib, 15);
 });
 
+test('retained candidate boundary scope requires emulator, native receipt and distinct harness identity', () => {
+  const base = argumentsFor('emulator-5554');
+  const replay = [...base, '--runtime-receipt', 'runtime.json', '--qualification', 'candidate-boundary',
+    '--harness-source-commit', 'c'.repeat(40)];
+  assert.equal(probeOptions(replay).qualification, 'candidate-boundary');
+  assert.equal(probeOptions(base).qualification, 'full');
+  assert.throws(() => probeOptions([...base, '--qualification', 'candidate-boundary']), /harness source/);
+  assert.throws(() => probeOptions([...replay, '--device-kind', 'physical']), /emulator/);
+  assert.throws(() => probeOptions([...base, '--qualification', 'other']), /Unknown qualification/);
+});
+
 test('recognition scores preserve non-Latin text, accents, punctuation and missing words', () => {
   assert.equal(textErrorRate('Résumé 2048', 'Re\u0301sume\u0301\n2048'), 0);
   assert(textErrorRate('Invoice 2048', 'Invoice') > 0.3);

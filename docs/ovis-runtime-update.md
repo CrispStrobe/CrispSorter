@@ -350,4 +350,18 @@ The existing runner assumes its checkout is the app source and cannot directly
 replay this artifact. The full quality/document fixture directory and installed
 private baseline models were not retained; a replay needs exact fixture
 reconstruction or a narrow boundary runner, and available verified baseline
-model bytes in the fresh emulator. No replay workflow or execution is added here.
+model bytes in the fresh emulator.
+
+The manual `ocr-mobile-native.yml` route with `candidate_replay: true` now supplies that
+narrow runner. It stages artifact `13991450588` from the failed run with exact
+committed archive/APK/build/native/PNG pins, checks out the original app source
+separately, and records the corrected harness commit and tree. It repeats source,
+receipt and file-hash checks before emulator use. The WebView harness validates
+the exact installed APK, imports the retained original PNG, and uses only the
+existing pinned DBNet/English baseline installed through the app. Startup,
+photo-preparation and project-save prerequisites still run; it then performs
+the native rejection/valid-empty checks and stops before full OCR, German,
+document, UI and export gates. It downloads no host fixture weights and builds
+neither runtime nor app. The complete app flow remains the default mode.
+The replay route is prepared and has not been dispatched or executed; the
+original archive expires on 2026-11-26 and an unavailable archive fails closed.

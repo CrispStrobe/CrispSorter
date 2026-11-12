@@ -95,7 +95,8 @@ export function validatePackagedAndroidLibraries(artifact) {
 
 export function probeOptions(argv) {
   const required = ['serial', 'apk', 'inputs', 'output', 'source-commit', 'embed-commit', 'build-receipt'];
-  const allowed = new Set([...required, 'runtime-receipt', 'device-kind', 'repeat-pages', 'max-rss-mib']);
+  const allowed = new Set([...required, 'runtime-receipt', 'device-kind', 'repeat-pages', 'max-rss-mib',
+    'qualification', 'harness-source-commit']);
   const result = {};
   for (let i = 0; i < argv.length; i += 2) {
     const key = argv[i]?.replace(/^--/, '');
@@ -113,6 +114,14 @@ export function probeOptions(argv) {
       'Select a dedicated physical device explicitly; emulator serials cannot establish physical execution.');
   }
   assert(hex(result['source-commit'], 40) && hex(result['embed-commit'], 40), 'Full source and paired native commit IDs are required.');
+  result.qualification ??= 'full';
+  assert(['full', 'candidate-boundary'].includes(result.qualification), 'Unknown qualification scope.');
+  if (result.qualification === 'candidate-boundary') {
+    assert.equal(result['device-kind'], 'emulator', 'Candidate replay requires an emulator.');
+    assert(hex(result['harness-source-commit'], 40), 'Candidate replay requires a distinct recorded harness source identity.');
+    assert.notEqual(result['harness-source-commit'], result['source-commit'], 'Record corrected harness source separately from original app source.');
+    assert(result['runtime-receipt'], 'Candidate replay requires its native runtime receipt.');
+  }
   for (const [key, fallback, low, high] of [['repeat-pages', 8, 2, 64], ['max-rss-mib', 1024, 256, 8192]]) {
     const input = result[key] ?? String(fallback);
     assert(/^\d+$/.test(input), '--' + key + ' must be an integer.');

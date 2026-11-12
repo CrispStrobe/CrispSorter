@@ -95,16 +95,18 @@ function projectRegion(region) {
 
 async function main() {
   const opt = probeOptions(process.argv.slice(2));
+  const boundaryOnly = opt.qualification === 'candidate-boundary';
   const output = path.resolve(opt.output);
   await fs.mkdir(path.dirname(output), { recursive: true });
   await fs.mkdir(output); // Never overwrite evidence from an earlier run.
   const receipt = {
-    schema_version: 1, kind: 'android-webview-native-ocr', started_at: stamp(), status: 'running',
+    schema_version: 1, kind: 'android-webview-native-ocr', qualification_mode: opt.qualification, started_at: stamp(), status: 'running',
     synthetic_only: true, physical_camera_tested: false, corpus_quality_qualified: false,
     system_save_picker_tested: false, system_document_picker_tested: false,
     ui_interactions_tested: false, device_kind: opt['device-kind'],
     physical_device_qualified: false,
     source: { sorter_commit: opt['source-commit'], crispembed_commit: opt['embed-commit'],
+      harness_commit: opt['harness-source-commit'] ?? null,
       identity_basis: 'Clean checkout build receipt, matched packaged native code/data, and exact installed APK SHA-256',
       github_run_id: process.env.GITHUB_RUN_ID ?? null, github_sha: process.env.GITHUB_SHA ?? null },
     serial: opt.serial, package: PACKAGE, steps: [], cleanup_errors: [], memory_samples: [],
@@ -340,28 +342,31 @@ async function main() {
       assert.equal(inputs.fixture.width, 1400);
       assert.equal(inputs.fixture.height, 480);
       assert.equal(inputs.fixture.text, 'CRISP MOBILE OCR\nDocument 2048\nTotal 125.00');
-      const qualitySpecBytes = await fs.readFile(new URL('../tools/mobile-ocr-probe/quality.json', import.meta.url));
-      const qualitySpec = JSON.parse(qualitySpecBytes);
-      assert.equal(inputs.quality_fixtures?.spec_sha256, digest(qualitySpecBytes), 'Prepared quality inputs differ from this exact source.');
-      assert.equal(inputs.quality_fixtures.font_sha256, inputs.fixture.font_sha256);
-      assert.deepEqual(inputs.quality_fixtures.models, qualitySpec.models);
-      assert.deepEqual(qualitySpec.models.map(model => model.name), ['tesseract-deu']);
-      assert.equal(inputs.quality_fixtures.cases.length, qualitySpec.cases.length);
+      let qualitySpec = { models: [], cases: [] };
       const quality = [];
-      for (let index = 0; index < qualitySpec.cases.length; index++) {
-        const { text, png_sha256, bytes: pngSize, ...actualSpec } = inputs.quality_fixtures.cases[index];
-        const fixture = qualitySpec.cases[index];
-        assert.deepEqual(actualSpec, fixture);
-        assert.equal(text, fixture.lines.map(line => line.text).join('\n'));
-        assert(/^quality-[a-z-]+\.png$/.test(fixture.filename) && hex(png_sha256, 64));
-        const pixels = await fs.readFile(path.join(opt.inputs, fixture.filename));
-        assert(pixels.length > 32 && pixels.length <= 2 * 1024 * 1024);
-        assert.equal(pixels.length, pngSize);
-        assert.equal(digest(pixels), png_sha256);
-        assert.equal(pixels.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
-        assert.equal(pixels.readUInt32BE(16), fixture.width);
-        assert.equal(pixels.readUInt32BE(20), fixture.height);
-        quality.push({ fixture, bytes: pixels, sha256: png_sha256 });
+      if (!boundaryOnly) {
+        const qualitySpecBytes = await fs.readFile(new URL('../tools/mobile-ocr-probe/quality.json', import.meta.url));
+        qualitySpec = JSON.parse(qualitySpecBytes);
+        assert.equal(inputs.quality_fixtures?.spec_sha256, digest(qualitySpecBytes), 'Prepared quality inputs differ from this exact source.');
+        assert.equal(inputs.quality_fixtures.font_sha256, inputs.fixture.font_sha256);
+        assert.deepEqual(inputs.quality_fixtures.models, qualitySpec.models);
+        assert.deepEqual(qualitySpec.models.map(model => model.name), ['tesseract-deu']);
+        assert.equal(inputs.quality_fixtures.cases.length, qualitySpec.cases.length);
+        for (let index = 0; index < qualitySpec.cases.length; index++) {
+          const { text, png_sha256, bytes: pngSize, ...actualSpec } = inputs.quality_fixtures.cases[index];
+          const fixture = qualitySpec.cases[index];
+          assert.deepEqual(actualSpec, fixture);
+          assert.equal(text, fixture.lines.map(line => line.text).join('\n'));
+          assert(/^quality-[a-z-]+\.png$/.test(fixture.filename) && hex(png_sha256, 64));
+          const pixels = await fs.readFile(path.join(opt.inputs, fixture.filename));
+          assert(pixels.length > 32 && pixels.length <= 2 * 1024 * 1024);
+          assert.equal(pixels.length, pngSize);
+          assert.equal(digest(pixels), png_sha256);
+          assert.equal(pixels.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+          assert.equal(pixels.readUInt32BE(16), fixture.width);
+          assert.equal(pixels.readUInt32BE(20), fixture.height);
+          quality.push({ fixture, bytes: pixels, sha256: png_sha256 });
+        }
       }
       for (const model of [...inputs.models, ...qualitySpec.models]) {
         assert(hex(model.sha256, 64) && /^[a-z0-9-]+$/.test(model.name));
@@ -427,6 +432,8 @@ async function main() {
       }
       return { bytes, inputs, quality, candidateRuntime: build.candidate_reuse != null };
     }, 120_000);
+
+    if (boundaryOnly) assert(prepared.candidateRuntime, 'Boundary-only replay requires candidate reuse provenance.');
 
     await step('attach to the running application WebView through its own debug socket', async () => {
       pid = await adbText(['shell', 'pidof', PACKAGE]);
@@ -497,7 +504,7 @@ async function main() {
       const projects = await invoke('ocr_workspace_list');
       assert.deepEqual(projects, [], 'Use a fresh dedicated test installation; existing projects must not be overwritten or erased.');
       const registry = await invoke('embedder_registry_list', {}, 60_000);
-      for (const model of [...prepared.inputs.models, ...prepared.inputs.quality_fixtures.models]) {
+      for (const model of [...prepared.inputs.models, ...(boundaryOnly ? [] : prepared.inputs.quality_fixtures.models)]) {
         const entry = registry.find(item => item.name === model.name);
         assert(entry && entry.filename === model.filename && entry.cached === false, 'Expected an uninstalled baseline model: ' + model.name);
       }
@@ -632,6 +639,17 @@ async function main() {
         });
         receipt.candidate_boundary.verified_baseline_models = receipt.verified_models;
       }, 220_000);
+    }
+
+    if (boundaryOnly) {
+      await step('verify retained replay input and app process survive the boundary controls', async () => {
+        assert.equal(await privateDigest(archivedPath(imported)), prepared.inputs.fixture.png_sha256);
+        assert.equal(await privateDigest(original.image_path), receipt.original_asset_sha256);
+        assert.equal(await adbText(['shell', 'pidof', PACKAGE]), pid);
+      });
+      receipt.qualification = 'Candidate native failure and Tesseract valid-empty boundary only; full OCR, document, UI, export and physical-device gates were not run.';
+      receipt.status = 'passed';
+      return;
     }
 
     const recognized = [];
