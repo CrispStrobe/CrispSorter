@@ -76,6 +76,7 @@ pub fn safe_context(value: Value) -> Map<String, Value> {
         "kind" => value.as_str().is_some_and(|s| ["image", "pdf", "archive", "mail", "presentation", "document", "table", "fields", "formula", "checkbox", "text", "copy", "move", "script"].contains(&s)),
         "mode" => value.as_str().is_some_and(mode),
         "model_kind" => value.as_str().is_some_and(|s| ["registry", "custom", "default"].contains(&s)),
+        "status" => value.as_str().is_some_and(|s| ["pending", "running", "paused", "done", "error", "in_progress", "skipped"].contains(&s)),
         _ => false,
     }).collect()
 }
