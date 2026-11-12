@@ -17,9 +17,8 @@ on:
       - '.github/workflows/mobile-provider-check.yml'
 
 concurrency:
-  group: mobile-provider-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref == 'refs/heads/feat/ocr-document-studio' || github.head_ref == 'feat/ocr-document-studio' || github.ref == 'refs/heads/feat/ocr-mobile-documents' || github.head_ref == 'feat/ocr-mobile-documents' }}
-
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' && (github.event_name == 'push' || github.event_name == 'pull_request') }}
 jobs:
   android-provider:
     runs-on: ubuntu-24.04

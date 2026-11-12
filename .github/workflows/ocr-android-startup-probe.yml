@@ -1,13 +1,23 @@
-name: Retained Android OCR app flow
+name: Retained Android OCR startup diagnosis
 
-# Reuse the already-built, source-bound APK; do not rebuild the application.
 on:
   workflow_dispatch:
+  push:
+    branches: ['feat/ocr-android-launch-diagnostics']
+    paths:
+      - '.github/workflows/ocr-android-startup-probe.yml'
+      - 'tools/android-startup-probe/**'
+      - 'scripts/mobile_simulator_smoke.py'
+      - 'tests/scripts/test_mobile_startup_diagnostics.py'
+      - 'tests/scripts/test_mobile_retained_apk.py'
 
 permissions:
   contents: read
   actions: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' && (github.event_name == 'push' || github.event_name == 'pull_request') }}
 jobs:
   retained-app-flow:
     runs-on: ubuntu-24.04
