@@ -10,9 +10,10 @@ This crate is a vendored copy of `crates/crisp-internxt` from
 | Last app-side sync | `d6e4f8c8` |
 | Compared | 2026-11-12, `src/lib.rs`, `src/main.rs` (identical), `Cargo.toml` |
 
-The same revision is pinned in `.github/workflows/provider-conformance.yml` and
-in the `cloud-facade` job of `.github/workflows/ci.yml`. Advance all three
-together.
+The table records the app-side sync baseline. The provider conformance and
+cloud-facade CI jobs instead pin upstream `98583771f13919d5e4efa95133843c1eabc94e92`,
+a one-line Clippy-only fix cherry-picked onto `0aaa6666a6108f4d4d29877a34afe6ec428e0467`.
+Keep those two CI pins aligned; this does not relabel the app-local sync baseline.
 
 ## App-local divergences
 

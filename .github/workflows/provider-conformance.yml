@@ -18,7 +18,7 @@ jobs:
         with:
           repository: CrispStrobe/crisp-cloud-rs
           # Keep in sync with ci.yml (cloud-facade) and crates/*-native/VENDORED.md.
-          ref: 0aaa6666a6108f4d4d29877a34afe6ec428e0467
+          ref: 98583771f13919d5e4efa95133843c1eabc94e92
           path: _provider_conformance
       - uses: dart-lang/setup-dart@v1
         with:

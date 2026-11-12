@@ -170,7 +170,7 @@ not an assumed outcome of sharing the Rust sources.
 ## Executable Dart / Rust package conformance
 
 `.github/workflows/provider-conformance.yml` runs the shared, pinned
-[provider conformance harness](https://github.com/CrispStrobe/crisp-cloud-rs/tree/0aaa6666a6108f4d4d29877a34afe6ec428e0467/conformance).
+[provider conformance harness](https://github.com/CrispStrobe/crisp-cloud-rs/tree/98583771f13919d5e4efa95133843c1eabc94e92/conformance).
 It tests this repository’s actual native Filen/Internxt crate sources against
 the retained Dart SDKs, without replacing the Sorter crates.
 
