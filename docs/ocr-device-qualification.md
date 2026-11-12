@@ -294,10 +294,9 @@ The remaining integration is concrete:
 
 For bounded unpublished preparation use the existing target-selectable
 `ocr-mobile-native.yml` lane, one target at a time. It already prepares runtime,
-ORT, forced Cargo paths, notices and build identity. A separate signed OCR draft
-recipe is intentionally not enabled until the native staging and device
-provenance issues above are resolved. Local changes to the guard and receipts
-are preparation only; no new platform build or execution result is implied.
+ORT, forced Cargo paths, notices and build identity. The separate signed OCR
+draft selectors described below prepare native staging and final-artifact
+provenance without enabling public OCR release or claiming device qualification.
 
 For ordinary current-source artifacts, select a version/draft target bound to
 that source before building: the retained v0.15.0 packages and receipts bind an
@@ -333,7 +332,7 @@ guard. The fixture test creates real Git sibling repositories and uses offline,
 locked Cargo metadata to check all seven dependencies resolve while the
 application manifest/lock/source remain clean; this does not compile code.
 
-To complete a signed OCR-capable **draft** recipe next:
+The signed OCR draft implementation follows this sequence:
 
 1. Reuse this clean checkout layout and require production/mobile lock agreement.
    Stage native build, pinned ORT, forced Cargo environment, notices and the
@@ -358,7 +357,7 @@ To complete a signed OCR-capable **draft** recipe next:
    those build/provenance paths exist. A passed preparation test is neither a
    signed platform build nor an application/quality qualification result.
 
-## Production-pinned signed OCR drafts (prepared, not executed)
+## Production-pinned signed OCR drafts
 
 The Release workflow now has two explicit manual selectors:
 `android_ocr_draft` and `ios_ocr_draft`. Each runs only its named mobile job,
@@ -398,17 +397,18 @@ must not be interpreted as verified. The artifact retention path is an explicit
 allowlist of signed package and build records, never keychains, P12/P8 material
 or provisioning secret directories.
 
-This implementation has only focused mocked preparation/provenance and selector
-safety tests. No new native build, platform signing, upload or device execution
-was performed to prepare it. In particular, linking/stripping behavior of the
+The implementation has focused mocked preparation/provenance and selector
+safety tests. The [iOS-only signed draft run](https://github.com/CrispStrobe/CrispSorter/actions/runs/43320049351)
+was queued at this update; inspect its result before claiming a platform build
+or signing result. No new upload or device execution is established. In particular, linking/stripping behavior of the
 signed iOS OCR-device app is not yet verified; required native symbol/provenance
 checks fail rather than being bypassed if export strips needed evidence.
 
-Next, run one selector at a time on the exact committed source when platform
-work is authorized. Inspect the retained build/provenance result and original
+Next, inspect the iOS-only run and execute the Android selector on the exact
+committed source when the existing Android candidate run has finished. Inspect the retained build/provenance result and original
 failure logs before running application cases. The iOS artifact is not in
-TestFlight; uploading an OCR-capable IPA requires a later explicitly scoped
-source/hash-bound route after its actual build and application evidence exist.
+TestFlight; uploading an OCR-capable IPA requires a source/hash-bound route after its
+actual build and application evidence exist.
 Current-default Android recognition, the two-column case, representative corpus,
 physical camera/provider behavior and signed iOS application execution retain
 the separate qualification requirements above. This draft implementation does
