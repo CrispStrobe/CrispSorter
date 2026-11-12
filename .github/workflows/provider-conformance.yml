@@ -17,8 +17,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: CrispStrobe/crisp-cloud-rs
-          # Keep in sync with ci.yml (cloud-facade) and crates/*-native/VENDORED.md.
-          ref: 0aaa6666a6108f4d4d29877a34afe6ec428e0467
+          # Keep in sync with ci.yml; vendored baseline is recorded separately.
+          ref: 121bfa6682ab710cc19fbd7c7897e4aea0729920
           path: _provider_conformance
       - uses: dart-lang/setup-dart@v1
         with:

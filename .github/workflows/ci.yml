@@ -913,10 +913,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: CrispStrobe/crisp-cloud-rs
-          # Pinned (was: default branch) to the revision the vendored
-          # crates/crisp-*-native sources correspond to. Keep in sync with
-          # provider-conformance.yml and crates/*-native/VENDORED.md.
-          ref: 0aaa6666a6108f4d4d29877a34afe6ec428e0467
+          # Exact upstream validation source, including the Windows fix and clippy fix.
+          # This differs from the recorded vendored baseline; see VENDORED.md.
+          # Keep this pin in sync with provider-conformance.yml.
+          ref: 121bfa6682ab710cc19fbd7c7897e4aea0729920
           path: crisp-cloud-rs
 
       - uses: dtolnay/rust-toolchain@stable

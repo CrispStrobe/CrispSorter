@@ -10,9 +10,11 @@ This crate is a vendored copy of `crates/crisp-filen` from
 | Last app-side sync | `d6e4f8c8` (same change, applied here) |
 | Compared | 2026-11-12, `src/lib.rs`, `src/main.rs`, `Cargo.toml` |
 
-The same revision is pinned in `.github/workflows/provider-conformance.yml` and
-in the `cloud-facade` job of `.github/workflows/ci.yml`. Advance all three
-together.
+The vendored baseline above differs from the upstream validation source. Both
+`.github/workflows/provider-conformance.yml` and the `cloud-facade` job pin
+`121bfa6682ab710cc19fbd7c7897e4aea0729920`, which includes the Windows root
+fix and the Rust clippy correction. This commit is the head of upstream PR #3;
+re-pin to its merged commit after it lands and verify the resulting source tree.
 
 ## App-local divergences
 
