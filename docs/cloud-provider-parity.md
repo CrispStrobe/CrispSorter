@@ -61,7 +61,11 @@ trait used by CrispSorter.
   use the validated install-time host and explicit user consent; it must not
   accept a per-request arbitrary URL.
 * Certificate pin policy validation is not certificate pin enforcement. The
-  built-in pin sets and rotation checks fail closed on malformed policy, but
+  built-in pin sets and rotation checks fail closed on malformed policy.
+  Host selection compares whole DNS labels, including the regional S3
+  patterns; each wildcard consumes one nonempty label. URL authorities and
+  malformed names cannot select a policy. The source-bound
+  `tests/cert-pin-contract` validates this selection and pin data, but
   the actual verifier/client-construction work remains a separate security
   item in `PLAN.md`.
 * A provider capability is a promise. If a backend cannot safely implement an

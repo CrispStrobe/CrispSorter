@@ -1894,6 +1894,13 @@ no pinning.  Low effort, meaningful security improvement.
   - [x] Pin-set validation now rejects malformed base64 digests, duplicate
     primary/backup pins, missing domains, and incomplete rotations; hostname
     selection normalizes case and trailing dots.
+  - [x] DNS-label policy selection now supports the shipped regional S3
+    wildcard pattern and regional service endpoints. Each wildcard consumes
+    exactly one nonempty label; malformed authorities, domains and patterns
+    fail closed. A lightweight source-bound contract covers the production
+    policy module. This does not enable TLS handshake pin enforcement: root
+    SPKI/validated-chain verification, current pin qualification, backup-pin
+    warnings and constructor integration remain unchecked above.
 
 #### Priority 8 — HTTP/SOCKS5 proxy support
 
