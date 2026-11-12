@@ -2540,6 +2540,7 @@ fn cmd_ocr(
         layout,
         layout_model: None,
         layout_engine,
+        experimental_cc_column_crops: false,
         layout_threshold,
         drop_headers_footers,
         sr,

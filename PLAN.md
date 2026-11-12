@@ -2,6 +2,15 @@
 
 ## Experimental CC recognition crops — 12 November 2026
 
+[Automatic app check 43290895137](https://github.com/CrispStrobe/CrispSorter/actions/runs/43290895137)
+at source `c2dbcb0f` failed with E0063 in the CLI's
+exhaustive `OcrPipelineConfig` initializer after the new gate field was added.
+Set that CLI field explicitly false. The lightweight contract build now checks
+exhaustive CLI config fields against the production schema; it previously
+compiled only workspace/config selections and missed this integration error.
+Hosted contract execution and full application typechecking remain required;
+this source-field guard does not compile the complete CLI.
+
 Source `87f5181f` changed supported CC/Tesseract review profiles from whole-page
 recognition to line-crop recognition after retained Android run
 [43275466921](https://github.com/CrispStrobe/CrispSorter/actions/runs/43275466921)
