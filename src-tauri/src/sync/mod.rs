@@ -28,6 +28,8 @@ pub mod delta;
 pub mod offline_queue;
 pub mod offline_replay;
 pub mod pairs;
+pub(crate) mod paths;
+pub(crate) mod inventory;
 pub mod partition;
 pub mod proxy;
 pub mod proxy_secret;

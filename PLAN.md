@@ -3501,6 +3501,12 @@ a transfer without leaving the search/catalog workflow.
   - [x] CLI parity now exposes `sync pair pull <id> [--dry-run]` with the
     same remote-wins guard, inventory cutoff, shared queue, and local-write
     behavior. ✅ 2026-08-01
+  - [x] Shared GUI/CLI pull path preflight rejects provider traversal/separator
+    names, ambiguous exact duplicates and existing local symlink escapes before
+    transfer submission. Unicode names remain exact; Windows-unsafe names fail
+    explicitly. Focused source-bound inventory/filesystem tests cover those
+    boundaries. Descriptor-based TOCTOU protection, filesystem-specific case
+    collisions and multi-file transaction safety remain open.
   - [x] File-manager move/copy commands now consume the persisted policy (or
     an explicit override): newest-wins compares provider timestamps,
     local-wins skips, remote-wins proceeds, keep-both chooses a collision-safe

@@ -129,6 +129,32 @@ mean metadata-unchanged, not verified content equality; timestamp precision and
 clock skew can also hide differences. Keep-both and durable per-file manual
 resolution remain open.
 
+### Sync pull path boundary
+
+GUI and CLI sync inventory validate provider names before stat or recursive
+descent. Empty names, dot components, slashes, backslashes, NULs and exact
+duplicate names are rejected rather than mapped to a different file. Unicode,
+spaces and literal percent sequences are preserved. Windows additionally
+rejects device names, alternate-data-stream/drive spellings, invalid characters
+and trailing-dot/space aliases. POSIX filenames such as `file:notes` remain
+supported on POSIX; names that cannot be represented safely on the local
+platform fail explicitly. Filesystem-specific case/Unicode-normalization
+collisions are not resolved by this validation.
+
+Before each queued pull, the configured local root must already exist and is
+canonicalized as the authority; an explicitly configured root symlink may name
+that authority. Descendant directory and leaf symlinks, dangling links and
+nonregular leaf targets are rejected. Missing ordinary subdirectories may be
+created beneath the canonical root. Both GUI and CLI use the same destination
+check. Tests exercise the real inventory/path functions with a provider double,
+temporary local directories and Unix symlinks.
+
+This preflight does not use descriptor-relative filesystem operations. Another
+process can replace a checked directory after validation, including while a
+download is queued or retried. Race-safe traversal/publication requires anchored
+directory handles and platform-specific APIs; this change does not claim that
+TOCTOU protection, atomic multi-file pull or provider CAS.
+
 ### Durable duplicate trash: Internxt receipt slice
 
 Only Internxt advertises `trash_receipts` and exposes the exact-object adapter.

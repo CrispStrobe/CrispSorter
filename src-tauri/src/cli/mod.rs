@@ -6842,7 +6842,8 @@ async fn cmd_sync_pair(
             let mut watermark = pair.watermark;
             for entry in &remote {
                 let remote_path = std::path::PathBuf::from(format!("{}/{}", pair.remote_root.trim_end_matches('/'), entry.relative_path));
-                let local = std::path::Path::new(&pair.local_root).join(&entry.relative_path);
+                let local = crate::sync::paths::local_pull_destination(std::path::Path::new(&pair.local_root), &entry.relative_path)
+                    .map_err(|error| error.to_string())?;
                 let transfer = queue.submit_drive_download_to_file(
                     pair.drive_id.clone(), drive.clone(), remote_path, local, Some(entry.size),
                 );

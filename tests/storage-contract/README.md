@@ -19,6 +19,17 @@ unit tests. The focused regressions reject ambiguous newest-wins batches before
 watermark advancement and preserve existing destinations with unknown/equal
 timestamps. They do not execute Tauri commands or establish provider CAS safety.
 
+The production sync inventory and local destination preflight are included
+directly as modules. Their focused tests exercise invalid provider names,
+Unicode-preserving nested inventory, platform filename checks and Unix symlink
+escape rejection. These preflight checks do not establish descriptor-based
+protection against concurrent filesystem path swaps.
+
+```sh
+CARGO_BUILD_JOBS=1 cargo test --locked --manifest-path tests/storage-contract/Cargo.toml sync_paths_production -- --test-threads=1
+CARGO_BUILD_JOBS=1 cargo test --locked --manifest-path tests/storage-contract/Cargo.toml sync_inventory_production -- --test-threads=1
+```
+
 ```sh
 CARGO_BUILD_JOBS=1 cargo test --locked --manifest-path tests/storage-contract/Cargo.toml file_conflict -- --test-threads=1
 ```
