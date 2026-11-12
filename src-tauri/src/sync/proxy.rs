@@ -73,18 +73,30 @@ pub fn build_async_client_with_timeout(
         .context("building proxied async client")
 }
 
+/// A malformed proxy URL can contain credentials anywhere, including strings
+/// which cannot be parsed safely enough to redact. Replace the parser error
+/// entirely: keeping it as an anyhow source could leak through {:#} or Debug.
+fn configured_proxy(config: &ProxyConfig) -> Result<Option<reqwest::Proxy>> {
+    let Some(url) = &config.url else {
+        return Ok(None);
+    };
+    let mut proxy = reqwest::Proxy::all(url).map_err(|_| {
+        anyhow::anyhow!(
+            "invalid proxy URL: check the proxy scheme, hostname and port (HTTP, HTTPS or SOCKS5)"
+        )
+    })?;
+    if let (Some(user), Some(pass)) = (&config.username, &config.password) {
+        proxy = proxy.basic_auth(user, pass);
+    }
+    Ok(Some(proxy))
+}
+
 fn configure_async_builder(config: &ProxyConfig) -> Result<reqwest::ClientBuilder> {
     let mut builder = reqwest::ClientBuilder::new();
 
-    if let Some(url) = &config.url {
-        let mut proxy =
-            reqwest::Proxy::all(url).with_context(|| format!("invalid proxy URL: {url}"))?;
-        if let (Some(user), Some(pass)) = (&config.username, &config.password) {
-            proxy = proxy.basic_auth(user, pass);
-        }
+    if let Some(proxy) = configured_proxy(config)? {
         builder = builder.proxy(proxy);
     }
-
     Ok(builder)
 }
 
@@ -126,12 +138,7 @@ pub(crate) fn configure_blocking_builder(
         builder = builder.danger_accept_invalid_certs(true);
     }
 
-    if let Some(url) = &config.url {
-        let mut proxy =
-            reqwest::Proxy::all(url).with_context(|| format!("invalid proxy URL: {url}"))?;
-        if let (Some(user), Some(pass)) = (&config.username, &config.password) {
-            proxy = proxy.basic_auth(user, pass);
-        }
+    if let Some(proxy) = configured_proxy(config)? {
         builder = builder.proxy(proxy);
     }
 
@@ -195,6 +202,55 @@ mod tests {
         };
         let result = build_blocking_client(&cfg);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn malformed_proxy_urls_never_expose_secrets_in_any_error_format() {
+        for url in [
+            "http://inline-user:inline-password@proxy.example.test:99999/private-path?token=query-secret#fragment-secret",
+            "https://inline-user:inline-password@[invalid-host]/private-path?token=query-secret#fragment-secret",
+            "http://encoded%40user:encoded%3Apassword@proxy.example.test:invalid-port/private-path?token=query-secret#fragment-secret",
+            "not a proxy URL inline-user inline-password query-secret",
+        ] {
+            let config = ProxyConfig {
+                url: Some(url.into()),
+                username: Some("configured-user".into()),
+                password: Some("configured-password".into()),
+            };
+            let results = [
+                build_blocking_client(&config).map(|_| ()),
+                build_async_client(&config).map(|_| ()),
+                build_async_client_with_timeout(&config, std::time::Duration::from_secs(3)).map(|_| ()),
+                // The opt-in Google transport uses this actual shared builder.
+                configure_blocking_builder(&config, None, false).map(|_| ()),
+            ];
+            for result in results {
+                let error = result.expect_err("malformed proxy URL must fail construction");
+                assert!(error.to_string().contains("invalid proxy URL"));
+                assert!(error.to_string().contains("scheme, hostname and port"));
+                assert_eq!(error.chain().count(), 1, "discard the unsafe parser error source");
+                for rendered in [format!("{error}"), format!("{error:#}"), format!("{error:?}")] {
+                    for secret in [url, "inline-user", "inline-password", "encoded%40user", "encoded%3Apassword",
+                        "query-secret", "fragment-secret", "private-path", "configured-user", "configured-password"] {
+                        assert!(!rendered.contains(secret), "proxy secret leaked through error formatting");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn valid_secret_bearing_proxy_urls_preserve_construction() {
+        for url in [
+            "http://inline-user:inline-password@127.0.0.1:8080/private-path?token=query-secret#fragment-secret",
+            "https://inline-user:inline-password@127.0.0.1:8080",
+            "socks5://inline-user:inline-password@127.0.0.1:1080",
+            "socks5h://inline-user:inline-password@127.0.0.1:1080",
+        ] {
+            let config = ProxyConfig { url: Some(url.into()), ..Default::default() };
+            assert!(build_blocking_client(&config).is_ok());
+            assert!(build_async_client(&config).is_ok());
+        }
     }
 
     #[test]
