@@ -18,6 +18,7 @@ import type { OfficeExportOptions } from "./officeExport";
 import type { WorkbookOptions } from "./workbookExport";
 import { resolveRecognitionLanguage } from "./recognitionLanguage";
 import { runOperation, type OperationLog } from "../operationLog";
+import { ocrBinaryPayload } from "./binaryPayload";
 
 export interface WorkspaceCapabilities {
   ocr: boolean;
@@ -421,14 +422,15 @@ async function trackedExport(request: ExportRequest, options?: ExportOptions, re
   }
 }
 
-/** Raw IPC avoids expanding a camera JPEG into millions of JavaScript numbers.
+/** Android uses base64 because Tauri postMessage expands typed bytes to JSON
+ * numbers. Other platforms use raw bytes with a validated postMessage fallback.
  * Header metadata is UTF-8 encoded so provider identities stay byte-exact. */
 function importPayload(command: string, name: string, bytes: Uint8Array, sourceUri?: string, requestId?: string): Promise<ImportedDocument> {
   if (!bytes.byteLength || bytes.byteLength > 32 * 1024 * 1024) return Promise.reject(new Error("Choose a nonempty document no larger than 32 MiB."));
   const metadata = new TextEncoder().encode(JSON.stringify({ name, ...(sourceUri ? { sourceUri } : {}), ...(requestId ? { requestId } : {}) }));
   if (metadata.byteLength > 12 * 1024) return Promise.reject(new Error("The document name or provider identity is too long."));
   const encoded = btoa(String.fromCharCode(...metadata));
-  return invoke(command, bytes, { headers: { "x-ocr-metadata": encoded } });
+  return invoke(command, ocrBinaryPayload(bytes), { headers: { "x-ocr-metadata": encoded } });
 }
 
 /** The native picker owns destination access; the rendered file stays private

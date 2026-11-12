@@ -45,6 +45,22 @@ conversion. JPEG, PNG, TIFF, BMP, and WebP use the shared image importer and its
 
 ## Native boundary
 
+Tauri's Android bridge uses JSON postMessage and cannot deliver a raw request
+body. Workspace imports and general image OCR therefore send `{ base64 }` on
+Android, or while the native platform capability is still unknown. Known desktop
+and iOS platforms retain raw byte transport. Metadata stays in the UTF-8 base64
+`x-ocr-metadata` header, including the exact name, provider URI and request identity.
+The native decoder checks encoded length and the padding-derived decoded length
+before reserving memory; decoded input remains limited to 32 MiB.
+
+A strict JSON byte-array compatibility path accepts at most 1 MiB and rejects
+noninteger or out-of-range elements. Tauri has already parsed such arrays before
+this check, so that compatibility limit cannot prevent the initial JSON parse
+allocation. New Android callers and the real-app probe use base64 to avoid the
+large number-array expansion. Full 32 MiB device memory behavior still requires
+a rebuilt Android app and targeted device qualification; decoder tests alone do
+not establish that qualification.
+
 Only the Rust app can call `rasterize_ocr_document`; it is absent from the
 webview command and ACL list. The registered mobile plugin independently checks
 that the source is a hashed file under the private OCR `sources` directory and

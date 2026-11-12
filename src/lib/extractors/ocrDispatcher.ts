@@ -3,6 +3,7 @@ import type Tesseract from 'tesseract.js';
 import { loadSavedOcrPolicy, ocrPolicyLanguage, type OcrPolicy, type OcrSelection } from './ocrSettings';
 import { beginOperation, type OperationLog } from '../operationLog';
 import { ensureOcrModels, modelGate, type EnsureResult } from '../ocr/modelGate';
+import { ocrBinaryPayload } from '../ocr/binaryPayload';
 import { plannedFromError, type PlannedModel } from '../ocr/modelManager';
 
 export const MAX_OCR_IMAGE_BYTES = 32 * 1024 * 1024;
@@ -205,7 +206,7 @@ export async function createOcrSession(options: OcrSessionOptions = {}): Promise
                 options.signal?.throwIfAborted();
                 operation.stage('dispatching', { bytes: bytes.byteLength });
                 dispatched = true;
-                const result = await withExtractionAbort(invoke<OcrTextResult>('ocr_extract_image', bytes,
+                const result = await withExtractionAbort(invoke<OcrTextResult>('ocr_extract_image', ocrBinaryPayload(bytes),
                     { headers: { 'x-ocr-metadata': btoa(binary), 'x-operation-id': operation.id } }), options.signal);
                 options.signal?.throwIfAborted();
                 if (!result || typeof result.text !== 'string' || typeof result.engine !== 'string' || !result.engine.trim()

@@ -24,6 +24,7 @@ use tauri::{Emitter, Manager, State};
 
 #[path = "ocr_document_import.rs"]
 mod document_import;
+use crate::ocr_import_payload::{self as import_payload, ImportMetadata};
 use crate::ocr_atomic_output as atomic_output;
 use atomic_output::{atomic_write, atomic_write_with, sync_directory};
 #[path = "ocr_export_control.rs"]
@@ -378,31 +379,19 @@ pub fn ocr_workspace_cancel_import(request_id: String) -> Result<(), String> {
     result
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ImportMetadata {
-    name: String,
-    source_uri: Option<String>,
-    request_id: Option<String>,
-}
-
 fn import_request(request: &tauri::ipc::Request<'_>) -> Result<(ImportMetadata, Vec<u8>), String> {
-    use base64::Engine;
-    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
-        return Err("Photo import requires a raw binary payload.".into());
+    // Reject malformed headers before copying or decoding a large document.
+    let metadata = import_payload::decode_metadata(
+        request.headers().get("x-ocr-metadata").map(|header| header.as_bytes()),
+    )?;
+    // Android (and desktop custom-protocol fallback) uses postMessage, which
+    // requires JSON. New Android clients send base64; legacy typed bytes arrive
+    // as arrays. Tauri cannot deliver InvokeBody::Raw there.
+    let bytes = match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) => import_payload::copy_raw(bytes, MAX_CAPTURE_BYTES)?,
+        tauri::ipc::InvokeBody::Json(value) => import_payload::decode_json(value, MAX_CAPTURE_BYTES)?,
     };
-    if bytes.is_empty() || bytes.len() > MAX_CAPTURE_BYTES {
-        return Err("Choose a nonempty document no larger than 32 MiB.".into());
-    }
-    let header = request.headers().get("x-ocr-metadata").ok_or("Missing photo import metadata.")?;
-    if header.as_bytes().len() > 16 * 1024 { return Err("Photo import metadata is too large.".into()); }
-    let json = base64::engine::general_purpose::STANDARD.decode(header.as_bytes())
-        .map_err(|_| "Photo import metadata is invalid.")?;
-    let metadata = serde_json::from_slice(&json).map_err(|_| "Photo import metadata is invalid.")?;
-    let mut owned = Vec::new();
-    owned.try_reserve_exact(bytes.len()).map_err(|_| "Not enough memory to import this photo. Try a smaller capture.")?;
-    owned.extend_from_slice(bytes);
-    Ok((metadata, owned))
+    Ok((metadata, bytes))
 }
 
 fn import_bytes(root: &Path, name: &str, bytes: &[u8], allow_pdf: bool, source_uri: Option<&str>) -> Result<ImportedDocument, String> {

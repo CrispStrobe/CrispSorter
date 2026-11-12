@@ -28,6 +28,7 @@ pub mod kindle_match;
 pub mod migrations;
 pub mod ocr_workspace;
 mod ocr_extract;
+mod ocr_import_payload;
 pub(crate) mod ocr_atomic_output;
 mod ocr_photo;
 mod ocr_reading_order;

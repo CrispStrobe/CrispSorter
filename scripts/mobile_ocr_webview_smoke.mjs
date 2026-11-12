@@ -284,11 +284,8 @@ async function main() {
   const importBytes = (command, bytes, metadata, timeout = 90_000) => {
     assert(['ocr_workspace_import_bytes', 'ocr_workspace_import_image'].includes(command));
     return bounded(page.evaluate(async ({ command, base64, metadata }) => {
-      const binary = atob(base64);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
       const header = btoa(Array.from(new TextEncoder().encode(JSON.stringify(metadata)), byte => String.fromCharCode(byte)).join(''));
-      return window.__TAURI_INTERNALS__.invoke(command, bytes, { headers: { 'x-ocr-metadata': header } });
+      return window.__TAURI_INTERNALS__.invoke(command, { base64 }, { headers: { 'x-ocr-metadata': header } });
     }, { command, base64: bytes.toString('base64'), metadata }), budget(timeout, command), command);
   };
   async function pickerSnapshot(label, filename, selected = false) {
@@ -522,7 +519,7 @@ async function main() {
       receipt.verified_models = installed;
     }, 150_000);
 
-    const imported = await step('import the synthetic PNG through the real raw binary IPC', async () => {
+    const imported = await step('import the synthetic PNG through the real Tauri binary IPC', async () => {
       const result = await importBytes('ocr_workspace_import_image', prepared.bytes, { name: 'Synthetic mobile OCR.png', requestId: randomUUID() }, 60_000);
       assert.equal(result.pages.length, 1);
       const asset = validateAsset(result.pages[0], appData);
@@ -635,7 +632,7 @@ async function main() {
     }
 
     receipt.native_documents = { status: 'not_supported', pdf_import: capabilities.pdf_import,
-      qualification: 'Actual app raw IPC and native document rasterizer; source-URI preservation here uses synthetic metadata and does not exercise a system provider grant.' };
+      qualification: 'Actual app Tauri binary IPC and native document rasterizer; source-URI preservation here uses synthetic metadata and does not exercise a system provider grant.' };
     if (capabilities.pdf_import && capabilities.native_document_import) {
       const manifest = prepared.inputs.document_fixtures;
       assert(manifest?.available === true, 'This native document profile requires the checked-in document fixture set.');
@@ -654,7 +651,7 @@ async function main() {
         const result = await importBytes('ocr_workspace_import_bytes', bytes,
           { name: 'Überblick-日本語.pdf', sourceUri, requestId: randomUUID() });
         assert.equal(result.source_uri, sourceUri, 'Native import changed the supplied provider identity.');
-        assert.equal(result.name, 'Überblick-日本語.pdf', 'UTF-8 import metadata did not survive raw IPC.');
+        assert.equal(result.name, 'Überblick-日本語.pdf', 'UTF-8 import metadata did not survive Tauri IPC.');
         assert.equal(result.pages.length, manifest.pages.length);
         assert.equal(await privateDigest(archivedPath(result)), manifest.sha256, 'Native PDF import rewrote original bytes.');
         for (const [index, asset] of result.pages.entries()) {
