@@ -201,3 +201,25 @@ wrapper): `runner.py run --store dir:/tmp/bench-store ...` then
   Qwen2-VL/InternVL2/Granite/Qwen3-VL it becomes a prompt hint.
 - The CORD receipt images need `pyarrow` the first time (before they are in the bench repo's
   corpus cache).
+
+### Real-page comparison follow-up (2026-11-12)
+
+A source-pinned eight-page comparison at application revision `82c5da324043`
+processed seven pages per arm; the remaining page failed its pinned input hash
+on every attempt and must be restored or explicitly re-reviewed before repinning.
+The Ovis CPU/current, CPU/legacy and strict-GPU arms returned empty text for
+all seven processed pages. Direct native diagnostics identify rejection before
+inference because those images exceeded the native patch bound; the app
+incorrectly recorded empty success. These are failure results, not measured
+Ovis quality or GPU throughput. The GPU initialized and a separate small
+synthetic positive executed on CUDA, but that does not qualify real-page GPU
+inference.
+
+For the seven admitted pages, PP-OCRv6 CPU reported 75.76% character error and
+2.79% word recall. Tesseract had one TSV/TXT disagreement; its
+failure-penalized character error was 32.59% and word recall 61.34%. These
+figures are specific to this incomplete sample and its recorded settings.
+Preserve failures in the denominator. First propagate the native rejection as
+an app failure, then design and qualify bounded resizing or tiling against the
+unchanged real-page references. Do not promote a new default or claim a GPU
+speedup from the rejection timings.
