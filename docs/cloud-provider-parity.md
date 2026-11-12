@@ -102,7 +102,14 @@ recoverable-trash guard; ordinary explicit provider deletion is unchanged.
 Use the provider client to restore existing native trash. Google Drive's
 existing restore implementation is unchanged.
 
-Re-enabling native duplicate trash requires a durable delete receipt containing
+The duplicate workflow is also blocked for Google Drive: resolving a unique
+current parent/name path is an explicit path-based operation, not proof that
+it is the object recorded by an earlier deletion. Existing path-only deletion
+history offers no restore button, and new duplicate trash actions are disabled.
+Explicit Google Drive path-based restore remains available with unique live
+ancestor/trashed-leaf resolution and ambiguity rejection.
+
+Re-enabling duplicate trash requires a durable delete receipt containing
 provider/account identity, object UUID, object kind and original destination.
 Restore must validate that receipt against fresh trash metadata and the selected
 provider, refuse ambiguous/mismatched objects, and preserve the receipt across

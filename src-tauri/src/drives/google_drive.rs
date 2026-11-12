@@ -128,6 +128,7 @@ impl GoogleDriveDrive {
         let rel = path.to_string_lossy();
         let rel = rel.trim_start_matches('/');
         if rel.is_empty() || rel == "." {
+            anyhow::ensure!(!include_trashed, "Google Drive root cannot be restored from trash");
             return Ok("root".to_string());
         }
 
@@ -135,15 +136,12 @@ impl GoogleDriveDrive {
         let components: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
 
         for (i, name) in components.iter().enumerate() {
-            let escaped = name.replace('\'', "\\'");
-            let q = format!(
-                "'{}' in parents and name = '{}' and trashed = {}",
-                parent_id,
-                escaped,
-                if include_trashed { "true" } else { "false" }
-            );
+            let last = i == components.len() - 1;
+            // Only the final item is trashed. Its live ancestors must be
+            // uniquely resolved folders, never another same-named file.
+            let q = super::google_path::path_query(&parent_id, name, include_trashed && last, !last);
             let url = format!(
-                "{}/files?q={}&fields=files(id,name)&pageSize=1",
+                "{}/files?q={}&fields=nextPageToken,incompleteSearch,files(id,name)&pageSize=2",
                 self.api_base,
                 encode_query_param(&q)
             );
@@ -163,22 +161,7 @@ impl GoogleDriveDrive {
             }
 
             let body: serde_json::Value = resp.json()?;
-            let files = body["files"]
-                .as_array()
-                .ok_or_else(|| anyhow!("Google Drive: no files array for '{name}'"))?;
-
-            if files.is_empty() {
-                // If this is the last component, the file doesn't exist
-                if i == components.len() - 1 {
-                    return Err(anyhow!("not found: {}", path.display()));
-                }
-                return Err(anyhow!("folder not found: {name}"));
-            }
-
-            parent_id = files[0]["id"]
-                .as_str()
-                .ok_or_else(|| anyhow!("no id for '{name}'"))?
-                .to_string();
+            parent_id = super::google_path::unique_file_id(&body)?;
         }
 
         Ok(parent_id)
@@ -666,6 +649,49 @@ mod tests {
         assert!(capabilities.versions);
         assert!(!capabilities.streaming);
         assert!(capabilities.reversible_trash);
+    }
+
+    #[test]
+    fn restore_nested_trash_resolves_live_folder_then_trashed_leaf() {
+        let mut server = Server::new();
+        let parent = server.mock("GET", "/drive/v3/files")
+            .match_query(mockito::Matcher::UrlEncoded("q".into(),
+                "'root' in parents and name = 'Docs' and trashed = false and mimeType = 'application/vnd.google-apps.folder'".into()))
+            .with_status(200).with_body(r#"{"files":[{"id":"folder-1"}]}"#).create();
+        let leaf = server.mock("GET", "/drive/v3/files")
+            .match_query(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded("q".into(), "'folder-1' in parents and name = 'report.pdf' and trashed = true".into()),
+                mockito::Matcher::UrlEncoded("pageSize".into(), "2".into()),
+            ]))
+            .with_status(200).with_body(r#"{"files":[{"id":"deleted-file"}]}"#).create();
+        let restore = server.mock("PATCH", "/drive/v3/files/deleted-file")
+            .match_body(mockito::Matcher::JsonString(r#"{"trashed":false}"#.into()))
+            .with_status(200).create();
+        let drive = GoogleDriveDrive::with_api_base("test".into(), "tok".into(), None, None, None,
+            format!("{}/drive/v3", server.url()));
+        drive.restore_deleted(Path::new("/Docs/report.pdf"), None).unwrap();
+        parent.assert();
+        leaf.assert();
+        restore.assert();
+    }
+
+    #[test]
+    fn restore_refuses_ambiguous_or_incomplete_identity_before_mutation() {
+        for body in [
+            r#"{"files":[{"id":"one"},{"id":"two"}]}"#,
+            r#"{"files":[{"id":"one"}],"nextPageToken":"more"}"#,
+            r#"{"files":[{"id":"one"}],"incompleteSearch":true}"#,
+        ] {
+            let mut server = Server::new();
+            let lookup = server.mock("GET", "/drive/v3/files")
+                .match_query(mockito::Matcher::Any).with_status(200).with_body(body).create();
+            let mutation = server.mock("PATCH", mockito::Matcher::Any).expect(0).create();
+            let drive = GoogleDriveDrive::with_api_base("test".into(), "tok".into(), None, None, None,
+                format!("{}/drive/v3", server.url()));
+            assert!(drive.restore_deleted(Path::new("/Docs/report.pdf"), None).is_err());
+            lookup.assert();
+            mutation.assert();
+        }
     }
 
     #[test]

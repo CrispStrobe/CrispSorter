@@ -215,55 +215,37 @@
         return parts ? { driveId: parts.driveId, path: normalizeDrivePath(parts.remotePath) } : null;
     }
 
-    async function mutateCloudDuplicate(itemPath: string, operation: 'move' | 'delete'): Promise<void> {
+    async function moveCloudDuplicate(itemPath: string): Promise<void> {
         const parts = duplicateDriveParts(itemPath);
         if (!parts || duplicateMutationBusy === itemPath) return;
         try {
             const caps = await invoke<DriveCapabilities>('drive_capabilities', { driveId: parts.driveId });
-            if (operation === 'delete' && !caps.delete) throw new Error('Provider does not support delete/trash.');
-            if (operation === 'delete' && !caps.reversible_trash) throw new Error('Provider does not expose recoverable trash; duplicate deletion is blocked.');
-            if (operation === 'move' && !caps.move_path) throw new Error('Provider does not support move.');
-            const name = parts.path.split('/').filter(Boolean).at(-1) ?? parts.path;
-            let destinationPath: string | undefined;
-            if (operation === 'delete') {
-                if (!window.confirm(`Move duplicate “${name}” to provider trash?`)) return;
-            } else {
-                const destination = window.prompt('Move duplicate to remote path', parts.path);
-                if (!destination?.trim() || normalizeDrivePath(destination) === parts.path) return;
-                destinationPath = normalizeDrivePath(destination);
-            }
+            if (!caps.move_path) throw new Error('Provider does not support move.');
+            const destination = window.prompt('Move duplicate to remote path', parts.path);
+            if (!destination?.trim() || normalizeDrivePath(destination) === parts.path) return;
+            const destinationPath = normalizeDrivePath(destination);
             duplicateMutationBusy = itemPath;
-            if (operation === 'delete') {
-                await invoke('drive_delete_path', { driveId: parts.driveId, path: parts.path });
-            } else {
-                if (!destinationPath) return;
-                await invoke('drive_move_path', {
-                    driveId: parts.driveId,
-                    source: parts.path,
-                    destination: destinationPath,
-                });
-            }
+            await invoke('drive_move_path', {
+                driveId: parts.driveId,
+                source: parts.path,
+                destination: destinationPath,
+            });
             if (rightPanel?.source.kind === 'DuplicateGroup') {
-                const items = operation === 'delete'
-                    ? rightPanel.source.items.filter((item) => item.path !== itemPath)
-                    : rightPanel.source.items.map((item) => item.path === itemPath
-                        ? { ...item, path: relocateDriveSearchUri(item.path, parts.driveId, parts.path, destinationPath!) }
-                        : item);
+                const items = rightPanel.source.items.map((item) => item.path === itemPath
+                    ? { ...item, path: relocateDriveSearchUri(item.path, parts.driveId, parts.path, destinationPath) }
+                    : item);
                 rightPanel = { ...rightPanel, source: { ...rightPanel.source, items } };
-            }
-            if (rightPanel?.source.kind === 'DuplicateGroup') {
-                const groupId = rightPanel.source.groupId;
                 duplicateMutationAudit = [...duplicateMutationAudit, {
-                    groupId,
+                    groupId: rightPanel.source.groupId,
                     driveId: parts.driveId,
-                    operation,
+                    operation: 'move' as const,
                     from: parts.path,
-                    to: destinationPath ?? null,
+                    to: destinationPath,
                     at: Date.now(),
                 }].slice(-200);
                 saveDuplicateMutationAudit(duplicateMutationAudit);
             }
-        } catch (e) { error = `Could not ${operation} cloud duplicate: ${String(e)}`; }
+        } catch (e) { error = `Could not move cloud duplicate: ${String(e)}`; }
         finally { duplicateMutationBusy = null; }
     }
 
@@ -282,24 +264,6 @@
             duplicateMutationAudit = recordDuplicateRestore(duplicateMutationAudit, last, Date.now());
             saveDuplicateMutationAudit(duplicateMutationAudit);
         } catch (e) { error = `Could not undo cloud duplicate move: ${String(e)}`; }
-        finally { duplicateMutationBusy = null; }
-    }
-
-    async function restoreLastCloudTrash(): Promise<void> {
-        const panel = rightPanel?.source.kind === 'DuplicateGroup' ? rightPanel.source : null;
-        const last = duplicateMutationAudit.slice().reverse().find((entry) => entry.groupId === panel?.groupId && entry.operation === 'delete');
-        if (!panel || !last || duplicateMutationBusy) return;
-        if (!window.confirm(`Restore “${last.from}” from provider trash?`)) return;
-        duplicateMutationBusy = last.from;
-        try {
-            await invoke('drive_restore_deleted', {
-                driveId: last.driveId,
-                trashPath: last.from,
-                destination: null,
-            });
-            duplicateMutationAudit = recordDuplicateRestore(duplicateMutationAudit, last, Date.now());
-            saveDuplicateMutationAudit(duplicateMutationAudit);
-        } catch (e) { error = `Could not restore cloud duplicate: ${String(e)}`; }
         finally { duplicateMutationBusy = null; }
     }
 
@@ -468,7 +432,7 @@
                             {#if lastCloudMutation?.operation === 'move'}
                                 <button class="duplicate-undo" onclick={undoLastCloudMove} disabled={duplicateMutationBusy !== null}>Undo last cloud move</button>
                             {:else if lastCloudMutation?.operation === 'delete'}
-                                <button class="duplicate-undo" onclick={restoreLastCloudTrash} disabled={duplicateMutationBusy !== null}>Restore from provider trash</button>
+                                <span class="muted">This history cannot identify the original trashed item safely. Restore using the provider app.</span>
                             {:else}
                                 <span class="muted">No reversible cloud mutation is available.</span>
                             {/if}
@@ -488,16 +452,15 @@
                                 <button onclick={() => copyDuplicatePath(item.path)}>Copy path</button>
                                 {#if duplicateDriveParts(item.path)}
                                     <button
-                                        onclick={() => mutateCloudDuplicate(item.path, 'move')}
+                                        onclick={() => moveCloudDuplicate(item.path)}
                                         disabled={duplicateMutationBusy === item.path}
                                         title="Move cloud duplicate">
                                         Move
                                     </button>
                                     <button
                                         class="danger"
-                                        onclick={() => mutateCloudDuplicate(item.path, 'delete')}
-                                        disabled={duplicateMutationBusy === item.path}
-                                        title="Move cloud duplicate to trash">
+                                        disabled
+                                        title="Trash is unavailable until this workflow can reliably restore the same item. Use the provider app.">
                                         Trash
                                     </button>
                                 {/if}

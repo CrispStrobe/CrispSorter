@@ -3277,7 +3277,10 @@ a transfer without leaving the search/catalog workflow.
     trash identity, so these adapters advertise `reversible_trash = false` and
     duplicate deletion is blocked. Durable provider/account/UUID/kind/original-
     destination delete receipts and identity-validated restore remain required;
-    see `docs/cloud-provider-parity.md`. Restore actions are retained as
+    see `docs/cloud-provider-parity.md`. The duplicate workflow now also blocks
+    Google trash and restore from historical path-only records until such
+    receipts exist; explicit provider path-based operations remain separate.
+    Restore actions are retained as
     explicit mutation-audit events instead of erasing the original trash
     record.
 - [x] **Minimal file-manager operations.** Implement folder context, create
