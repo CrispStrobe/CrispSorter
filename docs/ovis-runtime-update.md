@@ -2,9 +2,9 @@
 
 The current immutable runtime remains CrispEmbed **v0.17.19**, source
 `c364feb974b91e14cbf328c6949f3df36e89ce81`. It can turn a native Ovis image
-admission failure into successful empty OCR. This document prepares a consumer
-update; it does not change that runtime, qualify a release, or fix admission of
-large images.
+admission failure into successful empty OCR. This document tracks a candidate
+consumer update; the production runtime remains unchanged and no release or
+real-page OCR quality claim has been qualified.
 
 ## Reuse the merged runtime fix
 
@@ -106,9 +106,10 @@ propagation.
 The original source-pinned panel requested eight pages. One image failed its
 pinned SHA check identically on CPU and GPU and was skipped in every arm. Retain
 that omission and the seven admitted pages; restore the originally pinned bytes
-or review a replacement as a new corpus revision. Do not silently replace the
-expected hash. The download receipts establish a reproducible mismatch, not its
-cause.
+or review a replacement as a new corpus revision. Two later independent read-only
+fetches recovered bytes matching the original pinned hash; stage and verify those
+exact bytes before any corrected run. Do not silently replace the expected hash.
+The earlier download receipts establish a reproducible mismatch, not its cause.
 
 All 21 Ovis records reported empty success despite producing no text. Preserve
 their CER/WER of 1 and word recall of 0, and retain the baseline failure penalties.
@@ -133,8 +134,8 @@ receipts and multiple columns. Tiling needs verified reading order, overlap
 deduplication and coordinates mapped back into the prepared-image space before
 review or searchable export. Retain original images and record the applied
 transform. Measure accuracy and end-to-end latency on admitted images before any
-default change. No resize, tiling, larger patch bound or quality claim is part of
-this update plan.
+default change. The opt-in resize candidate described below remains unqualified;
+no tiling, larger patch bound or quality claim is part of this update.
 
 ## Mobile candidate build evidence
 
@@ -151,10 +152,9 @@ have passed build/link. Their retained libraries, source receipts and notice
 hashes were independently verified; the armv7 link probe also reports the ARM
 architecture. The iOS arm64 and simulator arm64 candidate build/link jobs also passed; their
 libraries, source receipts and notice hashes were independently verified.
-Desktop candidate builds remain pending. These are candidate libraries, not
-finished application binaries, runtime error-path tests, or physical-device
-qualification. Artifacts expire after 14 days; keep
-verified copies outside Git until a reviewed release packages them.
+These are candidate libraries, not finished application binaries, application
+runtime error-path tests, or physical-device qualification. Artifacts expire after
+14 days; keep verified copies outside Git until a reviewed release packages them.
 
 The [unpublished desktop candidate run](https://github.com/CrispStrobe/CrispEmbed/actions/runs/43302121233)
 passed the four CPU archive builds: Linux x86_64 and arm64, Windows x86_64,
@@ -309,6 +309,15 @@ passed the model-free native and Rust failure/legacy-empty controls on Linux
 x86_64, Linux arm64 and macOS arm64 using the verified candidate archives. The
 Windows job failed before loading the archive because its checkout line endings
 did not match the committed controller bytes; it is not a Windows runtime
-result. A targeted checkout fix and Windows-only rerun are required. None of
-these controls establishes decoded OCR, a positively recognized blank page,
-CrispSorter application behavior or GPU execution.
+result. A follow-up checkout and exact Windows packaged-header line-ending fix
+is under review in [PR 230](https://github.com/CrispStrobe/CrispEmbed/pull/230);
+the [Windows-only rerun](https://github.com/CrispStrobe/CrispEmbed/actions/runs/43313165931)
+was queued at this update. None of these controls establishes decoded OCR, a
+positively recognized blank page, CrispSorter application behavior or GPU execution.
+
+The [Android x86_64 candidate app run](https://github.com/CrispStrobe/CrispSorter/actions/runs/43313212722)
+was queued at this update. It reuses the verified candidate runtime and exercises
+the app IPC native-failure and white-raster blank controls. Until it completes,
+these controls have only source review and response-validator tests; even a pass
+will not establish Ovis inference, same-context recovery or physical-device
+behavior.
