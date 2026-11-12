@@ -104,6 +104,17 @@ pub fn build_blocking_client_with_options(
     timeout: Option<std::time::Duration>,
     insecure_tls: bool,
 ) -> Result<reqwest::blocking::Client> {
+    configure_blocking_builder(config, timeout, insecure_tls)?
+        .build()
+        .context("building proxied blocking client")
+}
+
+/// Shared policy for specialized transports; caller must build the returned builder.
+pub(crate) fn configure_blocking_builder(
+    config: &ProxyConfig,
+    timeout: Option<std::time::Duration>,
+    insecure_tls: bool,
+) -> Result<reqwest::blocking::ClientBuilder> {
     config.validate()?;
     super::cert_pins::validate_builtin_pin_sets()?;
     let mut builder = reqwest::blocking::ClientBuilder::new();
@@ -124,7 +135,7 @@ pub fn build_blocking_client_with_options(
         builder = builder.proxy(proxy);
     }
 
-    builder.build().context("building proxied blocking client")
+    Ok(builder)
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────

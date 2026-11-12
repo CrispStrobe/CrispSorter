@@ -1,5 +1,5 @@
-//! Experimental rustls foundation; intentionally not registered in `sync/mod.rs`
-//! or installed in any application/provider client. See the source-bound contract.
+//! Experimental root verifier used only by the opt-in Google transport.
+//! Default builds and other provider/OAuth clients do not install it.
 //!
 //! Trust anchors come only from the caller's trusted root store. Restricting the
 //! ordinary WebPKI verifier to matching anchors preserves its chain, name, time,

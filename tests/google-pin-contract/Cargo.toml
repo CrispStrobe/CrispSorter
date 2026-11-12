@@ -1,0 +1,28 @@
+[workspace]
+[package]
+name = "google-pin-contract"
+version = "0.1.0"
+edition = "2021"
+publish = false
+[lib]
+path = "lib.rs"
+[dependencies]
+anyhow = "=1.0.102"
+base64 = "=0.22.1"
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.150"
+sha2 = "=0.10.9"
+rustls = { version = "=0.23.40", default-features = false, features = ["std", "ring", "tls12"] }
+# Match the application's locked verifier/parser versions in this isolated crate.
+rustls-webpki = { version = "=0.103.13", default-features = false }
+rustls-pki-types = { version = "=1.14.1", default-features = false }
+
+rustls-native-certs = "=0.8.4"
+log = "=0.4.32"
+reqwest = { version = "=0.13.4", default-features = false, features = ["blocking", "rustls-no-provider", "native-tls", "socks"] }
+[features]
+default = []
+experimental-google-root-pins = []
+[build-dependencies]
+syn = { version = "2", features = ["full"] }
+quote = "1"

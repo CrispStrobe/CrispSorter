@@ -1,9 +1,10 @@
 # Isolated rustls root-pin verifier foundation
 
 This crate compiles the real pin-policy module and the experimental
-`src-tauri/src/sync/root_pin_verifier.rs`. That verifier is deliberately absent
-from `sync/mod.rs` and all application/provider client constructors. No production
-dependency, TLS default, request behavior, or SDK transport is changed.
+`src-tauri/src/sync/root_pin_verifier.rs`. Default application builds do not install that verifier. An explicit
+`experimental-google-root-pins` feature now uses it in the Linux Google Drive
+transport; see `tests/google-pin-contract`. This foundation contract remains
+independent of HTTP client wiring. No default TLS behavior or SDK transport changes.
 The isolated contract pins the app lock's rustls 0.23.40, WebPKI 0.103.13 and
 PKI-types 1.14.1, with the explicit ring crypto provider.
 

@@ -22,6 +22,10 @@
 pub mod backup_state;
 pub mod backup_scheduler;
 pub mod cert_pins;
+#[cfg(feature = "experimental-google-root-pins")]
+pub(crate) mod root_pin_verifier;
+#[cfg(feature = "experimental-google-root-pins")]
+pub(crate) mod pinned_google_transport;
 pub mod cloud_backup;
 pub mod conflict;
 pub mod delta;

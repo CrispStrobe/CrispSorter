@@ -66,7 +66,7 @@ trait used by CrispSorter.
   patterns; each wildcard consumes one nonempty label. URL authorities and
   malformed names cannot select a policy. The source-bound
   `tests/cert-pin-contract` validates this selection and pin data, but
-  the actual verifier/client-construction work remains a separate security
+  default client-construction enforcement remains a separate security
   item in `PLAN.md`.
 * A provider capability is a promise. If a backend cannot safely implement an
   operation, its capability is false and the trait returns an explicit error.
@@ -75,7 +75,7 @@ trait used by CrispSorter.
 
 ### Certificate pin enforcement boundary: remaining design
 
-The current client boundary validates pin policy data; it does not pin a TLS
+Default client builds validate pin policy data; they do not pin a TLS
 handshake. Reqwest's optional response `TlsInfo` exposes the peer's **leaf**
 certificate after the HTTP response. It cannot identify the authenticated root
 trust anchor or stop an OAuth token/body from being sent to an unpinned peer.
@@ -100,15 +100,46 @@ and proxy CONNECT paths, and confirmation that rejected handshakes deliver no
 HTTP authorization or body bytes. No such verifier or TLS qualification is
 claimed by the pin-policy or OAuth proxy contracts.
 
-An unconnected rustls foundation now lives in `sync/root_pin_verifier.rs` and
-`tests/root-pin-contract`. It restricts WebPKI's root store to already-trusted
-primary/backup SPKI anchors before verification, retaining each anchor's subject
-and name constraints. It delegates certificate and TLS1.2/1.3 signature checks to
-standard WebPKI/rustls logic and rejects hostnames outside its pin policy. It is
-not declared in the app's module tree, installed in any HTTP client, or used by
-provider SDKs. Its isolated fixture tests do not qualify shipped pins, platform
-trust stores, revocation, cross-signing, redirects, proxies or app integration.
-Actual production TLS pin enforcement therefore remains unimplemented.
+The reusable verifier in `sync/root_pin_verifier.rs` restricts WebPKI's root
+store to already-trusted primary/backup SPKI anchors before verification,
+retaining subject and name constraints. `tests/root-pin-contract` qualifies the
+SPKI reconstruction, standard certificate and TLS1.2/1.3 signature checks with
+fixed independent fixtures; this is not a whole-provider qualification.
+
+An explicit, **default-off** Cargo feature `experimental-google-root-pins` now
+installs that verifier in the real Google Drive API/upload constructor, on Linux
+only. It loads the configured native certificate bundle via rustls-native-certs
+(including SSL_CERT_FILE/SSL_CERT_DIR); any loader error, no roots, or absence of
+an already-trusted matching pin fails construction. There is no bundled-root or
+unrestricted-trust fallback. Other operating systems reject this opt-in during
+construction rather than weakening it. The configured reqwest rustls backend is
+explicit even in desktop builds that also compile native-tls. The client retains
+the shared explicit/environment proxy policy, bounds requests to 60 seconds,
+permits only HTTPS and the fixed `www.googleapis.com` hostname, rejects every
+redirect as an error, and disables reqwest's retry policy. Proxies cannot bypass
+origin pin validation. Backup-chain acceptance emits a content-free rotation
+warning (before full handshake completion). An HTTPS proxy's own TLS is subject to the same restricted
+verifier and may consequently fail; HTTPS-proxy compatibility is not qualified.
+
+Google R1/R4 pins were independently recalculated from the official
+https://pki.goog/repo/certs/gtsr1.pem and gtsr4.pem certificates on 2026-11-12.
+The previous R4 value did not match the published root and was corrected.
+Committed public certificate/SPKI bytes and a URL/hash manifest make this check
+repeatable without a network call. This verifies root identities, not which
+chains Google currently serves or future rotation coverage.
+
+`tests/google-pin-contract` compiles the actual transport, shared proxy policy
+and source-extracted real Google constructor. Actual reqwest requests use
+loopback TLS fixtures to check primary/backup success, rejected chains without
+HTTP authorization/body delivery, refused redirects and proxy CONNECT behavior.
+Subprocess tests isolate the native trust environment and distinguish opt-in
+from default constructor behavior. These tests do not compile the entire app.
+
+Default release builds remain unchanged. OAuth, Microsoft, S3, WebDAV,
+Filen/Internxt SDK clients, and other transports remain unpinned. Native trust
+semantics on macOS/Windows, CRLs/OCSP/revocation, cross-signed root chains,
+SOCKS/HTTPS proxies, full-app packaging and live Google API/upload operations
+remain unqualified. Keep the overall production pinning task open.
 
 Google/Microsoft OAuth token exchange, refresh and Google revocation now use the
 same shared proxy/client policy as drive requests, with a 60-second timeout.

@@ -1903,8 +1903,8 @@ unify local and cloud version tracking.
 #### Priority 7 — Certificate pinning
 
 CrispCloud pins TLS certs for Google, Microsoft, Dropbox, and Amazon
-endpoints.  CrispSorter talks to the same services via `reqwest` with
-no pinning.  Low effort, meaningful security improvement.
+endpoints. Default CrispSorter builds talk to the same services via `reqwest`
+without pin enforcement.  Low effort, meaningful security improvement.
 
 - [x] **`sync/cert_pins.rs` module.**  ✅ SHIPPED (2026-07-05).
   `PinSet` struct with provider name, domain patterns, and SHA-256
@@ -1923,15 +1923,25 @@ no pinning.  Low effort, meaningful security improvement.
   - [ ] Install and qualify a pre-request handshake verifier of the authenticated
     root SPKI. Response leaf-certificate inspection is insufficient. Backend,
     trust-anchor, proxy/redirect and negative-TLS gates are scoped in
-    `docs/cloud-provider-parity.md`; enforcement remains unimplemented.
+    `docs/cloud-provider-parity.md`; default-wide enforcement remains open.
   - [x] Add an isolated rustls foundation that restricts ordinary WebPKI to
     caller-trusted primary/backup SPKI anchors and preserves root constraints
     and TLS signature checks. Complete-SPKI reconstruction is checked against
     independent fixed OpenSSL exports and root name-constraint fixtures. The
-    source remains outside the app module/client tree; no production request
-    is pinned by this work. All 21 source-bound and in-memory TLS controls pass
-    against the app-locked TLS versions. Platform roots/pins, revocation, cross-signing,
-    proxy/redirect and actual constructor integration remain open gates.
+    foundation remains unused in default builds. All 21 source-bound and
+    in-memory TLS controls pass against the app-locked TLS versions. These
+    foundation tests alone do not qualify platform roots/pins, revocation,
+    cross-signing, proxy/redirect or actual constructor integration.
+  - [x] Add default-off `experimental-google-root-pins` integration for the actual
+    Linux Google Drive API/upload reqwest constructor. Native-root load errors
+    and missing trusted pins fail closed; HTTPS-only, no redirects, shared proxy
+    policy and no automatic retries. Published GTS R1/R4 roots independently
+    verified; incorrect R4 backup corrected. Actual loopback reqwest TLS and
+    authenticated HTTP CONNECT tests reject before origin HTTP credentials;
+    a content-free warning reports backup-chain acceptance. Default builds,
+    OAuth and other providers remain unpinned. Full-app/live provider, other OS
+    trust semantics, cross-signing/revocation and proxy variants remain open.
+    All 34 focused controls pass both with and without the feature.
 - [ ] **Pin rotation strategy.**  Pin the *root* CA, not the leaf
   cert (roots rotate on a multi-year cadence).  Include 2 pins per
   provider (current + backup) to survive a CA migration.  Log a
