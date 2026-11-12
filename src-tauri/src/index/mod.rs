@@ -594,6 +594,9 @@ pub fn resolve_model_cache_dir(
                 .map(std::path::PathBuf::from)
         })
         .unwrap_or_else(|| data_dir.join("models"));
+    // Earlier releases downloaded CrispEmbed registry models here; keep them
+    // findable now that new downloads go to the one shared cache.
+    crate::model_cache::add_legacy_dir(path.clone());
     if let Err(e) = std::fs::create_dir_all(&path) {
         eprintln!(
             "[index] Could not create model cache dir {}: {} — fastembed/hf-hub will retry",

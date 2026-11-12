@@ -15,13 +15,16 @@ const MAX_IMAGE_PIXELS: u64 = 100_000_000;
 
 #[derive(Default, Deserialize)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
-struct RecognitionOptions {
-    engine: Option<String>,
-    language: Option<String>,
-    config: Option<extractors::OcrPipelineConfig>,
-    cpu_pixel_budget: Option<bool>,
-    ocr_tier: Option<String>,
-    ocr_rec_lang: Option<String>,
+pub(crate) struct RecognitionOptions {
+    pub(crate) engine: Option<String>,
+    pub(crate) language: Option<String>,
+    pub(crate) config: Option<extractors::OcrPipelineConfig>,
+    pub(crate) cpu_pixel_budget: Option<bool>,
+    pub(crate) ocr_tier: Option<String>,
+    pub(crate) ocr_rec_lang: Option<String>,
+    /// The user agreed to download missing models for this request. Without
+    /// it a missing model returns `MODEL_DOWNLOAD_REQUIRED:` + JSON.
+    pub(crate) allow_downloads: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -56,7 +59,7 @@ fn parse_metadata(header: &[u8], bytes: &[u8]) -> Result<ImageMetadata, String> 
     Ok(metadata)
 }
 
-fn extraction_options(mut saved: extractors::ExtractOptions, request: RecognitionOptions, source_name: &str) -> Result<extractors::ExtractOptions, String> {
+pub(crate) fn extraction_options(mut saved: extractors::ExtractOptions, request: RecognitionOptions, source_name: &str) -> Result<extractors::ExtractOptions, String> {
     if let Some(config) = request.config { saved.ocr_pipeline = config; }
     if let Some(engine) = request.engine { saved.ocr_pipeline.engine = Some(engine); }
     if let Some(language) = request.language { saved.ocr_pipeline.language = Some(language); }
@@ -137,6 +140,7 @@ pub async fn ocr_extract_image(state: State<'_, AppState>, request: tauri::ipc::
     owned.extend_from_slice(bytes);
     log.step("snapshot_settings", serde_json::json!({"input_bytes":bytes.len()}));
     let saved = state.bg_ingest.lock().await.ocr_options();
+    let allow_downloads = metadata.options.allow_downloads.unwrap_or(false);
     let options = extraction_options(saved, metadata.options, &metadata.name)?;
     let _foreground = crate::bg_ingest::ForegroundGuard::new(state.foreground_active.clone());
     let worker_log=log.clone();
@@ -145,6 +149,10 @@ pub async fn ocr_extract_image(state: State<'_, AppState>, request: tauri::ipc::
         let engine = config.engine.clone().unwrap_or_else(|| "auto".into());
         worker_log.step("policy_resolved",serde_json::json!({"engine":engine,"language":config.language,
             "stages":config.stages.len(),"cpu_budget":config.cpu_pixel_budget}));
+        // Never download implicitly: ask the user first (the UI shows the
+        // model dialog for MODEL_DOWNLOAD_REQUIRED and retries).
+        let plan = crate::ocr_models::plan(&config, &[]);
+        crate::ocr_models::ensure_or_gate(&plan.models, allow_downloads, &worker_log)?;
         worker_log.step("staging_image",serde_json::json!({"bytes":owned.len()}));
         with_image(&owned, |path| {
             let document = extractors::extract_text_from_path_with_opts(path, options)

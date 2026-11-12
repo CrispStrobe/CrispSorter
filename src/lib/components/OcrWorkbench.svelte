@@ -118,7 +118,9 @@
     type PhotoAssessment,
   } from "$lib/ocr/client";
   import { ProjectAutosave, type SaveStatus } from "$lib/ocr/autosave";
-  import { missingModels, setDefaultOcrLanguage } from "$lib/ocr/client";
+  import { recognitionLanguage, setDefaultOcrLanguage } from "$lib/ocr/client";
+  import { ensureOcrModels, askForModels } from "$lib/ocr/modelGate";
+  import { plannedFromError, planSummary, requiredModels, type ModelPlan, type ModelPlanRequest } from "$lib/ocr/modelManager";
   import { i18n } from "$lib/i18n.svelte";
   import { checkExportText, resolveExportFormat } from "$lib/ocr/export";
   import { SequentialQueue, type QueueState } from "$lib/ocr/queue";
@@ -555,6 +557,41 @@
   const cpuBudgetActive = $derived(cpuBudget && engine === "qwen2vl" && !!capabilities.cpu_budget);
   const config = $derived(effectiveRecognition.config);
   const recognitionControls = $derived(effectiveRecognition.controls);
+  /** Models the current engine/profile needs; drives the readiness chip. */
+  let modelPlan = $state<ModelPlan | null>(null);
+  let modelPlanRevision = $state(0);
+  let awaitingModels = $state(false);
+  const modelChip = $derived(modelPlan && modelPlan.models.length ? planSummary(modelPlan) : null);
+  function modelRequest(options: { config: Record<string, unknown>; engine: string; language: string; cpuPixelBudget?: boolean }): ModelPlanRequest {
+    return { surface: "workspace", config: options.config, engine: options.engine,
+      language: recognitionLanguage(options.engine, options.language, options.config), cpuPixelBudget: options.cpuPixelBudget ?? false };
+  }
+  $effect(() => {
+    modelPlanRevision;
+    if (!capabilities.crispembed || !active) return;
+    const request = modelRequest({ config: JSON.parse(JSON.stringify(config)), engine, language, cpuPixelBudget: cpuBudgetActive });
+    let stale = false;
+    const timer = setTimeout(() => {
+      requiredModels(request).then((plan) => { if (!stale) modelPlan = plan; }, () => { if (!stale) modelPlan = null; });
+    }, 250);
+    return () => { stale = true; clearTimeout(timer); };
+  });
+  /** Ask for this task's missing models (one dialog, shared with the inbox). */
+  async function ensureModels(options: Parameters<typeof modelRequest>[0], context: string, request?: Partial<ModelPlanRequest>): Promise<boolean> {
+    if (!capabilities.crispembed) return true;
+    awaitingModels = true;
+    try {
+      const result = await ensureOcrModels({ ...modelRequest(options), ...request }, { context });
+      if (result.missing.length || result.plan?.missing.length) modelPlanRevision += 1;
+      if (!result.ok) notice = "OCR is waiting for models. Nothing was recognized; download the models to continue.";
+      return result.ok;
+    } finally { awaitingModels = false; }
+  }
+  async function downloadSelectedModels() {
+    if (locked) return;
+    await ensureModels({ config: JSON.parse(JSON.stringify(config)), engine, language, cpuPixelBudget: cpuBudgetActive }, "The selected recognition engine");
+    modelPlanRevision += 1;
+  }
   const exportIds = $derived(
     exportScope === "current"
       ? activePage
@@ -1595,6 +1632,18 @@
       batchOperation.stage("saved", { saved: true }, "info");
       runningProjectId = project.id;
       runningBatchId = project.batch?.id ?? "";
+      // Ask once for the whole batch; the saved batch waits meanwhile.
+      busy = "Waiting for OCR models";
+      batchOperation.stage("awaiting_models", { pages: pageIds.length }, "info");
+      const ready = await ensureModels({ config: options.config as Record<string, unknown>, engine: options.engine, language: options.language, cpuPixelBudget: options.cpuPixelBudget },
+        pageIds.length === 1 ? "Recognizing this page" : `Recognizing ${pageIds.length} pages`);
+      if (!ready) {
+        change(updateBatchPhase(project, "stopped"), false);
+        await autosave?.flush();
+        batchOperation.cancel({ pending: pageIds.length, saved: true });
+        notice = "Recognition is waiting for OCR models. The batch is saved; download the models, then resume the saved batch.";
+        return;
+      }
       busy = "";
       const started = queue.start(pageIds.map(id => ({
         id,
@@ -1872,18 +1921,19 @@
       ].join(" · ");
       activity.complete({ warnings: warnings.length });
     } catch (e) {
-      const missing = missingModels(e);
+      const missing = plannedFromError(e);
       if (missing && !allowDownloads) {
         activity.stage("awaiting_models", { count: missing.length }, "info");
         activity.cancel();
-        const list = missing.map((m) => `${m.name} (${m.purpose}${m.license ? `, licence ${m.license}` : ""})`).join(", ");
+        clearInterval(tick);
+        busy = "Waiting for OCR models";
+        awaitingModels = true;
+        const installed = await askForModels(missing, "Preparing this page").finally(() => { awaitingModels = false; });
         busy = "";
-        confirmation(
-          missing.length === 1 ? "Download the model for this preparation?" : "Download the models for this preparation?",
-          `This preparation needs ${list}, which ${missing.length === 1 ? "is" : "are"} not on this computer yet. Download now and continue? Downloads are verified before use.`,
-          "Download and prepare",
-          () => prepareImage(override, true, page.id, true),
-        );
+        modelPlanRevision += 1;
+        // Installed models need no download permission on the retry.
+        if (installed) await prepareImage(override, true, page.id, false);
+        else notice = "Preparation is waiting for models. The page is unchanged.";
         return;
       }
       activity.fail(e);
@@ -1905,6 +1955,11 @@
       const cpuBudgetSnapshot = cpuBudgetActive;
       const profileSnapshot = project.profileId;
       const page = request.page;
+      busy = "Waiting for OCR models";
+      if (!(await ensureModels({ config: configSnapshot, engine: engineSnapshot, language: languageSnapshot, cpuPixelBudget: cpuBudgetSnapshot }, "Recognizing the selected area"))) {
+        activity.cancel();
+        return;
+      }
       busy = "Recognizing selected area";
       showOriginal = false;
       const result = await client.recognize({
@@ -2174,6 +2229,13 @@
       const request = captureExtractionRequest(project, pageId, regionId, kind === "fields" && !layout ? "text" : "pixels");
       const source = request.capture;
       const configSnapshot = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
+      // Specialist tools load their own models: ask before, never during.
+      const modelsReady = kind === "formula"
+        ? await ensureModels({ config: configSnapshot, engine, language }, "Formula recognition", { extras: ["math"], extrasOnly: true })
+        : kind === "table" || layout
+          ? await ensureModels({ config: configSnapshot, engine, language }, kind === "table" ? "Table extraction" : "Field extraction", kind === "table" ? {} : { extras: ["kie"] })
+          : true;
+      if (!modelsReady) { activity.cancel(); return; }
       let output: unknown;
       let labelList: string[] = [];
       if (kind === "fields") {
@@ -3753,7 +3815,10 @@
                   disabled={locked}
                   >{#each ocrEngineOptions(capabilities, engine) as option}<option
                     value={option.value} disabled={option.disabled}>{option.label}</option>{/each}</select
-                ></label
+                >{#if modelChip}<button type="button" class="model-chip" class:missing={!modelChip.ready}
+                    data-model-chip aria-live="polite" disabled={modelChip.ready || locked}
+                    title={modelChip.ready ? "Every model this engine and profile need is installed." : "Download the missing models now"}
+                    onclick={downloadSelectedModels}>{awaitingModels ? "Waiting for models…" : modelChip.label}</button>{/if}</label
               ><label class="field-label"
                 >Document language<select
                   value={language}
@@ -6533,6 +6598,10 @@
   .camera-input { display: none; }
   .mobile-workspace-nav { display: none; }
   .photo-focus-controls { display: none; }
+  .model-chip { display: inline-flex; align-self: flex-start; margin-top: 6px; padding: 3px 9px; border-radius: 999px; border: 1px solid #166534; background: #052e16; color: #86efac; font-size: 11px; line-height: 1.4; cursor: default; }
+  .model-chip.missing { border-color: #a16207; background: #422006; color: #fde68a; cursor: pointer; }
+  .model-chip.missing:hover:not(:disabled) { background: #713f12; }
+  .model-chip:disabled { opacity: 1; }
   .batch-recovery { display: flex; align-items: center; gap: 10px; padding: 9px 16px; background: #27272a; border-bottom: 1px solid #52525b; flex: none; }
   .batch-recovery > div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
   .batch-recovery span { color: #d4d4d8; font-size: 10px; }

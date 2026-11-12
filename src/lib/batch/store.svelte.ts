@@ -17,6 +17,7 @@ import type { BatchItem, Metadata } from '../types';
 import { extractText, usesNativePathExtraction, AUDIO_EXTENSIONS } from '../extractors';
 import { flog, logDebug } from '../log';
 import { beginOperation } from '../operationLog';
+import { ensureInboxOcrModels } from '../extractors/ocrDispatcher';
 import { finishProcessingCheckpoint } from './processingReceipt';
 import { applyFieldTemplate } from '../metadataFields';
 import { sortPlanMatches, type SortPlan } from './sortPlan';
@@ -83,6 +84,8 @@ export class BatchManager {
     items = $state<BatchItem[]>([]);
     isProcessing = $state(false);
     isStopping = $state(false);
+    /** Set when a run paused because OCR models are missing (not failed). */
+    ocrModelsNotice = $state<string | null>(null);
     /** Fields the user set by hand while (or before) analysis ran. Analysis
      * fills only the others, so a correction made during a running queue is
      * not overwritten when that item finishes. An explicit re-analysis of the
@@ -510,6 +513,23 @@ export class BatchManager {
         const needsProcessing = (item: BatchItem) =>
             canProcessBatchItem(item) &&
             (!onlyIds || onlyIds.has(item.id));
+
+        // OCR never downloads during extraction. Check once, before any file
+        // starts: ask (one dialog for the whole run) and install, or pause the
+        // run with the files still queued instead of failing each of them.
+        this.ocrModelsNotice = null;
+        const ocrCandidates = this.items.filter(item => needsProcessing(item)
+            && /\.(pdf|png|jpe?g|tiff?|bmp|webp|gif)$/i.test(item.originalName));
+        if ((ocrEnabledGlobal || overrides?.enforceOcr) && ocrCandidates.length > 0) {
+            operation.stage('awaiting_models', { count: ocrCandidates.length }, 'info');
+            const models = await ensureInboxOcrModels(`OCR for ${ocrCandidates.length} ${ocrCandidates.length === 1 ? 'file' : 'files'} in the inbox`);
+            if (!models.ok) {
+                this.ocrModelsNotice = `Processing paused: OCR needs ${models.missing.map(m => m.name).join(', ')}, which ${models.missing.length === 1 ? 'is' : 'are'} not installed. Download ${models.missing.length === 1 ? 'it' : 'them'} when asked or in Settings > OCR models, then process again. Your files stay queued.`;
+                flog('warn', `Processing paused: ${models.missing.length} OCR model(s) not installed`);
+                return;
+            }
+        }
+        if (this.stopRequested) return;
 
         const PAGE_WATCHDOG_MS = 30_000; // abort if no page progress for 30 s
         // P8.1 — whole-file timeout. 0 sentinel = no timeout (current

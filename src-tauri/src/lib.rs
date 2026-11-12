@@ -33,6 +33,8 @@ mod ocr_photo;
 mod ocr_reading_order;
 mod ocr_text_export;
 pub mod model_provisioning;
+pub mod model_cache;
+pub mod ocr_models;
 pub mod operation_log;
 pub mod ocr_word_evidence;
 pub mod ocr_document;
@@ -3038,6 +3040,8 @@ pub fn run() {
                 if let Err(error) = model_provisioning::initialize(&data_dir) {
                     app_log!("error", "OCR model store: {error}");
                 }
+                // Settings downloads used to land here; keep them findable.
+                model_cache::add_legacy_dir(data_dir.join("models"));
                 // Before anything can read a secret: pin the vault to the
                 // real data dir, so the user's chosen store is in force from
                 // the first read rather than from whenever Settings is
@@ -3602,6 +3606,11 @@ pub fn run() {
             ocr_workspace::ocr_workspace_capabilities,
             ocr_extract::ocr_extract_image,
             model_provisioning::ocr_workspace_install_mobile_models,
+            ocr_models::ocr_models_required,
+            ocr_models::ocr_models_catalog,
+            ocr_models::ocr_models_install,
+            ocr_models::ocr_models_cancel,
+            ocr_models::ocr_models_remove,
             model_provisioning::ocr_workspace_model_storage,
             model_provisioning::ocr_workspace_clean_model_storage,
             model_provisioning::ocr_workspace_remove_mobile_model,
@@ -4076,6 +4085,11 @@ pub fn run() {
             index::tauri_commands::tool_math_ocr,
             ocr_workspace::ocr_workspace_capabilities,
             model_provisioning::ocr_workspace_install_mobile_models,
+            ocr_models::ocr_models_required,
+            ocr_models::ocr_models_catalog,
+            ocr_models::ocr_models_install,
+            ocr_models::ocr_models_cancel,
+            ocr_models::ocr_models_remove,
             model_provisioning::ocr_workspace_model_storage,
             model_provisioning::ocr_workspace_clean_model_storage,
             model_provisioning::ocr_workspace_remove_mobile_model,

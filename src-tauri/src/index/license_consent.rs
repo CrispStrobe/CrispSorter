@@ -555,6 +555,17 @@ pub fn resolve_registry_model(name: &str, auto_download: Option<bool>) -> anyhow
     }
     let lic = license_for_registry_name(name);
     let accepted = native_acceptance_for(name, lic, |n| native_registry_row(n).map(|r| r.0))?;
+    // One shared cache, plus the directories earlier releases downloaded to
+    // (`model_cache`). Found after the licence gate, so consent still
+    // governs loading a restricted model that is already on disk.
+    if let Some(path) = crate::model_cache::locate_registry(name) {
+        return Ok(path.to_string_lossy().into_owned());
+    }
+    // Without download permission, never ask CrispEmbed: on a terminal it
+    // would prompt for a download itself, bypassing the app's model manager.
+    if auto_download == Some(false) && crate::model_cache::registry_files(name).is_some() {
+        anyhow::bail!("model '{name}' is not installed");
+    }
     match accepted {
         None => crispembed::CrispEmbed::resolve_model(name, auto_download).map_err(anyhow::Error::msg),
         #[cfg(feature = "crispembed-license-api")]

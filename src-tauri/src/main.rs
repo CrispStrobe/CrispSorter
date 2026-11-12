@@ -30,6 +30,9 @@ fn main() -> ExitCode {
     // is recognised. Stops at the first known subcommand. Skips any
     // `--flag value` pair that precedes the subcommand by leaving the
     // detection to clap downstream — we only need a positive hit.
+    // One model cache for the app, the CLI and the OCR worker child,
+    // resolved while the process is still single-threaded.
+    tauri_app_lib::model_cache::init_process();
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("--crispsorter-ocr-worker") {
         if args.len() != 4 {

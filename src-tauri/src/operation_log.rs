@@ -50,7 +50,7 @@ fn language(value: &str) -> bool {
 
 fn mode(value: &str) -> bool {
     if ["detailed", "review", "document", "read", "write", "download", "upload", "stream", "grid", "extract", "native_text", "ocr", "metadata", "skip"].contains(&value) { return true; }
-    identifier(value) && ["version", "doctor", "catalog", "index", "batch", "chat", "images", "sync", "ocr", "kie", "table", "math-ocr", "zone", "pdf", "docx", "convert", "search", "watch", "drives", "secrets", "intended-purpose", "manpage", "completion", "help"]
+    identifier(value) && ["version", "doctor", "catalog", "index", "batch", "chat", "images", "sync", "ocr", "kie", "table", "math-ocr", "zone", "pdf", "docx", "convert", "search", "watch", "drives", "secrets", "intended-purpose", "models", "manpage", "completion", "help"]
         .contains(&value.split('.').next().unwrap_or_default())
 }
 

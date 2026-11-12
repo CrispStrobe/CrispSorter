@@ -2427,6 +2427,7 @@ pub async fn embedder_registry_list(state: State<'_, AppState>) -> Result<Vec<Em
                 None
             }
         };
+        if let Some(dir) = cache_dir { crate::model_cache::add_legacy_dir(dir); }
 
         tokio::task::spawn_blocking(move || {
         crispembed::CrispEmbed::list_models()
@@ -2435,7 +2436,10 @@ pub async fn embedder_registry_list(state: State<'_, AppState>) -> Result<Vec<Em
                 let cached = if crate::model_provisioning::enabled() {
                     crate::model_provisioning::is_installed(&m.name)
                 } else {
-                    cache_dir.as_ref().map_or(false, |d| d.join(&m.filename).exists())
+                    // The same lookup recognition uses: the shared cache
+                    // first, then earlier download folders.
+                    crate::model_cache::locate_registry(&m.name).is_some()
+                        || crate::model_cache::locate_files(&[m.filename.as_str()]).is_some()
                 };
                 EmbedderRegistryEntry {
                     name: m.name,
@@ -2484,23 +2488,11 @@ pub async fn embedder_download_registry_model(
     }
     #[cfg(all(feature = "crispembed", not(feature = "ocr-mobile")))]
     {
-        let _ = app;
-        use std::path::PathBuf;
-        let cache_dir: Option<PathBuf> = {
-            if let Ok(lock) = state.index.try_lock() {
-                let data_dir = state.data_dir.try_lock().ok().and_then(|g| g.clone());
-                data_dir.map(|d| super::resolve_model_cache_dir(&lock.config, &d))
-            } else {
-                None
-            }
-        };
-
-        // crispembed resolves by name/alias, checks the cache, downloads if missing.
+        let _ = (app, state);
+        // crispembed resolves by name/alias, checks the cache, downloads if
+        // missing. Downloads land in the one shared cache resolved at startup
+        // (`model_cache`); the process environment is never changed here.
         let path = tokio::task::spawn_blocking(move || {
-            // Override env var so crispembed writes to our models dir.
-            if let Some(ref d) = cache_dir {
-                unsafe { std::env::set_var("CRISPEMBED_CACHE_DIR", d.as_os_str()) };
-            }
             // Passes the per-model consent recorded above on to CrispEmbed's
             // download gate as that model's exact licence tag, for this call.
             crate::index::license_consent::resolve_registry_model(&name, Some(true))
