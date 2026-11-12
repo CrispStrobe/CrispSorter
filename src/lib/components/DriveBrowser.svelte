@@ -19,6 +19,7 @@
         latestDuplicateDecision,
         saveDuplicateAudit,
         saveDuplicateMutationAudit,
+        recordDuplicateRestore,
         type DuplicateMutationAudit,
         type DuplicateDecisionAudit,
     } from '$lib/drives/duplicateAudit';
@@ -289,12 +290,7 @@
                 path: relocateDriveSearchUri(item.path, last.driveId, last.to!, last.from),
             }));
             rightPanel = { ...rightPanel!, source: { ...panel, items: current } };
-            duplicateMutationAudit = [...duplicateMutationAudit, {
-                ...last,
-                operation: 'restore' as const,
-                to: null,
-                at: Date.now(),
-            }].slice(-200);
+            duplicateMutationAudit = recordDuplicateRestore(duplicateMutationAudit, last, Date.now());
             saveDuplicateMutationAudit(duplicateMutationAudit);
         } catch (e) { error = `Could not undo cloud duplicate move: ${String(e)}`; }
         finally { duplicateMutationBusy = null; }
@@ -312,7 +308,7 @@
                 trashPath: last.from,
                 destination: null,
             });
-            duplicateMutationAudit = duplicateMutationAudit.filter((entry) => entry !== last);
+            duplicateMutationAudit = recordDuplicateRestore(duplicateMutationAudit, last, Date.now());
             saveDuplicateMutationAudit(duplicateMutationAudit);
         } catch (e) { error = `Could not restore cloud duplicate: ${String(e)}`; }
         finally { duplicateMutationBusy = null; }
@@ -473,7 +469,7 @@
                             <div class="audit-list">
                                 {#each cloudMutations.slice().reverse() as entry}
                                     <div class="audit-entry">
-                                        <span>{entry.operation === 'move' ? `${entry.from} → ${entry.to}` : entry.operation === 'delete' ? `${entry.from} → provider trash` : `${entry.from} ← provider trash`}</span>
+                                        <span>{entry.operation === 'move' ? `${entry.from} → ${entry.to}` : entry.operation === 'delete' ? `${entry.from} → provider trash` : `${entry.from} ← restored`}</span>
                                         <time datetime={new Date(entry.at).toISOString()}>{new Date(entry.at).toLocaleString()}</time>
                                     </div>
                                 {/each}
