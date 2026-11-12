@@ -4,6 +4,26 @@ Critical things we've learned that are easy to forget when returning to this cod
 
 ---
 
+## Merging pull requests: wait on the exact head commit (2026-11-12)
+
+PR #49 was merged after a CI poll returned early on a stale view of the checks.
+Before any merge, run
+
+```bash
+python3 scripts/wait_required_checks.py --pr <N> [--sha <reviewed head>]
+gh pr merge <N> --merge --match-head-commit <that sha>
+```
+
+The script pins the head SHA, re-reads the PR head on every poll and before it
+exits (exit 3 if it moved), reads check runs and statuses for that SHA only,
+treats queued, pending, cancelled and neutral as not green, waits a settle period
+for late workflows, and exits 0 only when every check is success or skipped.
+`--allow-stalled "<name>"` ignores one named check only while it is still pending,
+and only when the owner has accepted that job as stalled. The same script lives
+in CrispEmbed under `tools/ci/`.
+
+---
+
 ## CAF catalog strings and incomplete scans (2026-11-08)
 
 ### Non-Latin-1 names are written as UTF-8, never rejected or replaced
