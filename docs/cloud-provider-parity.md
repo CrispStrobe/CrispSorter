@@ -89,18 +89,17 @@ and opt-in large-file live tests.
 `CloudDrive::restore_deleted` and `DriveCapabilities::reversible_trash` form
 the common restore boundary. The Tauri command and `crispsorter drives
 restore-deleted` CLI both check the capability before invoking it. Duplicate
-mutations persist bounded audit records; cloud moves can be undone, while
-trash restore is offered only for providers advertising a real restore API.
+mutations persist bounded audit records and cloud moves can be undone.
+Duplicate trash and path-only historical restore controls are disabled until
+they can bind a restore to the original object.
 
 Native Filen and Internxt have real UUID-based restore APIs, but the app's
 current delete audit records only a path. A basename, even when unique in the
 current trash listing, does not prove which object was deleted: another
 same-named object may have replaced it. Their app adapters therefore reject
 path-only restore before keychain/network access and advertise
-`reversible_trash = false`. Duplicate deletion is blocked by the existing
-recoverable-trash guard; ordinary explicit provider deletion is unchanged.
-Use the provider client to restore existing native trash. Google Drive's
-existing restore implementation is unchanged.
+`reversible_trash = false`. Ordinary explicit provider deletion is unchanged.
+Use the provider client to restore existing native trash.
 
 The duplicate workflow is also blocked for Google Drive: resolving a unique
 current parent/name path is an explicit path-based operation, not proof that
