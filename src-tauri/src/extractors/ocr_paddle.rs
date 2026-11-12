@@ -247,6 +247,20 @@ mod tests {
         assert_eq!(paddle_language_for_name("invoice.png"), OcrRecLang::Latin);
     }
 
+    /// Live recognition: downloads the PP-OCRv4 detection + English recognition
+    /// models (~60 MB) on first run. CI runs it explicitly with `--ignored`.
+    #[cfg(feature = "paddle-ocr")]
+    #[test]
+    #[ignore = "live: downloads PaddleOCR models"]
+    fn live_paddle_recognises_the_fixture_sentence() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/quality/ocr-task.png");
+        let doc = ocr_via_paddle(&fixture, OcrRecLang::Latin).expect("paddle OCR runs");
+        let text = doc.full_text.to_lowercase();
+        for word in ["cobalt", "warranty", "november", "2031"] {
+            assert!(text.contains(word), "missing {word:?} in {text:?}");
+        }
+    }
+
     // ── is_cjk ────────────────────────────────────────────────────────────────
 
     #[test]
