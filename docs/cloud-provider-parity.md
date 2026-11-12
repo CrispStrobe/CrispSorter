@@ -117,6 +117,20 @@ restart. Internxt's UUID restore requires a destination folder; Filen restores
 to its recorded location. Supplying a destination alone cannot repair missing
 object identity.
 
+An Internxt receipt implementation has been prototyped in local commits
+`2e4ede2c` and `9709a1fe`, with its capability and UI disabled. The receipt
+contract includes durable pre-mutation storage, single-use restore claims and
+read-only reconciliation; 15 source-bound tests passed, but full app builds,
+live provider tests, platform durability and concurrent-client behavior have
+not been qualified. The commits precede later integration changes and must be
+rebased and reviewed before use. The pinned upstream SDK drops file extensions
+from trash listings; [crisp-cloud-rs PR #5](https://github.com/CrispStrobe/crisp-cloud-rs/pull/5)
+proposes the correction. Complete its SDK endpoint test, make the corrected
+revision available, update and validate both app dependency pins and Cargo.lock,
+then verify the full receipt path before enabling its capability. Legacy
+path-only records and other providers remain disabled until their own durable
+identity adapters are implemented and verified.
+
 Sync-pair comparison is metadata-only until the user explicitly applies a
 policy. Confirmed one-click `local_wins` and `remote_wins` use the existing
 guarded pair push/pull commands. `newest_wins`, `keep_both`, and `manual` still
