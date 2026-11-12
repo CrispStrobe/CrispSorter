@@ -277,12 +277,9 @@ The remaining integration is concrete:
    `prepare_ocr_ios_project.py` with the device ORT framework and `ocr-mobile`
    before the existing manual signing/export route. Simulator linkage is a
    reference recipe, not a passed signed device build.
-3. Resolve the source identity conflict before copying qualification steps:
-   release rewrites tracked Cargo dependency paths, whereas
-   `ocr_mobile_build_receipt.py` correctly rejects modified application or
-   dependency source. Arrange sibling checkouts without changing committed
-   source, or explicitly record and review a build transformation. Do not
-   disable the clean-source guard or reset files to conceal build inputs.
+3. Use the clean sibling checkout layout described below and require lock
+   agreement before copying qualification steps. Keep the existing source
+   identity guard; do not reset files to conceal build inputs.
 4. Bind the final signed APK and exported iOS app to the native and ORT code/data
    with the existing build/provenance validators. Record the signed IPA archive
    hash separately from its app manifest. Then replace the unsupported-profile
@@ -298,7 +295,7 @@ The remaining integration is concrete:
 For bounded unpublished preparation use the existing target-selectable
 `ocr-mobile-native.yml` lane, one target at a time. It already prepares runtime,
 ORT, forced Cargo paths, notices and build identity. A separate signed OCR draft
-recipe is intentionally not enabled until the source transformation and device
+recipe is intentionally not enabled until the native staging and device
 provenance issues above are resolved. Local changes to the guard and receipts
 are preparation only; no new platform build or execution result is implied.
 
@@ -309,3 +306,54 @@ App Store signing secrets are available by name; their presence is not a fresh
 signing test. Direct-download Windows production signing and macOS Developer ID
 secrets remain absent, so those platforms can produce explicitly unsigned drafts
 but public desktop publication remains blocked by its existing signing gate.
+
+## Clean-source preparation for signed mobile builds
+
+Android and iOS release jobs now check out the application and its dependencies
+as sibling repositories below `repos/`: `CrispSorter`, `CrispEmbed`, `CrispASR`
+and `crisp-docx`. This matches the committed Cargo path dependencies. Their
+shell working directory is the application checkout; Rust cache workspace paths
+are updated to match. Build, signing and upload commands retain their existing
+relative paths. No tracked Cargo manifest rewrite is needed. Other release jobs
+retain their existing checkout layout and recipe.
+
+`check_mobile_release_layout.py` validates the clean application source with the
+existing source-identity guard, exact release runtime/ggml checkout, clean pinned
+ASR/docx checkouts and all seven committed sibling Cargo paths. It prints the
+source/tree/manifest/dependency identity without changing them. The native
+checkout initializes submodules recursively. Standard builds do not require an
+independent experimental mobile lock to match the production lock. Future OCR
+preparation must additionally pass `--require-ocr-lock` before using the existing
+OCR build/provenance recipe. Final release receipts discover these external
+sibling commits, while preserving nested sibling discovery for desktop jobs.
+
+This resolves the tracked Cargo-path rewrite conflict. It does not enable OCR,
+change native/runtime pins, execute a platform build or weaken the source receipt
+guard. The fixture test creates real Git sibling repositories and uses offline,
+locked Cargo metadata to check all seven dependencies resolve while the
+application manifest/lock/source remain clean; this does not compile code.
+
+To complete a signed OCR-capable **draft** recipe next:
+
+1. Reuse this clean checkout layout and require production/mobile lock agreement.
+   Stage native build, pinned ORT, forced Cargo environment, notices and the
+   `ocr-mobile` profile using the existing preparation helpers. Keep experimental
+   source overrides out of this production-pin recipe.
+2. Apply Android native bundling and device iOS framework/project preparation
+   before the existing signing/archive/export steps. Keep the first OCR-capable
+   draft path unpublished and separate from automatic TestFlight upload; retain
+   exact failures and generated build records.
+3. Run the existing final-artifact native/ORT provenance validator before placing
+   additional untracked files in the application root. Android signed output can
+   stay in `RUNNER_TEMP`; iOS export already lives below ignored `build/`.
+   Keep receipts outside the source tree until the clean-source check completes.
+   Do not broaden Git ignores or reset manifests/lockfiles to conceal changes.
+4. Preserve the original committed Cargo.lock. If dependency resolution changes
+   it, stop and reconcile/commit that change before rebuilding; the source guard
+   must continue rejecting a changed dependency lock. The generated license
+   inventory remains the existing explicitly recorded exception.
+5. Bind the signed APK/exported app and signed IPA hash to the build records, then
+   execute the applicable application/quality cases on those exact artifacts.
+   Only replace an unsupported OCR-profile refusal with objective checks after
+   those build/provenance paths exist. A passed preparation test is neither a
+   signed platform build nor an application/quality qualification result.

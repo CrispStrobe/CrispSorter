@@ -1066,6 +1066,9 @@ jobs:
   release-android:
     needs: release-draft-preflight
     if: ${{ github.event_name != 'workflow_dispatch' || (!inputs.mac_appstore && inputs.platform == 'all') }}
+    defaults:
+      run:
+        working-directory: repos/CrispSorter
     permissions:
       contents: write
     runs-on: ubuntu-24.04
@@ -1073,6 +1076,8 @@ jobs:
       PROTOC: /usr/bin/protoc
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: repos/CrispSorter
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -1081,31 +1086,26 @@ jobs:
         with:
           repository: ${{ env.CRISPEMBED_REPO }}
           ref: ${{ env.CRISPEMBED_COMMIT }}
-          path: _sibling/CrispEmbed
+          path: repos/CrispEmbed
+          submodules: recursive
       - name: Check out sibling CrispASR
         uses: actions/checkout@v4
         with:
           repository: ${{ env.CRISPASR_REPO }}
           ref: ${{ env.CRISPASR_REF }}
-          path: _sibling/CrispASR
+          path: repos/CrispASR
       - name: Check out sibling crisp-docx
         uses: actions/checkout@v4
         with:
           repository: ${{ env.CRISPDOCX_REPO }}
           ref: ${{ env.CRISPDOCX_REF }}
-          path: _sibling/crisp-docx
+          path: repos/crisp-docx
 
-      - name: Rewrite sibling path deps for CI layout
+      - name: Validate clean committed sibling layout
         run: |
-          python3 -c "
-          import re, pathlib
-          p = pathlib.Path('src-tauri/Cargo.toml')
-          s = p.read_text(encoding='utf-8')
-          s = re.sub(r'path\s*=\s*\"\\.\\./\\.\\./CrispEmbed/([\\w-]+)\"', r'path = \"../_sibling/CrispEmbed/\1\"', s)
-          s = re.sub(r'path\s*=\s*\"\\.\\./\\.\\./CrispASR/([\\w-]+)\"', r'path = \"../_sibling/CrispASR/\1\"', s)
-          s = re.sub(r'path\s*=\s*\"\\.\\./\\.\\./crisp-docx/crates/([\\w-]+)\"', r'path = \"../_sibling/crisp-docx/crates/\1\"', s)
-          p.write_text(s, encoding='utf-8')
-          "
+          python3 scripts/check_mobile_release_layout.py \
+            --embed-commit "${{ env.CRISPEMBED_COMMIT }}" \
+            --asr-ref "${{ env.CRISPASR_REF }}" --docx-ref "${{ env.CRISPDOCX_REF }}"
 
       - name: Install system deps
         run: |
@@ -1135,7 +1135,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: '. -> target'
+          workspaces: 'repos/CrispSorter -> target'
           key: android-arm64
           cache-on-failure: 'true'
 
@@ -1234,6 +1234,9 @@ jobs:
   release-ios:
     needs: release-draft-preflight
     if: ${{ github.event_name != 'workflow_dispatch' || (!inputs.mac_appstore && inputs.platform == 'all') }}
+    defaults:
+      run:
+        working-directory: repos/CrispSorter
     permissions:
       contents: write
     # macos-15 ships Xcode 16, needed because Tauri CLI 2.10's `ios init`
@@ -1246,6 +1249,8 @@ jobs:
       HAS_SIGNING_KEY: ${{ secrets.APPSTORE_API_KEY_P8 != '' && 'true' || '' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: repos/CrispSorter
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -1254,19 +1259,20 @@ jobs:
         with:
           repository: ${{ env.CRISPEMBED_REPO }}
           ref: ${{ env.CRISPEMBED_COMMIT }}
-          path: _sibling/CrispEmbed
+          path: repos/CrispEmbed
+          submodules: recursive
       - name: Check out sibling CrispASR
         uses: actions/checkout@v4
         with:
           repository: ${{ env.CRISPASR_REPO }}
           ref: ${{ env.CRISPASR_REF }}
-          path: _sibling/CrispASR
+          path: repos/CrispASR
       - name: Check out sibling crisp-docx
         uses: actions/checkout@v4
         with:
           repository: ${{ env.CRISPDOCX_REPO }}
           ref: ${{ env.CRISPDOCX_REF }}
-          path: _sibling/crisp-docx
+          path: repos/crisp-docx
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -1274,7 +1280,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: '. -> target'
+          workspaces: 'repos/CrispSorter -> target'
           key: ios-arm64
           cache-on-failure: 'true'
 
@@ -1310,17 +1316,11 @@ jobs:
       - name: Install npm deps
         run: npm ci
 
-      - name: Rewrite sibling path deps for CI layout
+      - name: Validate clean committed sibling layout
         run: |
-          python3 -c "
-          import re, pathlib
-          p = pathlib.Path('src-tauri/Cargo.toml')
-          s = p.read_text(encoding='utf-8')
-          s = re.sub(r'path\s*=\s*\"\\.\\./\\.\\./CrispEmbed/([\\w-]+)\"', r'path = \"../_sibling/CrispEmbed/\1\"', s)
-          s = re.sub(r'path\s*=\s*\"\\.\\./\\.\\./CrispASR/([\\w-]+)\"', r'path = \"../_sibling/CrispASR/\1\"', s)
-          s = re.sub(r'path\s*=\s*\"\\.\\./\\.\\./crisp-docx/crates/([\\w-]+)\"', r'path = \"../_sibling/crisp-docx/crates/\1\"', s)
-          p.write_text(s, encoding='utf-8')
-          "
+          python3 scripts/check_mobile_release_layout.py \
+            --embed-commit "${{ env.CRISPEMBED_COMMIT }}" \
+            --asr-ref "${{ env.CRISPASR_REF }}" --docx-ref "${{ env.CRISPDOCX_REF }}"
 
       - name: Install protoc
         run: brew install protobuf

@@ -36,6 +36,18 @@ exists; the default standard build, publication and authorized TestFlight route
 remain available. No new manual approval record or experimental runtime is added.
 See [the concrete integration handoff](docs/ocr-device-qualification.md#signed-mobile-release-profile-and-integration-handoff).
 
+## Clean-source signed mobile preparation — 12 November 2026
+
+Mobile release checkouts now use committed sibling Cargo paths without editing
+tracked manifests. A fail-closed layout/source/pin validator and external-sibling
+receipt discovery prepare the signed recipe for existing native OCR provenance
+checks. Real Git fixtures and offline locked Cargo metadata verify dependency
+resolution and unchanged application source; no native/platform build was run.
+Standard recipe/features, signing/upload behavior and concurrency are unchanged.
+The [draft OCR integration handoff](docs/ocr-device-qualification.md#clean-source-preparation-for-signed-mobile-builds)
+records native/ORT staging, device framework setup, artifact placement and
+lockfile checks still needed before any signed OCR draft or qualification claim.
+
 ## Non-Unix receipt durability admission — 12 November 2026
 
 [Receipt run 43303387822](https://github.com/CrispStrobe/CrispSorter/actions/runs/43303387822)
