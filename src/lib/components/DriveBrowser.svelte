@@ -231,12 +231,13 @@
                 destination: destinationPath,
             });
             if (rightPanel?.source.kind === 'DuplicateGroup') {
+                const groupId = rightPanel.source.groupId;
                 const items = rightPanel.source.items.map((item) => item.path === itemPath
                     ? { ...item, path: relocateDriveSearchUri(item.path, parts.driveId, parts.path, destinationPath) }
                     : item);
                 rightPanel = { ...rightPanel, source: { ...rightPanel.source, items } };
                 duplicateMutationAudit = [...duplicateMutationAudit, {
-                    groupId: rightPanel.source.groupId,
+                    groupId,
                     driveId: parts.driveId,
                     operation: 'move' as const,
                     from: parts.path,
