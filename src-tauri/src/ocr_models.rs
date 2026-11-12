@@ -418,6 +418,27 @@ fn hash_prefix(path: &Path, length: u64, hasher: &mut Sha256) -> Result<(), Stri
     }
 }
 
+/// Reuse a previously downloaded companion only when it matches its pin.
+fn verified_existing(path: &Path, expected: &str, cancel: &AtomicBool) -> Result<bool, String> {
+    let mut reader = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("Read existing model file: {error}")),
+    };
+    if !reader.metadata().map_err(|e| format!("Inspect existing model file: {e}"))?.is_file() {
+        return Ok(false);
+    }
+    let mut hash = Sha256::new();
+    let mut buffer = vec![0u8; 256 * 1024];
+    loop {
+        if cancel.load(Ordering::SeqCst) { return Err(CANCELLED.into()); }
+        let count = reader.read(&mut buffer).map_err(|e| format!("Read existing model file: {e}"))?;
+        if count == 0 { break; }
+        hash.update(&buffer[..count]);
+    }
+    Ok(format!("{:x}", hash.finalize()).eq_ignore_ascii_case(expected))
+}
+
 /// Download one artifact into `<dir>/<filename>.part`, resuming from an
 /// existing partial file, and verify it. The caller renames it into place.
 /// Network failures and cancellation keep the `.part` for the next attempt;
@@ -631,7 +652,7 @@ pub(crate) fn install_with(
         order.extend(item.files.iter().filter(|f| f.primary));
         let mut model_bytes = 0u64;
         for file in order {
-            if crate::model_cache::usable_file(&dir.join(&file.filename)) && !file.primary { continue; }
+            if !file.primary && verified_existing(&dir.join(&file.filename), &file.sha256, cancel)? { continue; }
             let mut last = Instant::now().checked_sub(Duration::from_secs(1)).unwrap_or_else(Instant::now);
             log.step("downloading", json!({"count": index + 1}));
             let result = download_artifact_logged(fetch, dir, file, cancel, &mut |downloaded, total| {
@@ -1365,6 +1386,21 @@ mod tests {
         let opens = fetch.opens.lock().unwrap().len();
         install_with(&fetch, dir.path(), &items, &AtomicBool::new(false), None, None, &|_| {}, &quiet()).unwrap();
         assert_eq!(fetch.opens.lock().unwrap().len(), opens);
+    }
+
+    #[test]
+    fn installer_replaces_corrupt_existing_companion_before_primary() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = payload();
+        let fetch = MemoryFetch::new(&bytes);
+        let mut companion = artifact(&bytes);
+        companion.filename = "mmproj-test.gguf".into();
+        companion.primary = false;
+        std::fs::write(dir.path().join(&companion.filename), b"corrupt existing file").unwrap();
+        let items = [InstallItem { name: "installer-test".into(), estimate: Some(800), files: vec![artifact(&bytes), companion] }];
+        install_with(&fetch, dir.path(), &items, &AtomicBool::new(false), None, None, &|_| {}, &quiet()).unwrap();
+        assert_eq!(std::fs::read(dir.path().join("mmproj-test.gguf")).unwrap(), bytes);
+        assert_eq!(fetch.opens.lock().unwrap().len(), 2, "both corrupt companion and missing primary are fetched");
     }
 
     #[test]
