@@ -83,7 +83,13 @@ async fn prepare_copy(root: PathBuf, locator: ContainerMemberLocator) -> Result<
 
 /// Return a verified read-only extracted copy for preview or explicit opening.
 #[tauri::command]
-pub async fn index_open_container_member(app: tauri::AppHandle, state: State<'_, AppState>,
+pub async fn index_open_container_member(app: tauri::AppHandle, state: State<'_, AppState>, owner_id: String, doc_id: String) -> Result<OpenedContainerMember,String> {
+    let log = crate::operation_log::OperationLog::start("index.open_container_member", serde_json::json!({"surface":"gui"}));
+    let result = index_open_container_member_inner(app, state, owner_id, doc_id).await;
+    crate::index::finish_logged(log, result, "open_failed", |_| serde_json::Value::Null)
+}
+
+async fn index_open_container_member_inner(app: tauri::AppHandle, state: State<'_, AppState>,
     owner_id: String, doc_id: String) -> Result<OpenedContainerMember,String> {
     if [&owner_id,&doc_id].iter().any(|value| value.trim().is_empty() || value.len() > 512 || value.chars().any(char::is_control)) {
         return Err("Choose a container member with its exact owner and document identity".into());

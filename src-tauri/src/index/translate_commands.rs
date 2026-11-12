@@ -130,10 +130,14 @@ pub struct TranslateResponse {
 /// - the data dir isn't set in [`AppState`] (means startup didn't
 ///   finish — pure UI-race guard).
 #[tauri::command]
-pub async fn translate_text(
-    state: State<'_, AppState>,
-    input: TranslateInput,
-) -> Result<TranslateResponse, String> {
+pub async fn translate_text(state: State<'_, AppState>, input: TranslateInput) -> Result<TranslateResponse, String> {
+    let log = crate::operation_log::OperationLog::start("index.translate", serde_json::json!({"surface":"gui"}));
+    let result = translate_text_inner(state, input).await;
+    crate::index::finish_logged(log, result, "translate_failed", |response| serde_json::json!({"language": response.target_lang, "reused": response.cached}))
+}
+
+async fn translate_text_inner(state: State<'_, AppState>,
+    input: TranslateInput) -> Result<TranslateResponse, String> {
     crate::ensure_intended_purpose(&state, "translate_text").await?;
     translate_text_impl(state, input).await.map_err(|e| format!("{e:#}"))
 }

@@ -75,10 +75,14 @@ pub struct RerankReport {
 }
 
 #[tauri::command]
-pub async fn crispembed_rerank_passages(
-    state: State<'_, AppState>, endpoint: String, query: String,
-    candidates: Vec<SearchResult>, limit: usize,
-) -> Result<RerankReport, String> {
+pub async fn crispembed_rerank_passages(state: State<'_, AppState>, endpoint: String, query: String, candidates: Vec<SearchResult>, limit: usize) -> Result<RerankReport, String> {
+    let log = crate::operation_log::OperationLog::start("search.rerank", serde_json::json!({"items":candidates.len()}));
+    let result = crispembed_rerank_passages_inner(state, endpoint, query, candidates, limit).await;
+    crate::index::finish_logged(log, result, "rerank_failed", |report| serde_json::json!({"results": report.results.len()}))
+}
+
+async fn crispembed_rerank_passages_inner(state: State<'_, AppState>, endpoint: String, query: String,
+    candidates: Vec<SearchResult>, limit: usize) -> Result<RerankReport, String> {
     if candidates.len() > 100 || query.trim().is_empty() { return Err("Supply a question and at most 100 candidates".into()); }
     let _foreground = crate::bg_ingest::ForegroundGuard::new(state.foreground_active.clone());
     let (client, base) = client(&endpoint)?;
@@ -136,10 +140,14 @@ fn decision_request(text: &str, task: &DecisionTask, choices: &[String]) -> Resu
 }
 
 #[tauri::command]
-pub async fn crispembed_classify_document(
-    state: State<'_, AppState>, endpoint: String, document: SearchResult,
-    task: DecisionTask, choices: Vec<String>,
-) -> Result<DecisionSuggestion, String> {
+pub async fn crispembed_classify_document(state: State<'_, AppState>, endpoint: String, document: SearchResult, task: DecisionTask, choices: Vec<String>) -> Result<DecisionSuggestion, String> {
+    let log = crate::operation_log::OperationLog::start("index.classify", serde_json::json!({"surface":"gui"}));
+    let result = crispembed_classify_document_inner(state, endpoint, document, task, choices).await;
+    crate::index::finish_logged(log, result, "classify_failed", |_| serde_json::Value::Null)
+}
+
+async fn crispembed_classify_document_inner(state: State<'_, AppState>, endpoint: String, document: SearchResult,
+    task: DecisionTask, choices: Vec<String>) -> Result<DecisionSuggestion, String> {
     let _foreground = crate::bg_ingest::ForegroundGuard::new(state.foreground_active.clone());
     let local = state.index.lock().await.local.clone().ok_or("A local index is required for document decisions")?;
     let mut passages = local.fetch_passages(std::slice::from_ref(&document)).await.map_err(|e| e.to_string())?;

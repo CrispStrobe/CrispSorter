@@ -17,6 +17,7 @@
 
     import { onMount } from 'svelte';
     import { invoke } from '@tauri-apps/api/core';
+    import { beginOperation } from '$lib/operationLog';
     import { open as openDialog, save as saveDialog, ask } from '@tauri-apps/plugin-dialog';
     import { scanForCatalog } from '$lib/catalogScan';
     import { getSetting, saveSetting } from '$lib/store';
@@ -122,7 +123,7 @@
             metadataCache[path] = await invoke<CafMetadata>('catalog_metadata', { path });
         } catch (e: any) {
             metadataCache[path] = null;
-            flog('warn', `catalog_metadata(${path}): ${e}`);
+            flog('warn', 'catalog_metadata: catalog unreadable');
         }
     }
 
@@ -171,11 +172,12 @@
         if (!out) return;
         loading = true;
         error = '';
+        const operation = beginOperation('index.catalog_create');
         try {
             // 1. Scan the folder (no inline hashing — dedup will hash later if needed).
             //    Unreadable entries are listed and the user decides whether to save.
             const scan = await scanForCatalog<FileIndex>(invoke, confirmPartial, folder, i18n.t.caf_catalog);
-            if (!scan) return;
+            if (!scan) { operation.cancel(); return; }
             const idx = scan.index;
             // 2. Save to .caf
             await invoke('catalog_save_caf', {
@@ -183,13 +185,15 @@
                 index: idx,
                 createdDate: Math.floor(Date.now() / 1000),
             });
-            flog(scan.complete ? 'info' : 'warn', `Created catalog: ${out} (${idx.all_files.length} files${scan.complete ? '' : `, ${scan.issues} unreadable entries omitted`})`);
+            operation.stage('saved', { count: idx.all_files.length, warnings: scan.complete ? 0 : scan.issues });
             // 3. Auto-register + capture volume UUID while the drive is still mounted
             const volumeId = await invoke<string | null>('index_volume_id_for_path', { path: folder }).catch(() => null);
             registered = [...registered, { path: out, active: false, added_at: Date.now(), volume_id: volumeId ?? undefined }];
             await persistRegistered();
             await refreshMetadata(out);
+            operation.complete({ count: idx.all_files.length, warnings: scan.complete ? 0 : scan.issues, partial: !scan.complete });
         } catch (e: any) {
+            operation.fail(e);
             error = String(e);
         } finally {
             loading = false;
@@ -205,10 +209,11 @@
         }
         loading = true;
         error = '';
+        const operation = beginOperation('index.catalog_refresh');
         try {
             // A declined partial rescan leaves the existing catalog untouched.
             const scan = await scanForCatalog<FileIndex>(invoke, confirmPartial, meta.device, i18n.t.caf_catalog);
-            if (!scan) return;
+            if (!scan) { operation.cancel(); return; }
             const idx = scan.index;
             await invoke('catalog_save_caf', {
                 path,
@@ -216,8 +221,9 @@
                 createdDate: Math.floor(Date.now() / 1000),
             });
             await refreshMetadata(path);
-            flog(scan.complete ? 'info' : 'warn', `Refreshed catalog: ${path} (${idx.all_files.length} files${scan.complete ? '' : `, ${scan.issues} unreadable entries omitted`})`);
+            operation.complete({ count: idx.all_files.length, warnings: scan.complete ? 0 : scan.issues, partial: !scan.complete });
         } catch (e: any) {
+            operation.fail(e);
             error = String(e);
         } finally {
             loading = false;
@@ -246,6 +252,7 @@
         await persistRegistered();
         loading = true;
         error = '';
+        const operation = beginOperation(willActivate ? 'index.catalog_activate' : 'index.catalog_deactivate');
         try {
             const dataDir = await invoke<string>('get_app_data_dir');
             const inserted = await invoke<number>('catalog_set_active', {
@@ -253,15 +260,9 @@
                 active: willActivate,
                 dataDir,
             });
-            if (willActivate) {
-                flog(
-                    'info',
-                    `Activated catalog: ${path} (${inserted} entries materialized)`
-                );
-            } else {
-                flog('info', `Deactivated catalog: ${path}`);
-            }
+            operation.complete(willActivate ? { count: inserted } : {});
         } catch (e: any) {
+            operation.fail(e);
             // Revert on failure so the UI doesn't lie about state.
             registered = registered.map(c =>
                 c.path === path ? { ...c, active: !willActivate } : c
@@ -286,6 +287,7 @@
         if (!browsing || browsingEntries.length === 0) return;
         importing = true;
         importedCount = 0;
+        const operation = beginOperation('index.catalog_import', { total: browsingEntries.length });
         try {
             const { batchManager } = await import('$lib/batch/store.svelte');
             const entriesToImport = browsingEntries.map(e => ({
@@ -294,8 +296,9 @@
                 size: e.size
             }));
             importedCount = await batchManager.addItemsBulk(entriesToImport);
-            flog('info', `Imported ${importedCount} entries from catalog ${browsing}`);
+            operation.complete({ count: importedCount });
         } catch (e: any) {
+            operation.fail(e);
             error = `import_to_batch: ${e}`;
         } finally {
             importing = false;

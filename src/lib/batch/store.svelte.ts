@@ -16,7 +16,7 @@ import { getORTLoadedModel } from '../llm/ort';
 import type { BatchItem, Metadata } from '../types';
 import { extractText, usesNativePathExtraction, AUDIO_EXTENSIONS } from '../extractors';
 import { flog, logDebug } from '../log';
-import { beginOperation } from '../operationLog';
+import { beginOperation, runOperation } from '../operationLog';
 import { finishProcessingCheckpoint } from './processingReceipt';
 import { applyFieldTemplate } from '../metadataFields';
 import { sortPlanMatches, type SortPlan } from './sortPlan';
@@ -194,7 +194,7 @@ export class BatchManager {
                 if (added) flog('info', `Added ${added} item(s) to SQLite and the batch.`);
                 return added;
             } catch (error) {
-                flog('error', `Adding files stopped after ${added} saved item(s): ${String(error)}`);
+                flog('error', `Adding files stopped after ${added} saved item(s).`);
                 throw new BatchAdditionError(added, newItems.length, error);
             } finally {
                 this.isUpdatingBatch = false;
@@ -208,16 +208,12 @@ export class BatchManager {
     async removeItems(ids: string[]) {
         if (reviewDrafts.applyingId || this.isUpdatingBatch) throw new Error('Wait for the current batch changes to finish.');
         this.isUpdatingBatch = true;
-        flog('info', 'Removing ' + ids.length + ' item(s) from batch...');
         try {
             await deleteItems(ids);
             this.items = this.items.filter(i => !ids.includes(i.id));
             reviewDrafts.discard(ids);
-            flog('info', 'Removed ' + ids.length + ' item(s) from SQLite.');
-        } catch (e: any) {
-            flog('error', 'Failed to remove items from SQLite: ' + (e.message || e));
-            throw e;
         } finally {
+            // The native batch.session.delete receipt records the outcome.
             this.isUpdatingBatch = false;
         }
     }
@@ -225,18 +221,13 @@ export class BatchManager {
     async clear() {
         if (this.isProcessing || this.isExecuting || this.isCleaningDuplicates || this.isUpdatingBatch || reviewDrafts.applyingId) return;
         this.isUpdatingBatch = true;
-        const count = this.items.length;
-        flog('info', 'Clearing batch (' + count + ' items)...');
         try {
             await clearBatch();
             reviewDrafts.discard(this.items.map(item => item.id));
             this.items = [];
             this.manualFields.clear();
-            flog('info', 'Batch cleared in SQLite.');
-        } catch (e: any) {
-            flog('error', 'Failed to clear batch in SQLite: ' + (e.message || e));
-            throw e;
         } finally {
+            // The native batch.session.clear receipt records the outcome.
             this.isUpdatingBatch = false;
         }
     }
@@ -323,6 +314,7 @@ export class BatchManager {
             }
         });
         if (targets.length > 0) await upsertItemsBulk(targets);
+        flog('info', `Requeued ${targets.length} of ${ids.length} item(s) for re-extraction (enforceOcr=${enforceOcr}).`);
         } finally { this.isUpdatingBatch = false; }
         await this.processAll({ enforceOcr, extractionOnly: true }, new Set(ids));
     }
@@ -344,6 +336,7 @@ export class BatchManager {
             }
         });
         if (targets.length > 0) await upsertItemsBulk(targets);
+        flog('info', `Requeued ${targets.length} of ${ids.length} item(s) for reprocessing (overrides=${overrides ? 'yes' : 'no'}).`);
         } finally { this.isUpdatingBatch = false; }
         await this.processAll(overrides, new Set(ids));
     }
@@ -584,7 +577,7 @@ export class BatchManager {
                         try {
                             item.sha256 = await invoke<string>('file_sha256', { path: item.originalPath });
                         } catch (e) {
-                            logDebug(`sha256 failed for ${item.originalName}: ${e}`);
+                            logDebug(`sha256 failed for item=${item.id}`);
                         }
                     }
                     if (item.sha256) {
@@ -606,7 +599,7 @@ export class BatchManager {
                             item.status = 'review';
                             if (overrides?.extractionOnly) await this.calculateTargetPath(item);
                             await upsertItem(item);
-                            flog('info', `History match: ${item.originalName} — skipping extraction (last seen ${new Date(hist.processedAt).toLocaleDateString()})`);
+                            flog('info', `History match: item=${item.id} — skipping extraction (last seen ${new Date(hist.processedAt).toLocaleDateString()})`);
                             continue;
                         }
                     }
@@ -623,7 +616,7 @@ export class BatchManager {
                     if (this.stopRequested) break;
                     if (stored) {
                         item.extractedText = stored;
-                        logDebug(`Restored ${stored.length} chars for ${item.originalName} from SQLite`);
+                        logDebug(`Restored ${stored.length} chars for item=${item.id} from SQLite`);
                     }
                 }
                 if (item.extractedText) {
@@ -634,7 +627,7 @@ export class BatchManager {
                     continue;
                 }
 
-                logDebug(`extract worker ${workerId} -> ${item.originalName} (queue=${llmQueueItems.length})`);
+                logDebug(`extract worker ${workerId} -> item=${item.id} (queue=${llmQueueItems.length})`);
                 this.extractionActive++;
                 item.status = 'extracting';
                 const forceOCR = overrides?.enforceOcr ?? false;
@@ -646,11 +639,11 @@ export class BatchManager {
                 // completes.  "Starting" before, "Extracted" after,
                 // both at info level so the gap surfaces clearly.
                 const extractStartTs = performance.now();
-                flog('info', `Starting extraction: ${item.originalName} via worker ${workerId}`);
+                flog('info', `Starting extraction: item=${item.id} via worker ${workerId}`);
 
                 try {
                     if (item.originalName.toLowerCase().endsWith('.pdf') && pdfBackend === 'rust' && !forceOCR && !isProviderUri(item.originalPath)) {
-                        flog('info', `Rust extraction: ${item.originalName}`);
+                        flog('info', `Rust extraction: item=${item.id}`);
                         const extractCall = invoke<string>('extract_pdf_native', { path: item.originalPath });
                         const text = FILE_TIMEOUT_MS > 0
                             ? await Promise.race([
@@ -662,7 +655,7 @@ export class BatchManager {
                             : await extractCall;
                         item.extractedText = text;
                     } else {
-                        flog('info', `JS extraction: ${item.originalName} (forceOCR=${forceOCR})`);
+                        flog('info', `JS extraction: item=${item.id} (forceOCR=${forceOCR})`);
                         // Per-item AbortController. Listens to the shared
                         // `this.extractionAbort` (Stop button) so cancelling
                         // the run aborts every in-flight worker, but each
@@ -681,7 +674,7 @@ export class BatchManager {
                             if (watchdogId) clearTimeout(watchdogId);
                             watchdogId = setTimeout(() => {
                                 itemAbort.abort(new Error('EXTRACT_PAGE_TIMEOUT'));
-                                flog('warn', `Page watchdog fired (${PAGE_WATCHDOG_MS / 1000}s no progress): ${item.originalName}`);
+                                flog('warn', `Page watchdog fired (${PAGE_WATCHDOG_MS / 1000}s no progress): item=${item.id}`);
                             }, PAGE_WATCHDOG_MS);
                         };
                         resetWatchdog(); // start watchdog immediately
@@ -694,7 +687,7 @@ export class BatchManager {
                         if (FILE_TIMEOUT_MS > 0) {
                             fileTimeoutId = setTimeout(() => {
                                 itemAbort.abort(new Error('EXTRACT_FILE_TIMEOUT'));
-                                flog('warn', `File timeout fired (${FILE_TIMEOUT_MS / 1000}s wall-clock): ${item.originalName}`);
+                                flog('warn', `File timeout fired (${FILE_TIMEOUT_MS / 1000}s wall-clock): item=${item.id}`);
                             }, FILE_TIMEOUT_MS);
                         }
 
@@ -844,9 +837,9 @@ export class BatchManager {
                             // 'failed' is reserved for actual exceptions.
                             item.metadataReadStatus = 'ok';
                             if (got) {
-                                flog('info', `PDF metadata prefilled: ${item.originalName} (title=${meta?.title ? 'y' : '-'}, author=${meta?.author ? 'y' : '-'}, year=${meta?.year ?? '-'})`);
+                                flog('info', `PDF metadata prefilled: item=${item.id} (title=${meta?.title ? 'y' : '-'}, author=${meta?.author ? 'y' : '-'}, year=${meta?.year ?? '-'})`);
                             } else {
-                                logDebug(`PDF /Info empty: ${item.originalName} (no usable Title/Author/Year)`);
+                                logDebug(`PDF /Info empty: item=${item.id} (no usable Title/Author/Year)`);
                             }
                         } catch (e) {
                             // Non-fatal -- most PDFs have an Info dict, but
@@ -921,7 +914,7 @@ export class BatchManager {
                     if (isAbort) {
                         item.status = 'unfinished';
                         item.statusDetail = 'interrupted';
-                        flog('warn', `Extraction interrupted: ${item.originalName}`);
+                        flog('warn', `Extraction interrupted: item=${item.id}`);
                         if (this.stopRequested) break;
                     } else {
                         item.status = 'error';
@@ -954,7 +947,7 @@ export class BatchManager {
                 if (item === null) break; // queue closed and empty
                 if (this.stopRequested || runLlmAbort.signal.aborted) break;
 
-                logDebug(`llm worker ${workerId} -> ${item.originalName} (remaining=${llmQueueItems.length})`);
+                logDebug(`llm worker ${workerId} -> item=${item.id} (remaining=${llmQueueItems.length})`);
 
                 // Re-check: the producer may have queued an item that
                 // the user has since edited, or the item may have
@@ -1081,7 +1074,7 @@ export class BatchManager {
                     if (isAbort) {
                         item.status = 'unfinished';
                         item.statusDetail = 'interrupted';
-                        flog('info', `Analysis stopped: ${item.originalName}`);
+                        flog('info', `Analysis stopped: item=${item.id}`);
                         break;
                     } else {
                         item.status = 'error';
@@ -1187,7 +1180,7 @@ export class BatchManager {
             const allComplete = titleOk && authorOk;
             if (autoAccept && allComplete && !item.isAccepted) {
                 item.isAccepted = true;
-                flog('info', `Auto-accepted '${item.originalName}' — Title + Author are non-sentinel.`);
+                flog('info', `Auto-accepted item=${item.id} — Title + Author are non-sentinel.`);
             } else if (autoAccept && !allComplete && item.isAccepted) {
                 // Same fairness rule in reverse: don't keep a green check
                 // on a row the user just downgraded by reverting Title or
@@ -1195,7 +1188,7 @@ export class BatchManager {
                 // it implicitly and the next Sortieren still moved the
                 // file" surprise.
                 item.isAccepted = false;
-                flog('info', `Auto-unchecked '${item.originalName}' — Title or Author reverted to a sentinel.`);
+                flog('info', `Auto-unchecked item=${item.id} — Title or Author reverted to a sentinel.`);
             }
             await upsertItem(item);
         } finally {
@@ -1266,7 +1259,7 @@ export class BatchManager {
                 const migrated = await migrateFromJson();
                 if (migrated > 0) flog('info', 'Migrated ' + migrated + ' item(s) from lastSession JSON to SQLite.');
             } catch (e: any) {
-                flog('warn', 'migrateFromJson failed: ' + (e?.message ?? e));
+                flog('warn', 'migrateFromJson failed; continuing with the SQLite batch.');
             }
             flog('info', 'Loading batch from SQLite...');
             const rows = await loadBatch();
@@ -1298,7 +1291,7 @@ export class BatchManager {
                 flog('info', 'No items in SQLite batch.');
             }
         } catch (e: any) {
-            flog('warn', 'resumeLastSession: SQLite load failed: ' + (e?.message ?? e));
+            flog('warn', 'resumeLastSession: SQLite load failed.');
             throw e;
         } finally { this.isUpdatingBatch = false; }
     }
@@ -1549,8 +1542,9 @@ export class BatchManager {
     }
 
     async getDuplicateGroups(onProgress?: (checked: number, total: number) => void) {
-        return findVerifiedDuplicates(this.items,
-            path => invoke<string>('file_sha256', { path }), onProgress);
+        return runOperation('batch.duplicate_scan', { total: this.items.length }, () => findVerifiedDuplicates(this.items,
+            path => invoke<string>('file_sha256', { path }), onProgress),
+            scan => ({ results: scan.groups.length, failed: scan.failed.length, count: scan.skipped.length, partial: scan.failed.length > 0 }));
     }
 
     // ── P15a — content dedup ────────────────────────────────────────────────

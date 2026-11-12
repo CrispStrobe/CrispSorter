@@ -131,6 +131,20 @@ pub fn is_acknowledged(data_dir: &Path) -> bool {
 
 /// Record an acknowledgement. `via` is for support, not for enforcement.
 pub fn acknowledge(data_dir: &Path, via: &str) -> Result<Record, String> {
+    // `surface` is allowlisted to gui/cli; any other `via` is dropped.
+    let log = crate::operation_log::OperationLog::start(
+        "app.intended_purpose_acknowledge",
+        serde_json::json!({"surface": via}),
+    );
+    let result = write_acknowledgement(data_dir, via);
+    match &result {
+        Ok(record) => log.succeed(serde_json::json!({"revision": record.version})),
+        Err(_) => log.fail("write_failed"),
+    }
+    result
+}
+
+fn write_acknowledgement(data_dir: &Path, via: &str) -> Result<Record, String> {
     let record = Record {
         version: STATEMENT_VERSION,
         accepted_at_unix: std::time::SystemTime::now()
@@ -156,6 +170,10 @@ pub fn ensure(data_dir: &Path, operation: &str) -> Result<(), String> {
     if is_acknowledged(data_dir) {
         return Ok(());
     }
+    // A refusal is the one outcome worth a receipt; passing checks are not.
+    // The operation name is caller-supplied text, so it stays out of the log.
+    crate::operation_log::OperationLog::start("app.intended_purpose_gate", serde_json::json!({}))
+        .fail("not_acknowledged");
     Err(format!(
         "\"{operation}\" produces AI output, and this install has not yet \
          acknowledged what the software is intended for.\n\n{STATEMENT}\n\n\
@@ -172,11 +190,21 @@ pub fn ensure(data_dir: &Path, operation: &str) -> Result<(), String> {
 /// should not have to know the file name. Deleting the record does not undo
 /// anything that was already produced — the gate only governs future output.
 pub fn reset(data_dir: &Path) -> Result<bool, String> {
+    let log = crate::operation_log::OperationLog::start("app.intended_purpose_reset", serde_json::json!({}));
     let p = path_in(data_dir);
     match std::fs::remove_file(&p) {
-        Ok(()) => Ok(true),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(e) => Err(format!("removing {}: {e}", p.display())),
+        Ok(()) => {
+            log.succeed(serde_json::json!({"saved": true}));
+            Ok(true)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            log.succeed(serde_json::json!({"saved": false}));
+            Ok(false)
+        }
+        Err(e) => {
+            log.fail("remove_failed");
+            Err(format!("removing {}: {e}", p.display()))
+        }
     }
 }
 
@@ -240,6 +268,20 @@ mod tests {
 
     fn tmp() -> tempfile::TempDir {
         tempfile::tempdir().expect("tempdir")
+    }
+
+    #[test]
+    fn acknowledging_and_refusing_leave_receipts_without_the_operation_text() {
+        let d = tmp();
+        let (refused, events) = crate::operation_log::capture(|| ensure(d.path(), "private-operation"));
+        assert!(refused.is_err());
+        assert!(events.iter().any(|e| e.operation == "app.intended_purpose_gate"
+            && e.phase == "failed" && e.code.as_deref() == Some("not_acknowledged")));
+        assert!(!serde_json::to_string(&events).unwrap().contains("private"));
+        let (_, events) = crate::operation_log::capture(|| acknowledge(d.path(), "gui").unwrap());
+        let done = events.iter().find(|e| e.phase == "completed").expect("completed");
+        assert_eq!(done.operation, "app.intended_purpose_acknowledge");
+        assert_eq!(done.context.get("surface"), Some(&serde_json::json!("gui")));
     }
 
     #[test]

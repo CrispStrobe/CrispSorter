@@ -4,6 +4,7 @@
     import { listen, type UnlistenFn } from '@tauri-apps/api/event';
     import { frontendLogs, type FrontendLogEntry, getLogVerbosity, setLogVerbosity, type LogLevel } from '../log';
     import { saveSetting } from '../store';
+    import { beginOperation } from '../operationLog';
     import { i18n } from '../i18n.svelte';
 
     interface LogEntry {
@@ -71,10 +72,12 @@
     }
 
     function copyLogs() {
-        const text = filteredLogs
-            .map(l => `[${formatTime(l.ts)}] [${l.src ?? '??'}] [${l.level}] ${l.msg}`)
-            .join('\n');
-        navigator.clipboard.writeText(text);
+        const lines = filteredLogs
+            .map(l => `[${formatTime(l.ts)}] [${l.src ?? '??'}] [${l.level}] ${l.msg}`);
+        // Receipt is the line count only; the copied text never re-enters the log.
+        const operation = beginOperation('app.log_export', { count: lines.length });
+        navigator.clipboard.writeText(lines.join('\n'))
+            .then(() => operation.complete(), (error) => operation.fail(error));
     }
 
     onMount(async () => {

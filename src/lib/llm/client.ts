@@ -265,7 +265,7 @@ export class LLMClient {
     }
 
     async query(providerId: string, modelId: string, prompt: string, apiKey?: string, temperature: number = 0.3, signal?: AbortSignal, maxOutputTokens?: number, baseUrlOverride?: string): Promise<string> {
-        flog('info', `LLM query: provider=${providerId} model=${modelId} prompt_len=${prompt.length}`);
+        flog('info', `LLM query: provider=${providerId} prompt_len=${prompt.length}`);
         if (maxOutputTokens != null && (!Number.isFinite(maxOutputTokens) || maxOutputTokens < 1)) throw new Error('Invalid answer token budget');
         const outputTokenBudget = maxOutputTokens == null ? undefined : Math.floor(maxOutputTokens);
 
@@ -311,7 +311,7 @@ export class LLMClient {
                 flog('info', `mistralrs done in ${Date.now() - startTime}ms, result_len=${String(result).length}`);
                 return this.stripThinking(String(result));
             } catch (error: any) {
-                flog('error', `mistralrs failed after ${Date.now() - startTime}ms: ${error?.message ?? error}`);
+                flog(error?.name === 'AbortError' ? 'warn' : 'error', `mistralrs ${error?.name === 'AbortError' ? 'aborted' : String(error?.message ?? '').includes('LLM_TIMEOUT') ? 'timed out' : 'failed'} after ${Date.now() - startTime}ms`);
                 throw error?.name === 'AbortError' ? error : new Error(`mistral.rs error: ${error}`);
             }
         }
@@ -346,7 +346,7 @@ export class LLMClient {
         for (let attempt = 0; attempt < maxRetries; attempt++) {
             if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
             try {
-                flog('info', `POST ${baseUrl}/chat/completions (attempt ${attempt + 1})`);
+                flog('info', `LLM request: provider=${providerId} attempt=${attempt + 1}`);
                 const headers: Record<string, string> = { 'Content-Type': 'application/json' };
                 if (key && !['ollama', 'llamacpp', 'mlx'].includes(providerId)) headers['Authorization'] = `Bearer ${key}`;
 
@@ -409,22 +409,22 @@ export class LLMClient {
 
                 if (!response.ok) {
                     const errorText = await response.text();
-                    flog('error', `LLM HTTP ${response.status} (${providerId}): ${errorText}`);
+                    flog('error', `LLM HTTP ${response.status} (${providerId}), response_len=${errorText.length}`);
                     throw new Error(`LLM Error (${providerId}): ${errorText || response.statusText}`);
                 }
 
                 const data = await response.json();
-                flog('info', `LLM query success (${providerId})`);
                 const content = data.choices?.[0]?.message?.content ?? data.choices?.[0]?.message?.reasoning_content ?? '';
+                flog('info', `LLM query success (${providerId}) attempt=${attempt + 1} result_len=${String(content).length}`);
                 return this.stripThinking(content);
             } catch (error: any) {
                 // Don't retry on user abort or timeout — surface immediately
                 if (error?.name === 'AbortError' || error?.message?.includes('LLM_TIMEOUT')) {
-                    flog('warn', `LLM query aborted/timed out (${providerId}): ${error.message}`);
+                    flog('warn', `LLM query ${error?.message?.includes('LLM_TIMEOUT') ? 'timed out' : 'aborted'} (${providerId})`);
                     throw error;
                 }
                 lastError = error;
-                flog('warn', `LLM attempt ${attempt + 1} failed (${providerId}): ${error.message || error}`);
+                flog('warn', `LLM attempt ${attempt + 1} failed (${providerId})`);
                 if (attempt < maxRetries - 1) {
                     await this.abortableSleep(2000, signal);
                 }

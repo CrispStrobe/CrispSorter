@@ -4,7 +4,10 @@
 /// is never blocked by a synchronous lock.
 use tauri::State;
 
+use serde_json::{json, Value};
+
 use super::{FileEntry, JobQueue, JobSummary, ListedFile, QueuedFile};
+use crate::operation_log::OperationLog;
 use crate::AppState;
 
 fn get_queue(state: &AppState) -> Result<JobQueue, String> {
@@ -14,6 +17,26 @@ fn get_queue(state: &AppState) -> Result<JobQueue, String> {
         .map_err(|e| e.to_string())?
         .clone()
         .ok_or_else(|| "Job queue not yet initialised".to_owned())
+}
+
+/// Run a state-changing queue call under exactly one operation receipt.
+/// Job ids, paths and error text stay in the Result; the log gets counts and
+/// a fixed failure code. Errors propagate unchanged.
+async fn logged<T, W, R>(state: &AppState, log: OperationLog, work: W, receipt: R) -> Result<T, String>
+where
+    T: Send + 'static,
+    W: FnOnce(JobQueue) -> anyhow::Result<T> + Send + 'static,
+    R: FnOnce(&T) -> Value,
+{
+    let queue = match get_queue(state) {
+        Ok(queue) => queue,
+        Err(error) => { log.fail("queue_unavailable"); return Err(error); }
+    };
+    match tokio::task::spawn_blocking(move || work(queue)).await {
+        Err(error) => { log.fail("worker_failed"); Err(error.to_string()) }
+        Ok(Err(error)) => { log.fail("queue_error"); Err(error.to_string()) }
+        Ok(Ok(value)) => { log.succeed(receipt(&value)); Ok(value) }
+    }
 }
 
 // ── Job lifecycle ──────────────────────────────────────────────────────────────
@@ -32,14 +55,11 @@ pub async fn jobs_create(
     target_level: u8,
     config_json: Option<String>,
 ) -> Result<String, String> {
-    let queue = get_queue(&state).map_err(|e| e)?;
     let jt = job_type.unwrap_or_else(|| "ingest".to_owned());
-    tokio::task::spawn_blocking(move || {
+    let log = OperationLog::start("jobs.create", json!({"items": source_paths.len()}));
+    logged(&state, log, move |queue| {
         queue.create_job(&jt, &source_paths, target_level, config_json.as_deref())
-    })
-    .await
-    .map_err(|e| e.to_string())?
-    .map_err(|e| e.to_string())
+    }, |_| Value::Null).await
 }
 
 /// List all jobs (newest first).
@@ -72,11 +92,8 @@ pub async fn jobs_set_status(
     job_id: String,
     status: String,
 ) -> Result<(), String> {
-    let queue = get_queue(&state).map_err(|e| e)?;
-    tokio::task::spawn_blocking(move || queue.set_job_status(&job_id, &status))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+    let log = OperationLog::start("jobs.status", json!({"status": status}));
+    logged(&state, log, move |queue| queue.set_job_status(&job_id, &status), |_| Value::Null).await
 }
 
 /// Delete a job and all its file_queue rows.
@@ -85,11 +102,8 @@ pub async fn jobs_delete(
     state: State<'_, AppState>,
     job_id: String,
 ) -> Result<(), String> {
-    let queue = get_queue(&state).map_err(|e| e)?;
-    tokio::task::spawn_blocking(move || queue.delete_job(&job_id))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+    let log = OperationLog::start("jobs.delete", Value::Null);
+    logged(&state, log, move |queue| queue.delete_job(&job_id), |_| Value::Null).await
 }
 
 // ── File queue ────────────────────────────────────────────────────────────────
@@ -103,11 +117,9 @@ pub async fn jobs_add_files(
     job_id: String,
     files: Vec<FileEntry>,
 ) -> Result<usize, String> {
-    let queue = get_queue(&state).map_err(|e| e)?;
-    tokio::task::spawn_blocking(move || queue.add_files(&job_id, &files))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+    let log = OperationLog::start("jobs.enqueue", json!({"items": files.len()}));
+    logged(&state, log, move |queue| queue.add_files(&job_id, &files),
+        |inserted| json!({"count": *inserted})).await
 }
 
 /// Claim up to `batch_size` pending files and mark them `in_progress`.
@@ -151,10 +163,17 @@ pub async fn jobs_mark_error(
     max_retries: i32,
 ) -> Result<(), String> {
     let queue = get_queue(&state).map_err(|e| e)?;
-    tokio::task::spawn_blocking(move || queue.mark_error(&job_id, row_id, &error, max_retries))
+    let result = tokio::task::spawn_blocking(move || queue.mark_error(&job_id, row_id, &error, max_retries))
         .await
         .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string());
+    // One line per failed file, without the file or its error text: the
+    // per-file detail stays in the queue row the UI already shows.
+    match &result {
+        Ok(()) => crate::app_log!("warn", "jobs.file_error recorded max_retries={}", max_retries.max(0)),
+        Err(_) => crate::app_log!("error", "jobs.file_error could not be recorded"),
+    }
+    result
 }
 
 /// Mark one file as skipped (DRM, unsupported, etc.).
@@ -194,11 +213,9 @@ pub async fn jobs_reclaim(
     state: State<'_, AppState>,
     job_id: String,
 ) -> Result<usize, String> {
-    let queue = get_queue(&state).map_err(|e| e)?;
-    tokio::task::spawn_blocking(move || queue.reclaim_in_progress(&job_id))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+    let log = OperationLog::start("jobs.reclaim", Value::Null);
+    logged(&state, log, move |queue| queue.reclaim_in_progress(&job_id),
+        |reclaimed| json!({"count": *reclaimed})).await
 }
 
 /// Make errored rows claimable again after the current worker has drained.
@@ -207,11 +224,9 @@ pub async fn jobs_retry_errors(
     state: State<'_, AppState>,
     job_id: String,
 ) -> Result<usize, String> {
-    let queue = get_queue(&state)?;
-    tokio::task::spawn_blocking(move || queue.retry_errors(&job_id))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+    let log = OperationLog::start("jobs.retry", Value::Null);
+    logged(&state, log, move |queue| queue.retry_errors(&job_id),
+        |requeued| json!({"count": *requeued})).await
 }
 
 /// Number of files still pending or in_progress for a job.
@@ -254,11 +269,9 @@ pub async fn jobs_remove_file(
     state: State<'_, AppState>,
     row_id: i64,
 ) -> Result<bool, String> {
-    let queue = get_queue(&state).map_err(|e| e)?;
-    tokio::task::spawn_blocking(move || queue.remove_file(row_id))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+    let log = OperationLog::start("jobs.remove_file", Value::Null);
+    logged(&state, log, move |queue| queue.remove_file(row_id),
+        |removed| json!({"count": u64::from(*removed)})).await
 }
 
 /// Delete all file-queue rows for a job with the given status (e.g. `"done"`).
@@ -269,9 +282,7 @@ pub async fn jobs_remove_files_by_status(
     job_id: String,
     status: String,
 ) -> Result<usize, String> {
-    let queue = get_queue(&state).map_err(|e| e)?;
-    tokio::task::spawn_blocking(move || queue.remove_files_by_status(&job_id, &status))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+    let log = OperationLog::start("jobs.remove_files", json!({"status": status}));
+    logged(&state, log, move |queue| queue.remove_files_by_status(&job_id, &status),
+        |removed| json!({"count": *removed})).await
 }

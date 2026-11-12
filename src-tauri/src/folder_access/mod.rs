@@ -214,7 +214,7 @@ pub fn grant(dir: &Path) -> Result<(), String> {
                 // Creation worked, reopening did not. Keep the bookmark:
                 // the live pick still grants access for this run, and the
                 // next launch gets another chance.
-                Err(e) => eprintln!("folder_access: saved but could not reopen {}: {e}", dir.display()),
+                Err(e) => eprintln!("folder_access: saved but could not reopen the folder: {e}"),
             }
             Some(base64_encode(&bytes))
         }

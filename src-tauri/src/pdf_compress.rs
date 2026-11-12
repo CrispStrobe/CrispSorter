@@ -121,6 +121,26 @@ pub fn compress_pdf(
     options: &CompressOptions,
     out_path: &Path,
 ) -> Result<CompressReport, String> {
+    crate::pdf_ops::with_operation_receipt(
+        "pdf.compress",
+        serde_json::Value::Null,
+        |log| {
+            log.step("processing", serde_json::Value::Null);
+            compress_pdf_inner(path, options, out_path)
+        },
+        |report: &CompressReport| serde_json::json!({
+            "input_bytes": report.bytes_before,
+            "output_bytes": report.bytes_after,
+            "count": report.streams_compressed,
+        }),
+    )
+}
+
+fn compress_pdf_inner(
+    path: &Path,
+    options: &CompressOptions,
+    out_path: &Path,
+) -> Result<CompressReport, String> {
     let bytes_before = std::fs::metadata(path)
         .map_err(|e| format!("stat {}: {e}", path.display()))?
         .len();
