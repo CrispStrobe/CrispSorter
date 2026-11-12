@@ -73,6 +73,42 @@ trait used by CrispSorter.
   This is preferable to discovering a late HTTP failure after the user has
   started a destructive workflow.
 
+### Certificate pin enforcement boundary: remaining design
+
+The current client boundary validates pin policy data; it does not pin a TLS
+handshake. Reqwest's optional response `TlsInfo` exposes the peer's **leaf**
+certificate after the HTTP response. It cannot identify the authenticated root
+trust anchor or stop an OAuth token/body from being sent to an unpinned peer.
+Checking that response, or accepting any pinned certificate supplied in a
+server's unverified chain, would not implement the root-SPKI policy in `PLAN.md`.
+
+Enforcement needs a handshake verifier that first preserves ordinary chain,
+hostname, validity-time and signature verification, then checks the SPKI of the
+trust anchor actually selected by that verification. The two root pins need
+independent freshness/rotation qualification before enabling this policy. The
+enabled native-TLS/rustls backends and effective backend selection,
+explicit/environment proxy handling,
+redirected hostnames, local WebDAV TLS exceptions, and SDK-owned Filen/Internxt
+clients each need an explicit integration decision. A pin mismatch must reject
+before HTTP credentials or bodies are transmitted; no trust fallback may hide it.
+An accepted backup root should produce a content-free rotation warning.
+
+Required hermetic TLS gates include trusted-primary and trusted-backup roots,
+an ordinarily trusted but unpinned root, an untrusted/expired/wrong-host chain,
+cross-signing and unrelated pinned certificates in a presented chain, redirect
+and proxy CONNECT paths, and confirmation that rejected handshakes deliver no
+HTTP authorization or body bytes. No such verifier or TLS qualification is
+claimed by the pin-policy or OAuth proxy contracts.
+
+Google/Microsoft OAuth token exchange, refresh and Google revocation now use the
+same shared proxy/client policy as drive requests, with a 60-second timeout.
+Tauri passes persisted proxy settings and the keychain password; login captures
+the validated client before opening the callback listener. Blocking HTTP/keychain
+operations run off the async command executor. Invalid settings fail before the
+login listener or token exchange starts, and failed refresh/revocation retains
+stored credentials. Microsoft revocation remains a local clear operation. This
+does not configure the external browser's proxy or enable certificate pinning.
+
 ## Transfer and failure behavior
 
 The application-wide queue owns concurrency, retry/backoff, cancellation,

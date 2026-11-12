@@ -1906,6 +1906,10 @@ no pinning.  Low effort, meaningful security improvement.
   - [x] Every shared proxy/client construction validates the shipped
     two-pin rotation policy before creating a cloud HTTP client; malformed
     built-in pin data therefore fails closed. ✅ 2026-08-01
+  - [ ] Install and qualify a pre-request handshake verifier of the authenticated
+    root SPKI. Response leaf-certificate inspection is insufficient. Backend,
+    trust-anchor, proxy/redirect and negative-TLS gates are scoped in
+    `docs/cloud-provider-parity.md`; enforcement remains unimplemented.
 - [ ] **Pin rotation strategy.**  Pin the *root* CA, not the leaf
   cert (roots rotate on a multi-year cadence).  Include 2 pins per
   provider (current + backup) to survive a CA migration.  Log a
@@ -3745,6 +3749,15 @@ a transfer without leaving the search/catalog workflow.
   - [x] Native Filen and Internxt clients now accept explicit proxy policy at
     session construction, reject malformed proxy credentials before requests,
     and keep proxy secrets in memory only.
+  - [x] Google/Microsoft OAuth exchange, refresh and Google revoke now receive
+    the shared persisted proxy policy. Invalid configuration rejects login
+    before its callback listener starts; failed network operations retain
+    credentials, and Microsoft local revocation remains independent of proxy
+    availability. OAuth operations use blocking workers and a bounded request
+    timeout. This shares policy construction, not TLS pin enforcement.
+    `tests/oauth-proxy-contract` passed 41 source-bound, loopback HTTP and
+    command-wiring controls; full Tauri, native keychain and live proxy/provider
+    integration remain unqualified.
   - [x] Persisted proxy settings and the keychain-backed password now flow
     through Tauri cloud-backup construction and health probes.
   - [x] Native Filen/Internxt Tauri adapters now retain that policy and pass

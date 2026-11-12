@@ -46,16 +46,24 @@ pub struct DriveCredentialsStatus {
     pub has_session: bool,
 }
 
+async fn configured_proxy(state: &AppState) -> Result<crate::sync::proxy::ProxyConfig, String> {
+    let index_config = state.index.lock().await.config.clone();
+    let password = tokio::task::spawn_blocking(crate::sync::proxy_secret::get)
+        .await
+        .map_err(|_| "Proxy credential worker failed".to_owned())?
+        .map_err(|e| e.to_string())?;
+    Ok(crate::sync::proxy::ProxyConfig {
+        url: index_config.proxy_url,
+        username: index_config.proxy_username,
+        password,
+    })
+}
+
 async fn instantiate_registered(
     state: &AppState,
     config: &DriveConfig,
 ) -> Result<Box<dyn super::CloudDrive>, String> {
-    let index_config = state.index.lock().await.config.clone();
-    let proxy = crate::sync::proxy::ProxyConfig {
-        url: index_config.proxy_url,
-        username: index_config.proxy_username,
-        password: crate::sync::proxy_secret::get().map_err(|e| e.to_string())?,
-    };
+    let proxy = configured_proxy(state).await?;
     DriveRegistry::instantiate_with_proxy(config, &proxy).map_err(|e| e.to_string())
 }
 
@@ -381,7 +389,7 @@ pub async fn drive_oauth_start(
     client_id: String,
 ) -> Result<super::oauth::StartResult, String> {
     let (log, config) = drive_operation(&state, "storage.drive.oauth_start", &drive_id).await?;
-    let result = (|| -> Result<super::oauth::StartResult, String> {
+    let result = async {
         let expected = match config.kind {
             DriveType::GoogleDrive => "google",
             DriveType::OneDrive => "microsoft",
@@ -390,13 +398,16 @@ pub async fn drive_oauth_start(
         if provider != expected {
             return Err("OAuth provider does not match drive type".into());
         }
-        super::oauth::start(
-            drive_id,
-            super::oauth::Provider::parse(&provider).map_err(|e| e.to_string())?,
-            client_id,
-        )
+        let proxy = configured_proxy(&state).await?;
+        let provider = super::oauth::Provider::parse(&provider).map_err(|e| e.to_string())?;
+        tokio::task::spawn_blocking(move || {
+            super::oauth::start_with_proxy(drive_id, provider, client_id, &proxy)
+        })
+        .await
+        .map_err(|_| "OAuth start worker failed".to_owned())?
         .map_err(|e| e.to_string())
-    })();
+    }
+    .await;
     // Completion here means the loopback listener is waiting; the token
     // exchange records its own `storage.drive.oauth_callback` receipt.
     finish_operation(&log, &result, "oauth_start_failed", |_| Value::Null);
@@ -406,17 +417,25 @@ pub async fn drive_oauth_start(
 /// Refresh an OAuth access token in the OS keychain without returning it over IPC.
 #[tauri::command]
 pub async fn drive_oauth_refresh(
-    state: State<'_, AppState>, drive_id: String,
+    state: State<'_, AppState>,
+    drive_id: String,
 ) -> Result<(), String> {
     let (log, config) = drive_operation(&state, "storage.drive.oauth_refresh", &drive_id).await?;
-    let result = (|| -> Result<(), String> {
+    let result = async {
         let provider = match config.kind {
             DriveType::GoogleDrive => super::oauth::Provider::Google,
             DriveType::OneDrive => super::oauth::Provider::Microsoft,
             _ => return Err("OAuth refresh requires Google Drive or OneDrive".into()),
         };
-        super::oauth::refresh(provider, &drive_id).map_err(|e| e.to_string())
-    })();
+        let proxy = configured_proxy(&state).await?;
+        tokio::task::spawn_blocking(move || {
+            super::oauth::refresh_with_proxy(provider, &drive_id, &proxy)
+        })
+        .await
+        .map_err(|_| "OAuth refresh worker failed".to_owned())?
+        .map_err(|e| e.to_string())
+    }
+    .await;
     finish_operation(&log, &result, "oauth_refresh_failed", |_| Value::Null);
     result
 }
@@ -425,17 +444,29 @@ pub async fn drive_oauth_refresh(
 /// because its platform has no token-revocation API.
 #[tauri::command]
 pub async fn drive_oauth_revoke(
-    state: State<'_, AppState>, drive_id: String,
+    state: State<'_, AppState>,
+    drive_id: String,
 ) -> Result<(), String> {
     let (log, config) = drive_operation(&state, "storage.drive.oauth_revoke", &drive_id).await?;
-    let result = (|| -> Result<(), String> {
+    let result = async {
         let provider = match config.kind {
             DriveType::GoogleDrive => super::oauth::Provider::Google,
             DriveType::OneDrive => super::oauth::Provider::Microsoft,
             _ => return Err("OAuth revoke requires Google Drive or OneDrive".into()),
         };
-        super::oauth::revoke(provider, &drive_id).map_err(|e| e.to_string())
-    })();
+        let proxy = if provider == super::oauth::Provider::Google {
+            configured_proxy(&state).await?
+        } else {
+            crate::sync::proxy::ProxyConfig::default()
+        };
+        tokio::task::spawn_blocking(move || {
+            super::oauth::revoke_with_proxy(provider, &drive_id, &proxy)
+        })
+        .await
+        .map_err(|_| "OAuth revoke worker failed".to_owned())?
+        .map_err(|e| e.to_string())
+    }
+    .await;
     finish_operation(&log, &result, "oauth_revoke_failed", |_| Value::Null);
     result
 }
