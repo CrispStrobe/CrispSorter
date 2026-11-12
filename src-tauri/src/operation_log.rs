@@ -61,7 +61,8 @@ pub fn safe_context(value: Value) -> Map<String, Value> {
         "page" | "pages" | "page_index" | "page_count" | "bytes" | "input_bytes" | "output_bytes"
         | "characters" | "regions" | "warnings" | "results" | "completed" | "failed" | "pending"
         | "count" | "total" | "items" | "files" | "stages" | "models" | "rows" | "cols"
-        | "width" | "height" | "revision" | "diagnostic_lines" | "event_count" | "attempt" | "job_id" => value.as_u64().is_some(),
+        | "width" | "height" | "revision" | "diagnostic_lines" | "event_count" | "attempt" | "job_id"
+        | "skipped" => value.as_u64().is_some(),
         "cpu_budget" | "cpuBudget" | "forced" | "partial" | "saved" | "reused" | "pipeline"
         | "cache_hit" | "nativeContinues" | "cleanup" | "denoise" | "dewarp" | "restore"
         | "upscale" | "layout" | "overwrite" | "accepted" => value.is_boolean(),

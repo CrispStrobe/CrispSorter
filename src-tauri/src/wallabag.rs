@@ -108,8 +108,25 @@ async fn fetch_page(client: &reqwest::Client, base: &reqwest::Url, credentials: 
 /// imports can be retried; unchanged articles already in the index are skipped.
 #[tauri::command]
 pub async fn wallabag_sync(app: tauri::AppHandle, state: State<'_, AppState>, credentials: Credentials) -> Result<Progress, String> {
+    // Counts and stages only: never the instance URL, username, tokens or
+    // article titles. The failing stage is carried by the failure receipt.
+    let log = crate::operation_log::OperationLog::start("wallabag.sync",
+        serde_json::json!({"kind":"document","backend":"remote","surface":"native"}));
+    let result = wallabag_sync_inner(&app, &state, &credentials, &log).await;
+    match &result {
+        Ok(progress) => log.succeed(serde_json::json!({"pages": progress.pages,
+            "completed": progress.indexed, "skipped": progress.skipped})),
+        Err(_) => log.fail("wallabag_sync_failed"),
+    }
+    result
+}
+
+async fn wallabag_sync_inner(app: &tauri::AppHandle, state: &AppState, credentials: &Credentials,
+    log: &crate::operation_log::OperationLog) -> Result<Progress, String> {
     static SYNC: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    log.step("acquiring", serde_json::Value::Null);
     let _guard = SYNC.try_lock().map_err(|_| "A Wallabag import is already running")?;
+    log.step("validating", serde_json::Value::Null);
     let base = base_url(&credentials.instance)?;
     let pipeline = {
         let lock = state.index.lock().await;
@@ -118,7 +135,9 @@ pub async fn wallabag_sync(app: tauri::AppHandle, state: State<'_, AppState>, cr
     };
     let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(90)).build().map_err(|e| e.to_string())?;
-    let mut token = sign_in(&client, &base, &credentials).await?;
+    log.step("signing_in", serde_json::Value::Null);
+    let mut token = sign_in(&client, &base, credentials).await?;
+    log.step("fetching", serde_json::Value::Null);
     let cache_path = app.path().app_data_dir().map_err(|e| e.to_string())?.join("wallabag-sync.sqlite");
     if let Some(parent) = cache_path.parent() { std::fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
     {
@@ -128,7 +147,7 @@ pub async fn wallabag_sync(app: tauri::AppHandle, state: State<'_, AppState>, cr
     let mut progress = Progress { page: 0, pages: 1, indexed: 0, skipped: 0 };
     while progress.page < progress.pages {
         let next = progress.page + 1;
-        let page = fetch_page(&client, &base, &credentials, &mut token, next).await?;
+        let page = fetch_page(&client, &base, credentials, &mut token, next).await?;
         if page.pages > 1_000_000 || (page.pages >= next && page._embedded.items.is_empty() && next < page.pages) {
             return Err("Wallabag returned inconsistent pagination; import stopped".into());
         }
@@ -183,6 +202,8 @@ pub async fn wallabag_sync(app: tauri::AppHandle, state: State<'_, AppState>, cr
         }
         progress.page = next;
         progress.pages = page.pages.max(next);
+        log.step("page_indexed", serde_json::json!({"page": progress.page, "pages": progress.pages,
+            "completed": progress.indexed, "skipped": progress.skipped}));
         let _ = app.emit("wallabag://progress", &progress);
     }
     Ok(progress)

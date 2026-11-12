@@ -95,11 +95,18 @@ pub async fn images_duplicates(
         (true, Some(l)) => l.clone(),
     };
     drop(lock);
+    let log = crate::operation_log::OperationLog::start(
+        "images.duplicates", serde_json::json!({"kind": "image", "surface": "native"}));
     let backend = LocalImages::new(local_index);
-    backend
+    let result = backend
         .duplicates(filters.unwrap_or_default())
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string());
+    match &result {
+        Ok(groups) => log.succeed(serde_json::json!({"results": groups.len()})),
+        Err(_) => log.fail("images_duplicates_failed"),
+    }
+    result
 }
 
 #[tauri::command]
@@ -114,14 +121,21 @@ pub async fn images_near_duplicates(
         (true, Some(l)) => l.clone(),
     };
     drop(lock);
+    let log = crate::operation_log::OperationLog::start(
+        "images.near_duplicates", serde_json::json!({"kind": "image", "surface": "native"}));
     let backend = LocalImages::new(local_index);
-    backend
+    let result = backend
         .near_duplicates(
             threshold.unwrap_or(DEFAULT_NEAR_DUP_THRESHOLD),
             filters.unwrap_or_default(),
         )
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string());
+    match &result {
+        Ok(groups) => log.succeed(serde_json::json!({"results": groups.len()})),
+        Err(_) => log.fail("images_near_duplicates_failed"),
+    }
+    result
 }
 
 // ── A2: thumbnail + EXIF surface ─────────────────────────────────────────
@@ -254,12 +268,19 @@ pub async fn images_detect_faces(
     }
     let thr = threshold.unwrap_or(0.5);
     let path2 = path.clone();
+    // Face count and timing only; no path, coordinates or model error text.
+    let log = crate::operation_log::OperationLog::start(
+        "images.detect_faces", serde_json::json!({"kind": "image", "surface": "native"}));
     let faces = tokio::task::spawn_blocking(move || {
         super::face::detect_faces(&path2, thr)
     })
     .await
-    .map_err(|e| format!("join error: {e}"))?
-    .map_err(|e| format!("face detection failed: {e:#}"))?;
+    .map_err(|e| format!("join error: {e}"))
+    .and_then(|r| r.map_err(|e| format!("face detection failed: {e:#}")));
+    let faces = match faces {
+        Ok(faces) => { log.succeed(serde_json::json!({"count": faces.len()})); faces }
+        Err(e) => { log.fail("face_detection_failed"); return Err(e); }
+    };
 
     Ok(faces.into_iter().map(|f| FaceDetectionDto {
         x: f.x, y: f.y, w: f.w, h: f.h, confidence: f.confidence,

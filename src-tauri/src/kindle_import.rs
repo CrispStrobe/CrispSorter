@@ -82,6 +82,33 @@ pub fn import_clippings(
     document_text: Option<&str>,
     min_score: f32,
 ) -> Result<ImportSummary, String> {
+    // Shared by GUI and CLI. Counts only: never titles, passages or notes.
+    let log = crate::operation_log::OperationLog::start(
+        "kindle.import",
+        serde_json::json!({"kind": "document"}),
+    );
+    let result = import_clippings_inner(store, clippings_text, doc_id, title_filter, document_text, min_score);
+    match &result {
+        Ok(summary) => log.succeed(serde_json::json!({
+            "total": summary.parsed,
+            "items": summary.deduped,
+            "count": summary.imported,
+            "results": summary.matched,
+            "skipped": summary.duplicates_skipped,
+        })),
+        Err(_) => log.fail("kindle_import_failed"),
+    }
+    result
+}
+
+fn import_clippings_inner(
+    store: &AnnotationStore,
+    clippings_text: &str,
+    doc_id: &str,
+    title_filter: Option<&str>,
+    document_text: Option<&str>,
+    min_score: f32,
+) -> Result<ImportSummary, String> {
     let all = parse_clippings(clippings_text);
     let mut summary = ImportSummary { parsed: all.len(), ..Default::default() };
 

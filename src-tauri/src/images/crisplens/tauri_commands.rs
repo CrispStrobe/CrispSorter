@@ -46,6 +46,25 @@ async fn resolve_data_dir(state: &State<'_, AppState>) -> Result<PathBuf, String
         .ok_or_else(|| "app data dir not yet initialised".to_string())
 }
 
+/// One content-free receipt for a CrispLens operation: never the server
+/// URL, username, cookie, file path or server error text.
+fn logged<T>(
+    name: &'static str,
+    work: impl FnOnce(&crate::operation_log::OperationLog) -> Result<T, String>,
+    receipt: impl FnOnce(&T) -> serde_json::Value,
+) -> Result<T, String> {
+    let log = crate::operation_log::OperationLog::start(
+        name,
+        serde_json::json!({"kind": "image", "backend": "remote", "surface": "native"}),
+    );
+    let result = work(&log);
+    match &result {
+        Ok(value) => log.succeed(receipt(value)),
+        Err(_) => log.fail("crisplens_operation_failed"),
+    }
+    result
+}
+
 #[tauri::command]
 pub async fn images_crisplens_settings_get(
     state: State<'_, AppState>,
@@ -59,8 +78,11 @@ pub async fn images_crisplens_settings_set(
     state: State<'_, AppState>,
     settings_payload: ImagesSettings,
 ) -> Result<(), String> {
-    let data_dir = resolve_data_dir(&state).await?;
-    settings::save(&data_dir, &settings_payload).map_err(|e| e.to_string())
+    let data_dir = resolve_data_dir(&state).await;
+    logged("images.crisplens.settings_save", |log| {
+        log.step("saving", serde_json::Value::Null);
+        settings::save(&data_dir?, &settings_payload).map_err(|e| e.to_string())
+    }, |_| serde_json::json!({"saved": true}))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,6 +154,18 @@ pub(crate) fn login_blocking(
     username: &str,
     password: &str,
 ) -> Result<LoginOutcome, String> {
+    logged("images.crisplens.login", |log| {
+        log.step("authenticating", serde_json::Value::Null);
+        login_blocking_inner(base_url, username, password, log)
+    }, |_| serde_json::json!({"saved": true}))
+}
+
+fn login_blocking_inner(
+    base_url: &str,
+    username: &str,
+    password: &str,
+    log: &crate::operation_log::OperationLog,
+) -> Result<LoginOutcome, String> {
     let client = reqwest::blocking::Client::builder()
         .cookie_store(true)
         .timeout(std::time::Duration::from_secs(15))
@@ -182,6 +216,7 @@ pub(crate) fn login_blocking(
         .or(set_cookie_value)
         .ok_or_else(|| "login succeeded but no session cookie received".to_string())?;
 
+    log.step("storing_session", serde_json::Value::Null);
     secret::set_session_for_url(base_url, &cookie_value)
         .map_err(|e: SecretError| format!("keychain: {e}"))?;
 
@@ -701,7 +736,29 @@ pub async fn images_crisplens_image_push(
     path: String,
     visibility: Option<String>,
 ) -> Result<CrispLensImagePushResult, String> {
-    let data_dir = resolve_data_dir(&state).await?;
+    let log = crate::operation_log::OperationLog::start(
+        "images.crisplens.push",
+        serde_json::json!({"kind": "image", "backend": "remote", "surface": "native"}),
+    );
+    let result = image_push_inner(&state, path, visibility, &log).await;
+    match &result {
+        Ok(r) => log.succeed(serde_json::json!({
+            "reused": r.action == "already_indexed",
+            "count": r.face_count.and_then(|n| u64::try_from(n).ok()),
+        })),
+        Err(_) => log.fail("crisplens_operation_failed"),
+    }
+    result
+}
+
+async fn image_push_inner(
+    state: &State<'_, AppState>,
+    path: String,
+    visibility: Option<String>,
+    log: &crate::operation_log::OperationLog,
+) -> Result<CrispLensImagePushResult, String> {
+    log.step("hashing", serde_json::Value::Null);
+    let data_dir = resolve_data_dir(state).await?;
     let local_path = std::path::PathBuf::from(&path);
     if !local_path.exists() {
         return Err(format!("file not found: {path}"));
@@ -755,6 +812,7 @@ pub async fn images_crisplens_image_push(
         Err(e) => return Err(format!("keychain: {e}")),
     };
     let visibility = visibility.unwrap_or_else(|| "shared".to_string());
+    log.step("uploading", serde_json::Value::Null);
     let path_for_upload = local_path.clone();
     let upload_result = tauri::async_runtime::spawn_blocking(move || -> Result<UploadOk, String> {
         let bytes = std::fs::read(&path_for_upload)
@@ -863,6 +921,13 @@ pub async fn images_crisplens_logout(
 /// regardless of the server response we always wipe the local
 /// keychain entry so the credential is gone on disk.
 pub(crate) fn logout_blocking(base_url: &str) -> Result<(), String> {
+    logged("images.crisplens.logout", |log| {
+        log.step("clearing_session", serde_json::Value::Null);
+        logout_blocking_inner(base_url)
+    }, |_| serde_json::Value::Null)
+}
+
+fn logout_blocking_inner(base_url: &str) -> Result<(), String> {
     let cookie = secret::get_session_for_url(base_url)
         .map_err(|e| format!("keychain: {e}"))?;
 

@@ -598,10 +598,26 @@ pub fn redact_regions_hard(
     regions: &[RedactionSpec],
     out_path: &Path,
 ) -> Result<RedactReport, String> {
-    let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
-    let report = redact_regions_hard_doc(&mut doc, regions)?;
-    doc.save(out_path).map_err(|e| format!("save: {e}"))?;
-    Ok(report)
+    // Security-relevant: the receipt records that redaction ran and how much
+    // it removed - never the regions' text or the document's location.
+    crate::pdf_ops::with_operation_receipt(
+        "pdf.redact_hard",
+        serde_json::json!({"regions": regions.len()}),
+        |log| {
+            log.step("processing", serde_json::Value::Null);
+            let mut doc = Document::load(path).map_err(|e| format!("load: {e}"))?;
+            let report = redact_regions_hard_doc(&mut doc, regions)?;
+            log.step("publishing", serde_json::Value::Null);
+            doc.save(out_path).map_err(|e| format!("save: {e}"))?;
+            Ok(report)
+        },
+        |report: &RedactReport| serde_json::json!({
+            "count": report.glyphs_removed,
+            "items": report.runs_dropped,
+            "pages": report.pages_changed,
+            "warnings": report.warnings.len(),
+        }),
+    )
 }
 
 pub fn redact_regions_hard_doc(

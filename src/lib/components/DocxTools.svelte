@@ -10,7 +10,7 @@
 
     import { invoke } from '@tauri-apps/api/core';
     import { onDestroy, untrack } from 'svelte';
-    import { beginOperation, type OperationName } from '$lib/operationLog';
+    import { beginOperation, type OperationFields, type OperationName } from '$lib/operationLog';
     import { createDocumentActions } from './pdf/actionRunner';
     import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
     import { i18n } from '$lib/i18n.svelte';
@@ -123,11 +123,12 @@
     }
 
     /** Run `fn`, routing failures to the status line rather than the console. */
-    async function run<T>(operation: OperationName, fn: () => Promise<T>, writesOutput = false): Promise<T | null> {
+    async function run<T>(operation: OperationName, fn: () => Promise<T>, writesOutput = false,
+        receipt?: (result: T) => OperationFields): Promise<T | null> {
         if (!filePath) { error = i18n.t.docxtools.pick_first; return null; }
         const version = generation;
         const result = await actions.run({
-            operation, fields: { format: 'docx' }, writesOutput,
+            operation, fields: { format: 'docx' }, writesOutput, receipt,
             isCurrent: () => !disposed && generation === version,
             onError: (e) => { error = e instanceof Error ? e.message : String(e); },
         }, async (entry) => {
@@ -147,7 +148,8 @@
 
     // ── Operations ──────────────────────────────────────────────────────
     async function doCheck() {
-        const r = await run('docx.check', () => invoke<DocxCheckResult>('docx_check', { path: filePath }));
+        const r = await run('docx.check', () => invoke<DocxCheckResult>('docx_check', { path: filePath }), false,
+            (r) => ({ count: r.ok.length, warnings: r.issues.length }));
         if (r) {
             checkResult = r;
             success = r.valid ? i18n.t.docxtools.check_ok : '';
@@ -155,12 +157,14 @@
     }
 
     async function doProperties() {
-        const b = await run('docx.properties', () => invoke<DocxBlueprint>('docx_analyze', { path: filePath }));
+        const b = await run('docx.properties', () => invoke<DocxBlueprint>('docx_analyze', { path: filePath }), false,
+            (b) => ({ count: b.style_count, total: b.sections.length }));
         if (b) blueprint = b;
     }
 
     async function doHeadings() {
-        const hs = await run('docx.headings', () => invoke<InferredHeading[]>('docx_infer_headings', { path: filePath }));
+        const hs = await run('docx.headings', () => invoke<InferredHeading[]>('docx_infer_headings', { path: filePath }), false,
+            (hs) => ({ results: hs.length }));
         if (hs) {
             headings = hs;
             if (hs.length === 0) success = i18n.t.docxtools.headings_none;
@@ -180,7 +184,7 @@
         if (!out || disposed || version !== generation) return;
         const r = await run('docx.restyle', () => invoke<TransplantResult>('docx_transplant', {
             source, blueprint, output: out,
-        }), true);
+        }), true, (r) => ({ count: r.styles_remapped, total: r.source_paragraphs }));
         if (r) {
             transplant = r;
             success = `${i18n.t.docxtools.written} ${out}`;
@@ -216,7 +220,7 @@
         if (!out || disposed || version !== generation) return;
         const n = await run('docx.clean', () => invoke<number>('docx_strip_rsids', {
             path, output: out,
-        }), true);
+        }), true, (n) => ({ count: n }));
         if (n !== null) {
             success = i18n.t.docxtools.rsids_stripped
                 .replace('{n}', String(n)).replace('{path}', out);
@@ -251,7 +255,7 @@
         for (const r of filled) notes[r.n] = r.text;
         const inserted = await run('docx.footnotes', () => invoke<number>('docx_inject_footnotes', {
             path, notes, output: out,
-        }), true);
+        }), true, (n) => ({ count: n, total: filled.length }));
         if (inserted !== null) {
             success = i18n.t.docxtools.notes_injected
                 .replace('{n}', String(inserted))
