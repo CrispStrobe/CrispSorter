@@ -100,6 +100,16 @@ and proxy CONNECT paths, and confirmation that rejected handshakes deliver no
 HTTP authorization or body bytes. No such verifier or TLS qualification is
 claimed by the pin-policy or OAuth proxy contracts.
 
+An unconnected rustls foundation now lives in `sync/root_pin_verifier.rs` and
+`tests/root-pin-contract`. It restricts WebPKI's root store to already-trusted
+primary/backup SPKI anchors before verification, retaining each anchor's subject
+and name constraints. It delegates certificate and TLS1.2/1.3 signature checks to
+standard WebPKI/rustls logic and rejects hostnames outside its pin policy. It is
+not declared in the app's module tree, installed in any HTTP client, or used by
+provider SDKs. Its isolated fixture tests do not qualify shipped pins, platform
+trust stores, revocation, cross-signing, redirects, proxies or app integration.
+Actual production TLS pin enforcement therefore remains unimplemented.
+
 Google/Microsoft OAuth token exchange, refresh and Google revocation now use the
 same shared proxy/client policy as drive requests, with a 60-second timeout.
 Tauri passes persisted proxy settings and the keychain password; login captures

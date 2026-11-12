@@ -1,0 +1,45 @@
+{
+  "description": "Fixed TEST-ONLY certificates and keys. SPKI files were independently exported by openssl x509 -pubkey | openssl pkey -pubin -outform DER and hashed by openssl dgst -sha256.",
+  "openssl_version": "OpenSSL 3.5.5 27 Jan 2026 (Library: OpenSSL 3.5.5 27 Jan 2026)",
+  "spki_pins": {
+    "primary": "hZ2lthZCsCKbIpbH5LhrvCSDji10ldHrxBXM7Lq4+5I=",
+    "backup": "j2O6J6eVpCdMA81D1niFdoGkMXM/ktuT+8NgwSIxI9k=",
+    "other": "vs2CSZRHXhu2uVqJAKQBVIoTCny/TgvPFvQTqbpqp2k=",
+    "rogue": "auuZ6T8VVLwu8wo3J97nbBO0VVDwkstX2kAcQ7C/t84=",
+    "constrained": "hZ2lthZCsCKbIpbH5LhrvCSDji10ldHrxBXM7Lq4+5I="
+  },
+  "files": {
+    "backup-leaf-key.der": "2884ebf7f7af8785fa21bad8315bb75ed73bba3e2549b2db00c9f94a2b04c74f",
+    "backup-leaf.der": "0c2ee5a319b003fcfaf1e8a5ac52f54e013dd8003e2a770cb778350231d1870b",
+    "backup-root.der": "d99b838654a1117e448d5ba46f3dc4ad00c908ad7bdb058fd9bdf45392f36cb7",
+    "backup-spki.der": "8f63ba27a795a4274c03cd43d678857681a431733f92db93fbc360c1223123d9",
+    "constrained-allowed-key.der": "4572451211baed96fd9a8127ece3e57ba2e4fe6bbaf8eef6386e4befe04400fc",
+    "constrained-allowed.der": "8b52b8f1b2b2666b3ce8d979331891a894e74d2ba9c748ac2d161bc583715ea6",
+    "constrained-blocked-key.der": "14cc715d40631cb7c331c6eaac95933d2c30430a31389d93141394d2e5dd9c5c",
+    "constrained-blocked.der": "9745cd3ddb5c3878979aa246afb8b37ba1d1b1774a6f5c5ba28c6bcd0dac51ad",
+    "constrained-root.der": "a0cd3c3cdcc891d572171f4da924279120ba8b0046182eae514fb577ef074f67",
+    "constrained-spki.der": "859da5b61642b0229b2296c7e4b86bbc24838e2d7495d1ebc415ccecbab8fb92",
+    "other-leaf-key.der": "c0e83de718949221494b1334129fc79fff169875aec880cbd21fe906e620dd03",
+    "other-leaf.der": "01297b505647177ea212ec742e889d765c05d24070991a68cf0d81f6e2902bfd",
+    "other-root.der": "4bedfddf49bbb94463c519613311201b03a564117a336f88c7fcea909637747f",
+    "other-spki.der": "becd824994475e1bb6b95a8900a401548a130a7cbf4e0bcf16f413a9ba6aa769",
+    "primary-expired-key.der": "e9d00ef1b87bd1eb4d6d429e35a12dcd31ca8b3460ea838547799c01368707fa",
+    "primary-expired.der": "6d0e8cc8cc8f5d09385a1f7479ee95e825154a70d4ea0fbf5b0d456be7d9a43b",
+    "primary-leaf-key.der": "4c1e7e15cb50479eca2e4c0cbc4086038c0c32765e0f5cbf2489732222366384",
+    "primary-leaf.der": "ecaf0c605dd8156db7dbeece30339b9cdd027c62f452ef53e05bcd753917406f",
+    "primary-root.der": "8e10e58c76c5d23b1b423ee7ed59590d305fa3c3742bd3ca89ac8590db786f77",
+    "primary-spki.der": "859da5b61642b0229b2296c7e4b86bbc24838e2d7495d1ebc415ccecbab8fb92",
+    "rogue-leaf-key.der": "57fca77c63a30e8d7bf8627ba88d17767e49bec44dda7ec10ce27694e24acbd7",
+    "rogue-leaf.der": "ae6fb246ebbb7b721d434f1153113f0b005ee2f9efeda43d2a22d9c9c7b6ac88",
+    "rogue-root.der": "7ab37b65802203c53e492e66d1e67d79cf9e8f73718f352486397147615a13e6",
+    "rogue-spki.der": "6aeb99e93f1554bc2ef30a3727dee76c13b45550f092cb57da401c43b0bfb7ce"
+  },
+  "constraint_oracle": {
+    "tool": "openssl verify -attime 1800000000 -verify_hostname <host>",
+    "allowed_host": "svc.allowed.test",
+    "allowed_exit": 0,
+    "blocked_host": "blocked.test",
+    "blocked_exit": 2,
+    "blocked_error": "permitted subtree violation"
+  }
+}

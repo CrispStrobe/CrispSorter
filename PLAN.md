@@ -1910,6 +1910,14 @@ no pinning.  Low effort, meaningful security improvement.
     root SPKI. Response leaf-certificate inspection is insufficient. Backend,
     trust-anchor, proxy/redirect and negative-TLS gates are scoped in
     `docs/cloud-provider-parity.md`; enforcement remains unimplemented.
+  - [x] Add an isolated rustls foundation that restricts ordinary WebPKI to
+    caller-trusted primary/backup SPKI anchors and preserves root constraints
+    and TLS signature checks. Complete-SPKI reconstruction is checked against
+    independent fixed OpenSSL exports and root name-constraint fixtures. The
+    source remains outside the app module/client tree; no production request
+    is pinned by this work. All 21 source-bound and in-memory TLS controls pass
+    against the app-locked TLS versions. Platform roots/pins, revocation, cross-signing,
+    proxy/redirect and actual constructor integration remain open gates.
 - [ ] **Pin rotation strategy.**  Pin the *root* CA, not the leaf
   cert (roots rotate on a multi-year cadence).  Include 2 pins per
   provider (current + backup) to survive a CA migration.  Log a
