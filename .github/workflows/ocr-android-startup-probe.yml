@@ -1,37 +1,25 @@
-name: Retained Android OCR startup diagnosis
+name: Retained Android OCR app flow
 
+# Reuse the already-built, source-bound APK; do not rebuild the application.
 on:
   workflow_dispatch:
-  push:
-    branches: ['feat/ocr-android-launch-diagnostics']
-    paths:
-      - '.github/workflows/ocr-android-startup-probe.yml'
-      - 'tools/android-startup-probe/**'
-      - 'scripts/mobile_simulator_smoke.py'
-      - 'tests/scripts/test_mobile_startup_diagnostics.py'
-      - 'tests/scripts/test_mobile_retained_apk.py'
 
 permissions:
   contents: read
   actions: read
 
-concurrency:
-  group: ocr-android-startup-probe-${{ github.ref_name }}
-  cancel-in-progress: false
-
 jobs:
-  retained-apk-startup:
+  retained-app-flow:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Verify bounded artifact staging and failure retention
-        run: |
-          python3 -m unittest discover -s tests/scripts -p 'test_mobile_startup_diagnostics.py' -v
-          python3 -m unittest discover -s tests/scripts -p 'test_mobile_retained_apk.py' -v
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -39,47 +27,60 @@ jobs:
       - uses: android-actions/setup-android@v3
         with:
           packages: 'platform-tools'
-      - name: Prepare the Android manifest inspector
-        run: sdkmanager 'build-tools;36.0.0'
-      - name: Download and validate the immutable application artifact
+      - name: Prepare app identity and WebView tools
+        run: |
+          sdkmanager 'build-tools;36.0.0'
+          python3 -m pip install 'Pillow==11.3.0'
+          npm install --prefix "$RUNNER_TEMP/ocr-webview-tools" --no-save --package-lock=false 'playwright@1.62.1'
+          echo "PLAYWRIGHT_MODULE_PATH=$RUNNER_TEMP/ocr-webview-tools/node_modules/playwright" >> "$GITHUB_ENV"
+      - name: Stage and verify the retained application
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           pin=tools/android-startup-probe/artifact-20261112.json
           artifact_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["artifact_id"])' "$pin")
-          gh api "repos/CrispStrobe/CrispSorter/actions/artifacts/$artifact_id" > "$RUNNER_TEMP/ocr-android-startup-artifact.json"
-          gh api "repos/CrispStrobe/CrispSorter/actions/artifacts/$artifact_id/zip" > "$RUNNER_TEMP/ocr-android-startup-artifact.zip"
-          python3 tools/android-startup-probe/stage.py \
-            --archive "$RUNNER_TEMP/ocr-android-startup-artifact.zip" \
-            --metadata "$RUNNER_TEMP/ocr-android-startup-artifact.json" \
-            --pin "$pin" \
-            --output "$RUNNER_TEMP/ocr-android-startup-probe"
-          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump xmltree \
-            "$RUNNER_TEMP/ocr-android-startup-probe/CrispSorter-ocr.apk" AndroidManifest.xml \
-            > "$RUNNER_TEMP/ocr-android-startup-probe/manifest.txt"
-      - name: Enable Android emulator acceleration
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id" > "$RUNNER_TEMP/artifact-metadata.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > "$RUNNER_TEMP/artifact.zip"
+          python3 tools/android-startup-probe/stage.py --archive "$RUNNER_TEMP/artifact.zip" \
+            --metadata "$RUNNER_TEMP/artifact-metadata.json" --pin "$pin" --output "$RUNNER_TEMP/retained-app"
+          python3 - <<'PY'
+          import hashlib,json,os,zipfile
+          from pathlib import Path
+          root=Path(os.environ['RUNNER_TEMP']); build=json.loads((root/'retained-app/build-receipt.json').read_text())
+          with zipfile.ZipFile(root/'artifact.zip') as archive:
+              entry=archive.getinfo('ocr-mobile-runtime/runtime-build.json')
+              if not 0 < entry.file_size <= 1024*1024: raise ValueError('Unexpected native runtime receipt size')
+              data=archive.read(entry)
+          if hashlib.sha256(data).hexdigest()!=build['runtime_receipt_sha256']: raise ValueError('Native runtime receipt differs from build')
+          (root/'retained-app/runtime-build.json').write_bytes(data)
+          PY
+          python3 tools/mobile-ocr-probe/prepare.py --output "$RUNNER_TEMP/ocr-mobile-inputs" --font /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
+      - name: Enable emulator acceleration
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-      - name: Repeat the original launch gate against the retained APK
+      - name: Run actual app model installation, OCR and review export
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 35
           arch: x86_64
           target: google_apis
           disable-animations: true
-          script: python3 scripts/mobile_simulator_smoke.py --platform android --target emulator-5554 --artifact "$RUNNER_TEMP/ocr-android-startup-probe/CrispSorter-ocr.apk" --output "$RUNNER_TEMP/ocr-android-startup-probe/startup"
-      - name: Preserve launch evidence and failures
+          script: |
+            set -eu
+            python3 scripts/mobile_simulator_smoke.py --platform android --target emulator-5554 --artifact "$RUNNER_TEMP/retained-app/CrispSorter-ocr.apk" --output "$RUNNER_TEMP/retained-startup"
+            app_source=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sorter_commit"])' "$RUNNER_TEMP/retained-app/build-receipt.json")
+            embed_source=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["crispembed_commit"])' "$RUNNER_TEMP/retained-app/build-receipt.json")
+            node scripts/mobile_ocr_webview_smoke.mjs --serial emulator-5554 --apk "$RUNNER_TEMP/retained-app/CrispSorter-ocr.apk" --inputs "$RUNNER_TEMP/ocr-mobile-inputs" --output "$RUNNER_TEMP/retained-app-flow" --source-commit "$app_source" --embed-commit "$embed_source" --build-receipt "$RUNNER_TEMP/retained-app/build-receipt.json" --runtime-receipt "$RUNNER_TEMP/retained-app/runtime-build.json"
+      - name: Retain app-flow evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ocr-android-retained-startup
+          name: retained-android-ocr-app-flow
           path: |
-            ${{ runner.temp }}/ocr-android-startup-artifact.json
-            ${{ runner.temp }}/ocr-android-startup-probe/*.json
-            ${{ runner.temp }}/ocr-android-startup-probe/*.txt
-            ${{ runner.temp }}/ocr-android-startup-probe/startup/
+            ${{ runner.temp }}/retained-startup/
+            ${{ runner.temp }}/retained-app-flow/
           if-no-files-found: warn
           retention-days: 14
