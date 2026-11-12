@@ -197,3 +197,12 @@ The harness now compares their verified canonical identities and still checks
 the exported file itself. Rerun the retained experimental APK to continue
 export and recovery qualification. This is evidence for that opt-in candidate,
 not proof of complete text coverage or of current default-off behavior.
+
+The [retained experimental-crop emulator run](https://github.com/CrispStrobe/CrispSorter/actions/runs/43293853454)
+subsequently passed all 33 recorded steps, including native document and image
+imports, the named quality fixtures, repeated recognition, PDF and Word export,
+staging cleanup, and the system document picker. Its receipt explicitly records
+synthetic inputs, no physical camera/device qualification, no system save
+picker, and no representative corpus quality qualification. The APK predates
+the current default-off gate; this result does not establish current-default
+behavior or justify promoting the experimental option.
