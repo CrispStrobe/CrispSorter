@@ -425,9 +425,8 @@ fn verified_existing(path: &Path, expected: &str, cancel: &AtomicBool) -> Result
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(format!("Read existing model file: {error}")),
     };
-    if !reader.metadata().map_err(|e| format!("Inspect existing model file: {e}"))?.is_file() {
-        return Ok(false);
-    }
+    let metadata = reader.metadata().map_err(|e| format!("Inspect existing model file: {e}"))?;
+    if !metadata.is_file() || metadata.len() == 0 { return Ok(false); }
     let mut hash = Sha256::new();
     let mut buffer = vec![0u8; 256 * 1024];
     loop {
