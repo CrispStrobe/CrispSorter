@@ -149,7 +149,9 @@ The retained candidate builds for [Android arm64](https://github.com/CrispStrobe
 and [Android armv7](https://github.com/CrispStrobe/CrispSorter/actions/runs/43302786120)
 have passed build/link. Their retained libraries, source receipts and notice
 hashes were independently verified; the armv7 link probe also reports the ARM
-architecture. The iOS jobs and desktop candidate builds remain pending. These
-are candidate libraries, not finished application binaries, runtime error-path
-tests, or physical-device qualification. Artifacts expire after 14 days; keep
+architecture. The iOS arm64 and simulator arm64 candidate build/link jobs also passed; their
+libraries, source receipts and notice hashes were independently verified.
+Desktop candidate builds remain pending. These are candidate libraries, not
+finished application binaries, runtime error-path tests, or physical-device
+qualification. Artifacts expire after 14 days; keep
 verified copies outside Git until a reviewed release packages them.
