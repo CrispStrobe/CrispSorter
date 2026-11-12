@@ -329,7 +329,7 @@ jobs:
         # checks.
         #
         # The two `drive-*-native` features are here for exactly that reason.
-        # `cargo test -p crisp-filen/-p crisp-internxt` below covers the crates,
+        # The crisp-cloud-rs job below tests the crates at the pinned rev,
         # but the *glue* — `drives/{filen,internxt}_native_drive.rs` and the
         # `instantiate` arms in `drives/mod.rs` — only compiles with these on,
         # and previously compiled in no job at all. It had drifted out of
@@ -884,31 +884,30 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - name: Check out CrispSorter
+      # The Filen/Internxt clients are git dependencies on crisp-cloud-rs
+      # (no vendored copies). Verify exactly the revision src-tauri/Cargo.toml
+      # pins; the script also fails if Cargo.lock resolved a different one.
+      - name: Check out CrispSorter manifests
         uses: actions/checkout@v4
         with:
           path: repos/CrispSorter
+          sparse-checkout: |
+            src-tauri/Cargo.toml
+            Cargo.lock
+            scripts/crisp_cloud_rev.py
+          sparse-checkout-cone-mode: false
 
-      - name: Check out sibling CrispEmbed (cargo path dep)
+      - name: Resolve the crisp-cloud-rs revision CrispSorter depends on
+        id: cloud
+        shell: bash
+        run: python3 repos/CrispSorter/scripts/crisp_cloud_rev.py --root repos/CrispSorter --github-output
+
+      - name: Check out crisp-cloud-rs
         uses: actions/checkout@v4
         with:
-          repository: ${{ env.CRISPEMBED_REPO }}
-          ref: ${{ env.CRISPEMBED_COMMIT }}
-          path: repos/CrispEmbed
-
-      - name: Check out sibling CrispASR (cargo path dep)
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.CRISPASR_REPO }}
-          ref: ${{ env.CRISPASR_REF }}
-          path: repos/CrispASR
-
-      - name: Check out sibling crisp-docx (cargo path dep)
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.CRISPDOCX_REPO }}
-          ref: ${{ env.CRISPDOCX_REF }}
-          path: repos/crisp-docx
+          repository: CrispStrobe/crisp-cloud-rs
+          ref: ${{ steps.cloud.outputs.rev }}
+          path: crisp-cloud-rs
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -917,31 +916,26 @@ jobs:
       - name: Rust dependency cache
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: repos/CrispSorter -> target
+          workspaces: crisp-cloud-rs -> target
 
       - name: Format cloud crates
-        working-directory: repos/CrispSorter
-        run: |
-          rustfmt --edition 2021 --check \
-            crates/crisp-internxt-native/src/lib.rs \
-            crates/crisp-internxt-native/src/main.rs \
-            crates/crisp-filen-native/src/lib.rs \
-            crates/crisp-filen-native/src/main.rs
+        working-directory: crisp-cloud-rs
+        run: cargo fmt --all -- --check
 
       - name: Test cloud crates
-        working-directory: repos/CrispSorter
+        working-directory: crisp-cloud-rs
         run: |
           cargo test -p crisp-internxt --all-targets
           cargo test -p crisp-filen --all-targets
 
       - name: Clippy cloud crates
-        working-directory: repos/CrispSorter
+        working-directory: crisp-cloud-rs
         run: |
           cargo clippy -p crisp-internxt --all-targets --all-features --no-deps -- -D warnings
           cargo clippy -p crisp-filen --all-targets --all-features --no-deps -- -D warnings
 
       - name: Verify publishable packages
-        working-directory: repos/CrispSorter
+        working-directory: crisp-cloud-rs
         run: |
           cargo package -p crisp-internxt --allow-dirty
           cargo package -p crisp-filen --allow-dirty
@@ -959,14 +953,29 @@ jobs:
       matrix:
         os: [ubuntu-24.04, macos-15, windows-2025]
     steps:
+      # The Filen/Internxt clients are git dependencies on crisp-cloud-rs
+      # (no vendored copies). Verify exactly the revision src-tauri/Cargo.toml
+      # pins; the script also fails if Cargo.lock resolved a different one.
+      - name: Check out CrispSorter manifests
+        uses: actions/checkout@v4
+        with:
+          path: repos/CrispSorter
+          sparse-checkout: |
+            src-tauri/Cargo.toml
+            Cargo.lock
+            scripts/crisp_cloud_rev.py
+          sparse-checkout-cone-mode: false
+
+      - name: Resolve the crisp-cloud-rs revision CrispSorter depends on
+        id: cloud
+        shell: bash
+        run: python3 repos/CrispSorter/scripts/crisp_cloud_rev.py --root repos/CrispSorter --github-output
+
       - name: Check out crisp-cloud-rs
         uses: actions/checkout@v4
         with:
           repository: CrispStrobe/crisp-cloud-rs
-          # Exact upstream validation source, including the Windows fix and clippy fix.
-          # This differs from the recorded vendored baseline; see VENDORED.md.
-          # Keep this pin in sync with provider-conformance.yml.
-          ref: 33bdc33f64d0a2f1144dceec8ed372d18c12b551
+          ref: ${{ steps.cloud.outputs.rev }}
           path: crisp-cloud-rs
 
       - uses: dtolnay/rust-toolchain@stable
@@ -1040,6 +1049,17 @@ jobs:
           ref: ${{ env.CRISPDOCX_REF }}
           path: repos/crisp-docx
 
+      - name: Resolve the crisp-cloud-rs revision CrispSorter depends on
+        id: cloud
+        run: python3 repos/CrispSorter/scripts/crisp_cloud_rev.py --root repos/CrispSorter --github-output
+
+      - name: Check out crisp-cloud-rs at that revision
+        uses: actions/checkout@v4
+        with:
+          repository: CrispStrobe/crisp-cloud-rs
+          ref: ${{ steps.cloud.outputs.rev }}
+          path: repos/crisp-cloud-rs
+
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Run explicitly configured live tests
@@ -1048,12 +1068,12 @@ jobs:
           if [ -z "$INTERNXT_LOGIN" ] || [ -z "$INTERNXT_PW" ]; then
             echo "Internxt live tests skipped: workflow secrets are not configured"
           else
-            cargo test -p crisp-internxt --test live -- --ignored --nocapture --test-threads=1
+            (cd ../crisp-cloud-rs && cargo test -p crisp-internxt --test live -- --ignored --nocapture --test-threads=1)
           fi
           if [ -z "$FILEN_EMAIL" ] || [ -z "$FILEN_PASSWORD" ]; then
             echo "Filen live tests skipped: workflow secrets are not configured"
           else
-            cargo test -p crisp-filen --test filen_live -- --ignored --nocapture --test-threads=1
+            (cd ../crisp-cloud-rs && cargo test -p crisp-filen --test filen_live -- --ignored --nocapture --test-threads=1)
           fi
           if [ -z "$CRISPSORTER_GOOGLE_ACCESS_TOKEN" ]; then
             echo "Google Drive live tests skipped: workflow secret is not configured"

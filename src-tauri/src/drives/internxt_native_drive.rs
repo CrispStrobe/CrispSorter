@@ -24,10 +24,13 @@ pub struct NativeInternxtDrive {
     clients: ProviderClientCache<InternxtSession, InternxtNativeClient>,
 }
 
+/// Split a leaf into Internxt's `plainName` and `type`. No extension means an
+/// empty type (what `write_file` and the official clients send); a `"file"`
+/// placeholder turned `README` into `README.file`.
 fn split_remote_name(name: &str) -> (&str, &str) {
     match name.rsplit_once('.') {
         Some((stem, extension)) if !stem.is_empty() => (stem, extension),
-        _ => (name, "file"),
+        _ => (name, ""),
     }
 }
 
@@ -171,18 +174,10 @@ impl NativeInternxtDrive {
 
     /// Overwrite-or-create shared by `write_file` and `write_file_from_reader`.
     ///
-    /// Still trash-then-upload by hand: the vendored crate's replace primitive
-    /// (`update_file`, upload-beside-then-swap) only accepts a local path, and
-    /// these trait methods receive bytes or a reader.
-    /// TODO(crisp-cloud-rs): switch to a reader-based `update_file` once the
-    /// upstream crate offers one, which also avoids the trashed-but-not-yet-
-    /// replaced window on failure.
-    fn write_with(
-        &self,
-        path: &Path,
-        size: u64,
-        upload: impl FnOnce(&InternxtNativeClient, &InternxtSession, &str, &str, &str) -> Result<()>,
-    ) -> Result<()> {
+    /// An existing file is replaced with `update_file_from_reader`: the new
+    /// content is uploaded beside the original and swapped in only once it is
+    /// visible, so a failed upload leaves the original untouched.
+    fn write_with(&self, path: &Path, size: u64, reader: &mut dyn Read) -> Result<()> {
         let filename = path
             .file_name()
             .ok_or_else(|| anyhow!("Internxt write path has no filename: {}", path.display()))?
@@ -209,16 +204,16 @@ impl NativeInternxtDrive {
                         ));
                     }
                     log.step("replace", serde_json::json!({ "bytes": size }));
-                    client.trash(&existing.uuid, "file")?;
-                } else {
-                    log.step("upload", serde_json::json!({ "bytes": size }));
+                    return client.update_file_from_reader(session, &existing.uuid, reader, size);
                 }
-                upload(
-                    client,
+                log.step("upload", serde_json::json!({ "bytes": size }));
+                client.upload_reader(
                     session,
                     folder_uuid.as_str(),
                     plain_name.as_str(),
                     file_type.as_str(),
+                    reader,
+                    size,
                 )
             })
         })
@@ -261,22 +256,38 @@ impl CloudDrive for NativeInternxtDrive {
         })
     }
 
-    // TODO(crisp-cloud-rs): `read_range`. The vendored crate's only ranged
-    // primitive, `download_file_to_path_ranged`, downloads the whole file to a
-    // path (ranges are a parallelism detail), so it cannot serve a partial
-    // read. A real implementation needs an upstream `download_file_range`
-    // (Range GET on the presigned shard URL + `crypt_at` at the CTR offset).
-    // Until then the trait default refuses, and the FUSE mount keeps
-    // materialising Internxt files once into its disk cache.
+    /// Inclusive byte range, decrypted from one HTTP range on the shard at the
+    /// enclosing AES-CTR block. A range past EOF is clamped; one starting at
+    /// or after EOF yields no bytes. The FUSE mount still materialises
+    /// Internxt files once: shard URLs do not reliably honour `Range`, and the
+    /// fallback streams the prefix, which windowed reads would repeat.
+    fn read_range(&self, path: &Path, start: u64, end: u64) -> Result<Vec<u8>> {
+        provider_client::inclusive_range_len(start, end)?;
+        provider_client::logged("storage.internxt.read_range", BACKEND, MODE, |log| {
+            self.with_client(Some(log), |session, client| {
+                let item = resolve_fresh(client, session, path)?;
+                anyhow::ensure!(
+                    !item.is_dir,
+                    "Internxt path is a directory: {}",
+                    path.display()
+                );
+                let Some((offset, length)) =
+                    provider_client::clamp_range_to_size(start, end, item.size)?
+                else {
+                    return Ok(Vec::new());
+                };
+                let bytes = client.download_file_range(session, &item.uuid, offset, length)?;
+                log.step(
+                    "transferred",
+                    serde_json::json!({ "bytes": bytes.len() as u64 }),
+                );
+                Ok(bytes)
+            })
+        })
+    }
 
-    fn write_file(&self, path: &Path, data: &[u8]) -> Result<()> {
-        self.write_with(
-            path,
-            data.len() as u64,
-            |client, session, folder_uuid, plain_name, file_type| {
-                client.upload_file(session, folder_uuid, plain_name, file_type, data)
-            },
-        )
+    fn write_file(&self, path: &Path, mut data: &[u8]) -> Result<()> {
+        self.write_with(path, data.len() as u64, &mut data)
     }
 
     fn upload_file_resumable(
@@ -478,13 +489,7 @@ impl CloudDrive for NativeInternxtDrive {
     }
 
     fn write_file_from_reader(&self, path: &Path, reader: &mut dyn Read, size: u64) -> Result<()> {
-        self.write_with(
-            path,
-            size,
-            |client, session, folder_uuid, plain_name, file_type| {
-                client.upload_reader(session, folder_uuid, plain_name, file_type, reader, size)
-            },
-        )
+        self.write_with(path, size, reader)
     }
 }
 
@@ -535,11 +540,21 @@ mod tests {
     }
 
     #[test]
-    fn range_reads_are_still_refused_explicitly() {
+    fn range_reads_validate_the_range_before_needing_a_session() {
         crate::drives::secret::install_mock_for_tests();
         let drive = NativeInternxtDrive::from_keychain("Native Internxt", "missing-drive");
+        let error = drive.read_range(Path::new("/a"), 5, 1).unwrap_err();
+        assert!(error.to_string().contains("invalid byte range"));
         let error = drive.read_range(Path::new("/a"), 0, 1).unwrap_err();
-        assert!(error.to_string().contains("does not support range reads"));
+        assert!(format!("{error:#}").contains("native Internxt session unavailable"));
+    }
+
+    #[test]
+    fn extensionless_leaves_get_an_empty_type() {
+        assert_eq!(split_remote_name("report.pdf"), ("report", "pdf"));
+        assert_eq!(split_remote_name("README"), ("README", ""));
+        assert_eq!(split_remote_name(".profile"), (".profile", ""));
+        assert_eq!(split_remote_name("a.tar.gz"), ("a.tar", "gz"));
     }
 
     #[test]

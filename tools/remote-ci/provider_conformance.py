@@ -7,7 +7,8 @@ import sys
 import time
 
 SORTER = '__SORTER_SHA__'
-CLOUD = '121bfa6682ab710cc19fbd7c7897e4aea0729920'
+# Resolved from the selected app source's manifest and lock, never a second pin.
+CLOUD = None
 ROOT = Path('/kaggle/temp/provider-conformance')
 OUT = Path('/kaggle/working')
 ROOT.mkdir(parents=True, exist_ok=True)
@@ -29,6 +30,7 @@ def run(name, args, cwd=None, env=None, timeout=1800):
     save()
     if p.returncode:
         raise RuntimeError(name + ' failed')
+    return p.stdout
 
 
 try:
@@ -36,6 +38,9 @@ try:
     app, cloud = ROOT / 'CrispSorter', ROOT / 'crisp-cloud-rs'
     run('clone-sorter', ['git', 'clone', '-q', 'https://github.com/CrispStrobe/CrispSorter.git', app])
     run('checkout-sorter', ['git', '-C', app, 'checkout', '-q', SORTER])
+    CLOUD = run('resolve-cloud-revision', [sys.executable, app / 'scripts/crisp_cloud_rev.py'], cwd=app).strip()
+    report['cloud_source'] = CLOUD
+    save()
     run('clone-cloud', ['git', 'clone', '-q', 'https://github.com/CrispStrobe/crisp-cloud-rs.git', cloud])
     run('checkout-cloud', ['git', '-C', cloud, 'checkout', '-q', CLOUD])
     for name, repo, expected in [('sorter', app, SORTER), ('cloud', cloud, CLOUD)]:
@@ -51,9 +56,8 @@ try:
     run('rustup-install', ['sh', ROOT / 'rustup.sh', '-y', '--profile', 'minimal', '--default-toolchain', 'stable', '--no-modify-path'], env=env)
     env['PATH'] = str(ROOT / 'dart-sdk/bin') + os.pathsep + str(ROOT / 'cargo/bin') + os.pathsep + env.get('PATH', '')
     run('python-setup', [sys.executable, '-m', 'pip', 'install', '-q', 'cryptography==50.0.0'], env=env)
-    run('conformance', [sys.executable, cloud / 'conformance/run.py', '--pointycastle', '4.0.0', '--dart-pg', '2.1.0',
-                        '--rust-filen', 'crates/crisp-filen-native', '--rust-internxt', 'crates/crisp-internxt-native'],
-        cwd=app, env=env, timeout=5400)
+    run('conformance', [sys.executable, cloud / 'conformance/run.py', '--pointycastle', '4.0.0', '--dart-pg', '2.1.0'],
+        cwd=cloud, env=env, timeout=5400)
     report['passed'] = True
 except BaseException as e:
     report['error_type'] = type(e).__name__
