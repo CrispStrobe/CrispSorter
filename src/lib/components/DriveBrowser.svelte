@@ -11,7 +11,6 @@
         joinDrivePath,
         normalizeDrivePath,
         parentDrivePath,
-        supportsCloudVersions,
         type DriveCapabilities,
     } from '$lib/drives/browser';
     import {
@@ -26,6 +25,7 @@
     } from '$lib/drives/duplicateAudit';
     import { cloudDrivePanel, type ContextPanel, type DuplicateDecision } from '$lib/drives/panels';
     import { requestBrowserContext, subscribeBrowserContext } from '$lib/drives/browserContext';
+    import { createVersionSelection, emptyVersionState, type VersionState, type VersionTarget } from '$lib/drives/versionSelection';
 
     type Drive = { id: string; label: string; kind: string };
     type Entry = { name: string; is_dir: boolean; size: number | null };
@@ -40,12 +40,8 @@
     let loading = $state(false);
     let error = $state('');
     let selected = $state<string | null>(null);
-    let selectedStat = $state<FileStat | null>(null);
-    let cloudVersions = $state<CloudVersion[]>([]);
-    let localVersions = $state<LocalVersion[]>([]);
-    let versionsLoading = $state(false);
-    let versionsError = $state('');
-    let restoringVersion = $state<string | null>(null);
+    // Preserve published row identity; the controller replaces whole snapshots.
+    let versionState = $state.raw<VersionState<FileStat, CloudVersion, LocalVersion>>(emptyVersionState());
     let duplicateMutationBusy = $state<string | null>(null);
     let driveSearchQuery = $state('');
     let driveSearchContent = $state(false);
@@ -57,19 +53,44 @@
     let duplicateMutationAudit = $state<DuplicateMutationAudit[]>([]);
     const actions = $derived(availableDriveActions(capabilities, selected !== null));
 
+    const versionSelection = createVersionSelection<FileStat, CloudVersion, LocalVersion>({
+        current: currentVersionTarget,
+        changed: state => { versionState = state; },
+        stat: target => invoke('drive_stat', { driveId: target.driveId, path: target.path }),
+        capabilities: driveId => invoke('drive_capabilities', { driveId }),
+        cloud: target => invoke('drive_list_versions', { driveId: target.driveId, path: target.path }),
+        local: target => invoke('version_history', { path: target.path }),
+        confirm: (version, target) => window.confirm(`Restore version ${version.id} of ${target.name}?`),
+        restore: (target, versionId) => invoke('drive_restore_version', { driveId: target.driveId, path: target.path, versionId }),
+    });
+    function currentVersionTarget(): VersionTarget | null {
+        if (!driveId || rightPanel?.source.kind !== 'CloudDrive' || rightPanel.source.driveId !== driveId) return null;
+        return { driveId, directory: path, path: rightPanel.source.path, name: selected };
+    }
+    function clearSelection() {
+        selected = null;
+        versionSelection.invalidate();
+    }
+    let refreshGeneration = 0;
     async function refresh() {
-        if (!driveId) return;
+        clearSelection();
+        const revision = ++refreshGeneration;
+        const source = { driveId, path };
+        const current = () => revision === refreshGeneration && source.driveId === driveId && source.path === path;
+        if (!source.driveId) return;
         loading = true;
         error = '';
         try {
-            entries = await invoke<Entry[]>('drive_list_dir', { driveId, path });
-            capabilities = await invoke<DriveCapabilities>('drive_capabilities', { driveId });
-            selected = null;
+            const listed = await invoke<Entry[]>('drive_list_dir', source);
+            if (!current()) return;
+            const caps = await invoke<DriveCapabilities>('drive_capabilities', { driveId: source.driveId });
+            if (!current()) return;
+            entries = listed;
+            capabilities = caps;
         } catch (e) {
-            error = String(e);
-            entries = [];
+            if (current()) { error = String(e); entries = []; }
         } finally {
-            loading = false;
+            if (current()) loading = false;
         }
     }
 
@@ -99,14 +120,10 @@
 
     async function openDriveSearchResult(result: { path: string }): Promise<void> {
         const resultPath = normalizeDrivePath(result.path);
+        clearSelection();
         rightPanel = cloudDrivePanel(driveId, resultPath);
-        selected = null;
-        selectedStat = null;
-        try {
-            selectedStat = await invoke<FileStat>('drive_stat', { driveId, path: resultPath });
-        } catch (e) {
-            error = `Could not inspect search result: ${String(e)}`;
-        }
+        const target = currentVersionTarget();
+        if (target) await versionSelection.load(target);
     }
 
     async function loadDrives() {
@@ -119,43 +136,10 @@
 
     async function selectEntry(name: string) {
         selected = name;
-        cloudVersions = [];
-        localVersions = [];
-        versionsError = '';
         rightPanel = driveId ? cloudDrivePanel(driveId, joinDrivePath(path, name), name) : null;
-        const selectedPath = joinDrivePath(path, name);
-        try {
-            selectedStat = await invoke<FileStat>('drive_stat', { driveId, path: selectedPath });
-        } catch { selectedStat = null; }
-        if (!selectedStat || selectedStat.is_dir || !driveId) return;
-        versionsLoading = true;
-        try {
-            const caps = await invoke<DriveCapabilities>('drive_capabilities', { driveId });
-            // Do not even cross the IPC boundary for provider versions when
-            // the capability probe says they are unsupported. The Tauri
-            // command also guards this, but avoiding the call here keeps the
-            // frontend contract honest and avoids needless provider errors.
-            const cloud = supportsCloudVersions(caps)
-                ? await invoke<CloudVersion[]>('drive_list_versions', { driveId, path: selectedPath }).catch(() => [])
-                : [];
-            const local = await invoke<LocalVersion[]>('version_history', { path: selectedPath }).catch(() => []);
-            cloudVersions = cloud;
-            localVersions = local;
-        } catch (e) { versionsError = String(e); }
-        finally { versionsLoading = false; }
-    }
-
-    async function restoreCloudVersion(version: CloudVersion) {
-        if (!selected || !driveId || restoringVersion) return;
-        if (!window.confirm(`Restore version ${version.id} of ${selected}?`)) return;
-        restoringVersion = version.id;
-        versionsError = '';
-        try {
-            await invoke('drive_restore_version', { driveId, path: joinDrivePath(path, selected), versionId: version.id });
-            await selectEntry(selected);
-            await refresh();
-        } catch (e) { versionsError = String(e); }
-        finally { restoringVersion = null; }
+        const target = currentVersionTarget();
+        if (target) await versionSelection.load(target);
+        else versionSelection.invalidate();
     }
 
     function selectDrive(id: string) {
@@ -357,6 +341,7 @@
         duplicateAudit = loadDuplicateAudit();
         duplicateMutationAudit = loadDuplicateMutationAudit();
         const unsubscribe = subscribeBrowserContext((panel) => {
+            clearSelection();
             if (panel.source.kind === 'DuplicateGroup') {
                 const restored = latestDuplicateDecision(duplicateAudit, panel.source.groupId);
                 rightPanel = restored
@@ -372,7 +357,7 @@
             }
         });
         void loadDrives();
-        return unsubscribe;
+        return () => { unsubscribe(); versionSelection.dispose(); };
     });
 </script>
 
@@ -543,26 +528,27 @@
             {:else}
                 <code>{sourceKind(rightPanel.source)}</code>
             {/if}
-            {#if selectedStat}
+            {#if versionState.error && !versionState.stat}<div class="browser-error">{versionState.error}</div>{/if}
+            {#if versionState.stat}
                 <dl>
-                    <dt>Type</dt><dd>{selectedStat.is_dir ? 'Folder' : 'File'}</dd>
-                    <dt>Size</dt><dd>{selectedStat.size.toLocaleString()} B</dd>
-                    {#if selectedStat.mtime_unix}<dt>Modified</dt><dd>{new Date(selectedStat.mtime_unix * 1000).toLocaleString()}</dd>{/if}
+                    <dt>Type</dt><dd>{versionState.stat.is_dir ? 'Folder' : 'File'}</dd>
+                    <dt>Size</dt><dd>{versionState.stat.size.toLocaleString()} B</dd>
+                    {#if versionState.stat.mtime_unix}<dt>Modified</dt><dd>{new Date(versionState.stat.mtime_unix * 1000).toLocaleString()}</dd>{/if}
                 </dl>
-                {#if selected && !selectedStat.is_dir}
+                {#if selected && !versionState.stat.is_dir}
                     <section class="versions">
                         <div class="context-label">Version history</div>
-                        {#if versionsLoading}<div class="muted">Loading versions…</div>
-                        {:else if versionsError}<div class="browser-error">{versionsError}</div>
-                        {:else if !cloudVersions.length && !localVersions.length}<div class="muted">No provider or local versions.</div>
+                        {#if versionState.loading}<div class="muted">Loading versions…</div>
+                        {:else if versionState.error}<div class="browser-error">{versionState.error}</div>
+                        {:else if !versionState.cloud.length && !versionState.local.length}<div class="muted">No provider or local versions.</div>
                         {:else}
-                            {#each cloudVersions as version (version.id)}
+                            {#each versionState.cloud as version (version.id)}
                                 <div class="version-row">
                                     <span><strong>Cloud</strong> · {version.id}<br /><small>{version.modified_at ? new Date(version.modified_at * 1000).toLocaleString() : 'Unknown date'}{version.modifier_name ? ` · ${version.modifier_name}` : ''}</small></span>
-                                    <button onclick={() => restoreCloudVersion(version)} disabled={restoringVersion !== null}>{restoringVersion === version.id ? 'Restoring…' : 'Restore'}</button>
+                                    <button onclick={() => versionSelection.restore(version)} disabled={versionState.restoring !== null}>{versionState.restoring === version ? 'Restoring…' : 'Restore'}</button>
                                 </div>
                             {/each}
-                            {#each localVersions as version (version.id)}
+                            {#each versionState.local as version (version.id)}
                                 <div class="version-row local-version">
                                     <span><strong>Local v{version.version_seq}</strong>{version.title ? ` · ${version.title}` : ''}<br /><small>{new Date(version.indexed_at).toLocaleString()}{version.file_size !== null ? ` · ${version.file_size.toLocaleString()} B` : ''}</small></span>
                                     <span class="muted">Indexed</span>
