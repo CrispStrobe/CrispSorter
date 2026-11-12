@@ -24,7 +24,8 @@ export type OperationName = 'ocr.session' | 'ocr.recognition' | 'ocr.worker' | '
   | 'index.folder_scan' | 'index.metadata_run' | 'index.ingest_run' | 'index.delete_selection'
   | 'index.promote_archive_selection' | 'index.promote_l3_selection' | 'index.catalog_create'
   | 'index.catalog_refresh' | 'index.catalog_activate' | 'index.catalog_deactivate'
-  | 'index.catalog_import' | 'index.duplicates_scan' | 'index.deletion_script';
+  | 'index.catalog_import' | 'index.duplicates_scan' | 'index.deletion_script'
+  | 'storage.folder_access';
 export type OperationPhase = 'queued' | 'loading' | 'ready' | 'reused' | 'disposed'
   | 'dispatching' | 'recognizing' | 'rendering' | 'text_ready' | 'page_completed'
   | 'checking' | 'saving' | 'saved' | 'committing' | 'published' | 'progress'
