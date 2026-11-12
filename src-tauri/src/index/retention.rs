@@ -187,14 +187,18 @@ pub mod tauri_commands {
     }
 
     #[tauri::command]
-    pub async fn retention_add_rule(
-        state: State<'_, AppState>,
+    pub async fn retention_add_rule(state: State<'_, AppState>, name: String, match_type: String, match_value: String, archive_after_days: Option<i64>, delete_after_days: Option<i64>) -> Result<i64, String> {
+        let log = crate::operation_log::OperationLog::start("index.retention_add_rule", serde_json::json!({}));
+        let result = retention_add_rule_inner(state, name, match_type, match_value, archive_after_days, delete_after_days).await;
+        crate::index::finish_logged(log, result, "retention_failed", |_| serde_json::Value::Null)
+    }
+
+    async fn retention_add_rule_inner(state: State<'_, AppState>,
         name: String,
         match_type: String,
         match_value: String,
         archive_after_days: Option<i64>,
-        delete_after_days: Option<i64>,
-    ) -> Result<i64, String> {
+        delete_after_days: Option<i64>) -> Result<i64, String> {
         let store = get_store(&state).await?;
         store.add_rule(&name, &match_type, &match_value, archive_after_days, delete_after_days)
             .map_err(|e| e.to_string())
@@ -209,20 +213,28 @@ pub mod tauri_commands {
     }
 
     #[tauri::command]
-    pub async fn retention_delete_rule(
-        state: State<'_, AppState>,
-        id: i64,
-    ) -> Result<(), String> {
+    pub async fn retention_delete_rule(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+        let log = crate::operation_log::OperationLog::start("index.retention_delete_rule", serde_json::json!({}));
+        let result = retention_delete_rule_inner(state, id).await;
+        crate::index::finish_logged(log, result, "retention_failed", |_| serde_json::Value::Null)
+    }
+
+    async fn retention_delete_rule_inner(state: State<'_, AppState>,
+        id: i64) -> Result<(), String> {
         let store = get_store(&state).await?;
         store.delete_rule(id).map_err(|e| e.to_string())
     }
 
     #[tauri::command]
-    pub async fn retention_set_enabled(
-        state: State<'_, AppState>,
+    pub async fn retention_set_enabled(state: State<'_, AppState>, id: i64, enabled: bool) -> Result<(), String> {
+        let log = crate::operation_log::OperationLog::start("index.retention_set_enabled", serde_json::json!({}));
+        let result = retention_set_enabled_inner(state, id, enabled).await;
+        crate::index::finish_logged(log, result, "retention_failed", |_| serde_json::Value::Null)
+    }
+
+    async fn retention_set_enabled_inner(state: State<'_, AppState>,
         id: i64,
-        enabled: bool,
-    ) -> Result<(), String> {
+        enabled: bool) -> Result<(), String> {
         let store = get_store(&state).await?;
         store.set_rule_enabled(id, enabled).map_err(|e| e.to_string())
     }
