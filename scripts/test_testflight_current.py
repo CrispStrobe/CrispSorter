@@ -156,6 +156,50 @@ class CurrentTestFlight(unittest.TestCase):
                 self.prepare()
             self.assertFalse(self.output.exists())
 
+    def test_resume_reuses_exact_current_ipa_and_original_cutoff(self):
+        timestamp = '2026-11-12T12:00:00Z'
+        selection = self.prepare(mode='resume', uploaded_after=timestamp)
+        self.assertEqual(selection['mode'], 'resume')
+        self.assertEqual(selection['source'], SOURCE)
+        self.assertEqual(selection['build_number'], '42')
+        self.assertEqual(selection['uploaded_after'], timestamp)
+        environment = self.root / 'github-env'
+        current.write_environment(selection, environment)
+        self.assertIn('UPLOADED_AFTER=' + timestamp + '\n', environment.read_text())
+        self.assertNotIn('BUILD_NUMBER=', environment.read_text())
+        self.assertTrue(all(args[0] == 'api' or args[:2] in [('release', 'view'), ('release', 'download')] for args in self.calls))
+
+    def test_resume_missing_malformed_naive_or_future_cutoff_fails_before_reads(self):
+        for timestamp in [None, '', '2026-11-12T12:00:00', 'yesterday', '2026-11-12T12:00:00Z\nINJECT=value',
+                          '2026-02-30T12:00:00Z', '2099-01-01T00:00:00Z']:
+            with self.subTest(timestamp=timestamp), self.assertRaises(ValueError):
+                self.prepare(mode='resume', uploaded_after=timestamp)
+            self.assertEqual(self.calls, [])
+            self.assertFalse(self.output.exists())
+
+    def test_resume_still_rejects_source_and_ipa_mismatches(self):
+        self.receipt['app_source'] = OTHER
+        with self.assertRaisesRegex(ValueError, 'exact current source'):
+            self.prepare(mode='resume', uploaded_after='2026-11-12T12:00:00Z')
+        self.assertFalse(self.output.exists())
+        self.receipt['app_source'] = SOURCE
+        self.receipt['artifacts'][0]['sha256'] = '0' * 64
+        with self.assertRaisesRegex(ValueError, 'SHA-256'):
+            self.prepare(mode='resume', uploaded_after='2026-11-12T12:00:00Z')
+        self.assertFalse(self.output.exists())
+
+    def test_resume_publication_flags_still_fail_before_github_reads(self):
+        for flags in [{'publish': True}, {'mac_appstore': True}]:
+            with self.subTest(flags=flags), self.assertRaisesRegex(ValueError, 'publish=false'):
+                self.prepare(mode='resume', uploaded_after='2026-11-12T12:00:00Z', **flags)
+            self.assertEqual(self.calls, [])
+            self.assertFalse(self.output.exists())
+
+    def test_upload_cannot_borrow_an_old_resume_cutoff(self):
+        with self.assertRaisesRegex(ValueError, 'only in resume mode'):
+            self.prepare(uploaded_after='2026-11-12T12:00:00Z')
+        self.assertEqual(self.calls, [])
+
     def test_ipa_tampering_and_falsely_matching_metadata_do_not_qualify(self):
         self.write_ipa(version='0.15.0')
         with self.assertRaises(ValueError):
@@ -184,6 +228,23 @@ class CurrentWorkflowIsolation(unittest.TestCase):
         self.assertIn('--sha256 "$IPA_SHA256"', job)
         self.assertLess(job.index('echo "UPLOADED_AFTER='), job.index('xcrun altool --upload-package'))
         self.assertIn('--version "$BUILD_NUMBER" --uploaded-after "$UPLOADED_AFTER"', job)
+
+    def test_current_resume_cannot_reupload_and_preserves_explicit_cutoff(self):
+        job = self.job('testflight-existing', 'release-draft-preflight')
+        upload = job.split('      - name: Upload to App Store Connect', 1)[1].split('      - name:', 1)[0]
+        condition = upload.split('        if: ', 1)[1].split('\n', 1)[0]
+        for selector, expected in [('testflight_current_resume', False), ('testflight_current', True), ('testflight', True)]:
+            expression = condition.replace('inputs.platform', repr(selector)).replace('||', ' or ')
+            self.assertEqual(eval(expression, {'__builtins__': {}}), expected)
+        selection = job.split('      - name: Select the exact current-source draft IPA', 1)[1].split('      - name:', 1)[0]
+        self.assertIn("CURRENT_TESTFLIGHT_MODE: ${{ inputs.platform == 'testflight_current_resume' && 'resume' || 'upload' }}", selection)
+        self.assertIn("ORIGINAL_UPLOAD_TIMESTAMP: ${{ inputs.testflight_uploaded_after || '' }}", selection)
+        self.assertIn('--mode "$CURRENT_TESTFLIGHT_MODE" --uploaded-after "$ORIGINAL_UPLOAD_TIMESTAMP"', selection)
+        self.assertNotIn("${{ inputs.testflight_uploaded_after }}", selection.split('run: |', 1)[1])
+        self.assertIn('--marketing-version "$IPA_VERSION"', job)
+        appstore = self.job('release-macos-appstore', 'publish')
+        self.assertIn("inputs.platform != 'testflight_current_resume'", appstore.split('permissions:', 1)[0])
+        self.assertIn('Set the $IPA_VERSION upload timestamp before resuming.', job)
 
     def test_current_selector_cannot_start_build_or_public_release_jobs(self):
         for name, next_name in [('release-draft-preflight', 'release-required'), ('release-required', 'release-windows'),

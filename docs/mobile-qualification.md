@@ -451,3 +451,29 @@ version/hash are available from that source-bound artifact; the existing old
 IPA cannot establish new-source TestFlight coverage. Windows Authenticode and macOS Developer ID credentials
 are still required for signed desktop publication; see
 [desktop signing](desktop-signing.md).
+
+### Resume an accepted current-source TestFlight upload
+
+`testflight_current_resume` is an upload-free recovery selector. Supply
+`testflight_uploaded_after` with the **original** upload's UTC cutoff, exactly in
+`YYYY-MM-DDTHH:MM:SSZ` form. The upload step prints that value before contacting
+Apple. Do not substitute the retry time: processing/assignment recovery must
+remain bound to the original accepted upload. Missing, malformed, naive or future
+timestamps fail before any draft lookup or environment update.
+
+Resume retains `publish=false`, `mac_appstore=false`, standard-profile admission,
+exact current source/draft/tag/receipt binding, final IPA hash/size/version checks
+and platform signature verification. It derives the build number from that
+verified IPA. It then queries/assigns only the exact app marketing-version and
+build-number pair uploaded at or after the explicit original cutoff. A reused
+build number from another marketing version, missing version relationship,
+missing exact build or non-VALID processing state cannot select another build.
+There is no fallback to the newest or older valid build.
+
+This selector never runs altool upload, rebuilds the app, starts another release
+platform or publishes a release. It only recovers processing/group assignment
+for an already accepted upload; an upload that was not accepted needs the
+ordinary current-source upload selector instead. The existing legacy
+`testflight_resume` refusal remains unchanged. No new manual approval is added.
+The new route is source/test preparation, not evidence that a particular upload
+or internal group assignment has completed.

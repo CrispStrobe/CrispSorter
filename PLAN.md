@@ -1,5 +1,16 @@
 # CrispSorter — Development Plan
 
+## Exact current-source TestFlight resume — 12 November 2026
+
+The `testflight_current_resume` selector recovers processing/group assignment
+without re-uploading. It requires the original printed UTC upload cutoff and
+revalidates the exact current-source standard IPA/receipt/signature. Distribution
+is bound to the IPA's marketing-version/build-number pair and original cutoff;
+missing/mismatched evidence fails closed. Ordinary upload records its cutoff for
+recovery, and existing legacy resume refusal/standard/OCR draft controls remain.
+No build, upload or assignment was executed to prepare this change. See
+[resume controls](docs/mobile-qualification.md#resume-an-accepted-current-source-testflight-upload).
+
 ## Signed OCR draft build route prepared — 12 November 2026
 
 Release now has explicit manual Android/iOS OCR draft selectors, restricted to

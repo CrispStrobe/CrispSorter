@@ -14,15 +14,19 @@ on:
         description: 'Run the macOS App Store job (build cloud-only sandbox .pkg, sign, validate). Upload to ASC only if publish is also ON.'
         type: boolean
         default: false
+      testflight_uploaded_after:
+        description: 'Only for testflight_current_resume: original successful-upload UTC cutoff (YYYY-MM-DDTHH:MM:SSZ). Required; never regenerated or used to upload again.'
+        type: string
+        default: ''
       mobile_profile:
         description: 'standard omits native OCR; public ocr remains blocked. Use android_ocr_draft or ios_ocr_draft for unpublished signed build preparation, or OCR mobile native integration for qualification.'
         type: choice
         options: [standard, ocr]
         default: standard
       platform:
-        description: 'Build all platforms, retry one desktop, upload a current-source IPA without rebuilding, or prepare an unpublished OCR artifact. Upload-only and OCR draft selectors require publish=false and mac_appstore=false.'
+        description: 'Build all platforms, retry one desktop, upload/resume a current-source IPA without rebuilding, or prepare an unpublished OCR artifact. Upload-only and OCR draft selectors require publish=false and mac_appstore=false.'
         type: choice
-        options: [all, windows, macos, testflight, testflight_resume, testflight_current, certificate_audit, android_ocr_draft, ios_ocr_draft]
+        options: [all, windows, macos, testflight, testflight_resume, testflight_current, testflight_current_resume, certificate_audit, android_ocr_draft, ios_ocr_draft]
         default: all
 
 # ── Sibling-repo version pins (single source of truth) ──────────────
@@ -107,7 +111,7 @@ jobs:
           fi
 
   testflight-existing:
-    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.platform == 'testflight_current' || ((inputs.platform == 'testflight' || inputs.platform == 'testflight_resume') && !inputs.publish && !inputs.mac_appstore)) }}
+    if: ${{ github.event_name == 'workflow_dispatch' && ((inputs.platform == 'testflight_current' || inputs.platform == 'testflight_current_resume') || ((inputs.platform == 'testflight' || inputs.platform == 'testflight_resume') && !inputs.publish && !inputs.mac_appstore)) }}
     permissions:
       contents: write # Draft releases require write access; this job never publishes.
     runs-on: macos-15
@@ -126,22 +130,25 @@ jobs:
         with:
           python-version: '3.12'
       - name: Select the exact current-source draft IPA
-        if: inputs.platform == 'testflight_current'
+        if: inputs.platform == 'testflight_current' || inputs.platform == 'testflight_current_resume'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CURRENT_TESTFLIGHT_MODE: ${{ inputs.platform == 'testflight_current_resume' && 'resume' || 'upload' }}
+          ORIGINAL_UPLOAD_TIMESTAMP: ${{ inputs.testflight_uploaded_after || '' }}
         run: |
           set -euo pipefail
           python3 scripts/prepare_testflight_current.py \
             --repo "$GITHUB_REPOSITORY" --source "$(git rev-parse HEAD)" \
             --output "$RUNNER_TEMP/testflight-current" \
             --publish '${{ inputs.publish }}' --mac-appstore '${{ inputs.mac_appstore }}' \
+            --mode "$CURRENT_TESTFLIGHT_MODE" --uploaded-after "$ORIGINAL_UPLOAD_TIMESTAMP" \
             --github-env "$GITHUB_ENV"
       - name: Download and verify the qualified IPA
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          if [ '${{ inputs.platform }}' != testflight_current ]; then
+          if [ '${{ inputs.platform }}' != testflight_current ] && [ '${{ inputs.platform }}' != testflight_current_resume ]; then
             gh release download "v$IPA_VERSION" --repo "$GITHUB_REPOSITORY" --pattern "$IPA_FILE"
           fi
           echo "$IPA_SHA256  $IPA_FILE" | shasum -a 256 -c -
@@ -166,7 +173,9 @@ jobs:
           mkdir -p "$HOME/.appstoreconnect/private_keys"
           printf '%s' "$ASC_KEY_P8_BASE64" | base64 --decode > "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
           chmod 600 "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
-          echo "UPLOADED_AFTER=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_ENV"
+          UPLOAD_CUTOFF=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          echo "UPLOADED_AFTER=$UPLOAD_CUTOFF" >> "$GITHUB_ENV"
+          echo "Original upload UTC cutoff for an explicit resume: $UPLOAD_CUTOFF"
           xcrun altool --upload-package "$IPA_FILE" --type ios \
             --apple-id "$ASC_APP_ID" --bundle-id com.crispstrobe.crispsorter \
             --bundle-version "$BUILD_NUMBER" --bundle-short-version-string "$IPA_VERSION" \
@@ -184,7 +193,7 @@ jobs:
           ASC_KEY_P8_BASE64: ${{ secrets.APPSTORE_API_KEY_P8 }}
           ASC_USES_NON_EXEMPT_ENCRYPTION: 'false'
         run: |
-          python scripts/testflight_distribute.py --platform IOS --mode internal --version "$BUILD_NUMBER" --uploaded-after "$UPLOADED_AFTER" --wait-minutes 35 --notes 'Test library search, cited chat, document review, and mobile navigation.'
+          python scripts/testflight_distribute.py --platform IOS --mode internal --version "$BUILD_NUMBER" --uploaded-after "$UPLOADED_AFTER" --marketing-version "$IPA_VERSION" --wait-minutes 35 --notes 'Test library search, cited chat, document review, and mobile navigation.'
 
   release-draft-preflight:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'android_ocr_draft' || inputs.platform == 'ios_ocr_draft' || (!inputs.mac_appstore && (inputs.platform == 'all' || inputs.platform == 'windows' || inputs.platform == 'macos')) }}
@@ -1820,7 +1829,7 @@ jobs:
     # skipped it entirely, so a tagged release produced no App Store build
     # and therefore nothing for the macOS TestFlight step to distribute —
     # silently, since a skipped job is not a failed one.
-    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mac_appstore && inputs.platform != 'testflight_current' && inputs.platform != 'android_ocr_draft' && inputs.platform != 'ios_ocr_draft')
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mac_appstore && inputs.platform != 'testflight_current' && inputs.platform != 'testflight_current_resume' && inputs.platform != 'android_ocr_draft' && inputs.platform != 'ios_ocr_draft')
             || (github.event_name != 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v')) }}
     permissions:
       contents: write

@@ -5,6 +5,7 @@ Only GitHub reads/downloads occur here. Platform signature verification and ASC
 upload/distribution remain separate workflow steps after successful selection.
 """
 import argparse
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import plistlib
@@ -21,9 +22,25 @@ from check_release_versions import check_versions
 from check_testflight_ipa import check_ipa
 
 
-def prepare(repo, source, project, output, publish=False, mac_appstore=False):
+def resume_timestamp(value):
+    """Accept the original workflow's explicit UTC cutoff; never infer a new one."""
+    if not isinstance(value, str) or not re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z', value):
+        raise ValueError('Resume requires the original upload UTC timestamp in YYYY-MM-DDTHH:MM:SSZ form')
+    timestamp = datetime.strptime(value, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
+    if timestamp > datetime.now(timezone.utc):
+        raise ValueError('Original upload timestamp cannot be in the future')
+    return value
+
+
+def prepare(repo, source, project, output, publish=False, mac_appstore=False, mode='upload', uploaded_after=None):
     if publish is not False or mac_appstore is not False:
         raise ValueError('Current-source TestFlight requires publish=false and mac_appstore=false')
+    if mode not in ('upload', 'resume'):
+        raise ValueError('Current-source TestFlight mode must be upload or resume')
+    if mode == 'resume':
+        uploaded_after = resume_timestamp(uploaded_after)
+    elif uploaded_after:
+        raise ValueError('An original upload timestamp is accepted only in resume mode')
     version = check_versions(project)
     tag = 'v' + version
     validate_release_target(repo, tag, source)
@@ -75,13 +92,17 @@ def prepare(repo, source, project, output, publish=False, mac_appstore=False):
         output.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ipa, output / filename)
         shutil.copyfile(receipt_path, output / receipt_name)
-    selection = {**identity, 'source': source, 'tag': tag, 'ipa': str(output / filename), 'receipt': receipt_name}
+    selection = {**identity, 'mode': mode, 'source': source, 'tag': tag, 'ipa': str(output / filename), 'receipt': receipt_name}
+    if mode == 'resume':
+        selection['uploaded_after'] = uploaded_after
     (output / 'selection.json').write_text(json.dumps(selection, indent=2) + '\n')
     return selection
 
 
 def write_environment(selection, destination):
     values = {'IPA_VERSION': selection['version'], 'IPA_FILE': selection['ipa'], 'IPA_SHA256': selection['sha256']}
+    if selection.get('mode') == 'resume':
+        values['UPLOADED_AFTER'] = resume_timestamp(selection.get('uploaded_after'))
     if any('\n' in value or '\r' in value for value in values.values()):
         raise ValueError('Invalid upload selection environment value')
     with Path(destination).open('a') as stream:
@@ -97,11 +118,13 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--publish', choices=['true', 'false'], required=True)
     parser.add_argument('--mac-appstore', choices=['true', 'false'], required=True)
+    parser.add_argument('--mode', choices=['upload', 'resume'], default='upload')
+    parser.add_argument('--uploaded-after', default=None, help='Original upload UTC cutoff; required only for resume')
     parser.add_argument('--github-env', type=Path)
     args = parser.parse_args()
     try:
         selection = prepare(args.repo, args.source, args.project, args.output,
-                            args.publish == 'true', args.mac_appstore == 'true')
+                            args.publish == 'true', args.mac_appstore == 'true', args.mode, args.uploaded_after)
         if args.github_env:
             write_environment(selection, args.github_env)
     except (OSError, RuntimeError, ValueError, KeyError, TypeError, subprocess.SubprocessError,

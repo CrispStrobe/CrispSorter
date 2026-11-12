@@ -47,6 +47,50 @@ class BuildSelection(unittest.TestCase):
                         self.select(platform, [build])
 
 
+class ExactMarketingVersion(unittest.TestCase):
+    def select(self, builds, included):
+        class FakeASC:
+            def get(self, path):
+                return {'data': builds, 'included': included}, 200
+        with patch.object(distribution.time, 'sleep', side_effect=AssertionError('unexpected wait')):
+            return distribution.latest_build(FakeASC(), 'app', 'IOS', version='42', wait_minutes=-1,
+                uploaded_after='2026-11-12T12:00:00Z', marketing_version='0.15.1')
+
+    @staticmethod
+    def build(identifier, app_version_id):
+        return {'id': identifier, 'attributes': {'version': '42', 'processingState': 'VALID',
+            'uploadedDate': '2026-11-12T12:01:00Z'},
+            'relationships': {'preReleaseVersion': {'data': {'id': app_version_id}}}}
+
+    def test_reused_build_number_in_another_marketing_version_is_not_selected(self):
+        builds = [self.build('other-version', 'other'), self.build('exact', 'current')]
+        included = [{'type': 'preReleaseVersions', 'id': 'other', 'attributes': {'version': '0.15.2'}},
+                    {'type': 'preReleaseVersions', 'id': 'current', 'attributes': {'version': '0.15.1'}}]
+        self.assertEqual(self.select(builds, included)['id'], 'exact')
+
+    def test_unrelated_or_missing_marketing_identity_fails_closed(self):
+        for included in [[], [{'type': 'preReleaseVersions', 'id': 'other', 'attributes': {'version': '0.15.2'}}]]:
+            with self.subTest(included=included), self.assertRaisesRegex(SystemExit, 'no VALID build'):
+                self.select([self.build('other-version', 'other')], included)
+
+    def test_marketing_constraint_without_cutoff_still_requires_attributes_build_number(self):
+        class FakeASC:
+            def get(self, path):
+                self.query = parse_qs(urlsplit(path).query)
+                return {'data': [ExactMarketingVersion.build('same-semver-only', 'current')],
+                    'included': [{'type': 'preReleaseVersions', 'id': 'current',
+                                  'attributes': {'version': '0.15.1'}}]}, 200
+        asc = FakeASC()
+        with self.assertRaisesRegex(SystemExit, 'no VALID build'):
+            distribution.latest_build(asc, 'app', 'IOS', version='0.15.1',
+                wait_minutes=-1, marketing_version='0.15.1')
+        self.assertEqual(asc.query['filter[version]'], ['0.15.1'])
+
+    def test_marketing_version_without_exact_build_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'exact build number'):
+            distribution.latest_build(None, 'app', 'IOS', marketing_version='0.15.1')
+
+
 class WorkflowBinding(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

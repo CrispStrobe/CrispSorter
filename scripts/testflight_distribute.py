@@ -168,7 +168,7 @@ def errors_of(payload):
 
 
 # ── Steps ───────────────────────────────────────────────────────────────
-def latest_build(asc, app_id, platform, version=None, wait_minutes=25, uploaded_after=None):
+def latest_build(asc, app_id, platform, version=None, wait_minutes=25, uploaded_after=None, marketing_version=None):
     """The newest build for this app+platform, waited until it is VALID.
 
     Apple processes an upload asynchronously; a build in PROCESSING cannot be
@@ -191,6 +191,11 @@ def latest_build(asc, app_id, platform, version=None, wait_minutes=25, uploaded_
     and distributed the older binary while reporting success. Build numbers
     are unique per upload; semvers are not.
     """
+    if marketing_version and not version:
+        raise ValueError('A marketing-version constraint requires an exact build number')
+    # Build numbers may repeat across marketing versions. Resume callers bind
+    # both identities and their original upload cutoff; missing relationship
+    # evidence must never fall back to another version with the same number.
     params = {
         "filter[app]": app_id,
         "filter[preReleaseVersion.platform]": platform,
@@ -207,7 +212,7 @@ def latest_build(asc, app_id, platform, version=None, wait_minutes=25, uploaded_
         "include": "preReleaseVersion",
         "fields[preReleaseVersions]": "version,platform",
     }
-    if uploaded_after:
+    if uploaded_after or marketing_version:
         params['filter[version]'] = version
         params['sort'] = '-uploadedDate'
     q = urllib.parse.urlencode(params)
@@ -251,11 +256,13 @@ def latest_build(asc, app_id, platform, version=None, wait_minutes=25, uploaded_
             cutoff = parse_timestamp(uploaded_after)
             builds = [b for b in builds if b['attributes'].get('uploadedDate')
                       and parse_timestamp(b['attributes']['uploadedDate']) >= cutoff]
-        if version and uploaded_after:
+        if version and (uploaded_after or marketing_version):
             builds = [b for b in builds if b['attributes'].get('version') == version]
         elif version:
             builds = [b for b in builds
                       if version in (b["attributes"].get("version"), semver_of(b))]
+        if marketing_version:
+            builds = [b for b in builds if semver_of(b) == marketing_version]
         if builds:
             b = builds[0]
             state = b["attributes"].get("processingState")
@@ -502,6 +509,7 @@ def main():
     ap.add_argument("--version", default=None, help="build version to target (default: newest)")
     ap.add_argument("--notes", default=None, help="'what to test' text")
     ap.add_argument("--wait-minutes", type=int, default=25)
+    ap.add_argument("--marketing-version", default=None, help="Require this exact app marketing version in addition to the build number")
     ap.add_argument("--uploaded-after", default=None, help="ISO UTC timestamp; require an exact build number uploaded at or after this time")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
@@ -530,7 +538,9 @@ def main():
     log("1. locating the build")
     if args.uploaded_after and not args.version:
         sys.exit('--uploaded-after requires an exact --version build number')
-    build = latest_build(asc, app_id, args.platform, args.version, args.wait_minutes, args.uploaded_after)
+    if args.marketing_version and not args.version:
+        sys.exit('--marketing-version requires an exact --version build number')
+    build = latest_build(asc, app_id, args.platform, args.version, args.wait_minutes, args.uploaded_after, args.marketing_version)
     build_id = build["id"]
 
     log("2. export compliance")
