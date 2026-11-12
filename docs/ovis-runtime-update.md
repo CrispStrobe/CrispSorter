@@ -303,3 +303,12 @@ path's snapshot work, and language is queried only for consumers that use it;
 mapped f32 boxes receive a second finite/positive-area/bounds check after endpoint arithmetic. Full app/package compilation, actual native
 schema/error behavior, worker/crop integration and OCR quality remain unqualified.
 This contract does not satisfy immutable runtime release or consumer gates.
+
+The [packaged desktop consumer run](https://github.com/CrispStrobe/CrispEmbed/actions/runs/43309558037)
+passed the model-free native and Rust failure/legacy-empty controls on Linux
+x86_64, Linux arm64 and macOS arm64 using the verified candidate archives. The
+Windows job failed before loading the archive because its checkout line endings
+did not match the committed controller bytes; it is not a Windows runtime
+result. A targeted checkout fix and Windows-only rerun are required. None of
+these controls establishes decoded OCR, a positively recognized blank page,
+CrispSorter application behavior or GPU execution.
