@@ -356,7 +356,7 @@ impl CloudDrive for NativeInternxtDrive {
     fn receipt_trash(&self) -> Option<&dyn super::trash_receipts::ReceiptTrash> {
         // The pinned SDK provides the tested one-shot receipt transport.
         // Legacy path-based restore remains separately disabled.
-        Some(self)
+        if super::trash_receipts::platform_durability_supported() { Some(self) } else { None }
     }
 
     fn capabilities(&self) -> DriveCapabilities {
@@ -371,7 +371,7 @@ impl CloudDrive for NativeInternxtDrive {
             // The provider has a UUID restore API, but the app's path-only
             // delete/restore contract cannot safely identify its trash item.
             reversible_trash: false,
-            trash_receipts: true,
+            trash_receipts: super::trash_receipts::platform_durability_supported(),
             ..DriveCapabilities::basic()
         }
     }
@@ -600,6 +600,14 @@ impl super::trash_receipts::ReceiptTrash for NativeInternxtDrive {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn receipt_capability_requires_platform_directory_durability_without_network() {
+        let drive = NativeInternxtDrive::from_keychain("Native Internxt", "trash-platform-test");
+        assert_eq!(drive.capabilities().trash_receipts, cfg!(unix));
+        assert_eq!(drive.receipt_trash().is_some(), cfg!(unix));
+        assert!(!drive.clients.is_cached());
+    }
 
     #[test]
     fn path_only_restore_is_refused_without_credentials_or_network() {

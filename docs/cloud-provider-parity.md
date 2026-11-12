@@ -173,7 +173,12 @@ provider app when observation cannot establish completion. This avoids issuing
 another mutation when a remote request may still have completed. Directory
 fsync includes the journal's parent entry on first creation on Unix; oversized
 serialized receipts are rejected before remote deletion. Power-loss and physical-
-crash behavior have not been tested on any platform. Windows/mobile durability,
+crash behavior have not been tested on any platform.
+The journal and receipt-specific Internxt capability are disabled on non-Unix
+targets: directory-entry persistence is not implemented there, so a receipt
+cannot authorize remote deletion or restoration. Unix behavior is unchanged;
+mobile Unix targets execute the fsync protocol but remain unqualified for
+device crash durability. Windows/mobile durability,
 full Tauri execution and live provider accounts remain unqualified. Provider APIs offer no cross-client
 transaction/CAS around the last validation and mutation, so concurrent remote
 changes can still produce a refused/uncertain outcome requiring recheck.

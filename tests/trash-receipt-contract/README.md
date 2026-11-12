@@ -18,6 +18,16 @@ recovery after uncertain delete/restore responses. The SDK wire protocol remains
 the native provider crate; this gate does not claim full application compilation
 or live service qualification.
 
+The receipt journal and Internxt receipt capability fail closed on non-Unix
+platforms because directory-entry persistence is not implemented there. The
+Unix mutation fixture suite retains its existing behavior. On non-Unix targets,
+a production-journal test verifies refusal before journal creation, and the
+source-selected native adapter capability test checks that it exposes neither
+receipt capability nor an adapter. The lightweight receipt workflow stages both
+Linux and Windows controls with source/tree/file hashes and retained logs.
+Mobile Unix targets execute the fsync protocol but still require
+their own crash-durability and application qualification.
+
 ```sh
 CARGO_BUILD_JOBS=1 cargo test --offline --locked --manifest-path tests/trash-receipt-contract/Cargo.toml
 ```

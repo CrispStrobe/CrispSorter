@@ -1,5 +1,20 @@
 # CrispSorter — Development Plan
 
+## Non-Unix receipt durability admission — 12 November 2026
+
+At source `26cfd7ca`, Internxt advertised durable trash receipts on every
+platform while journal directory-entry fsync was implemented only on Unix.
+The follow-up refuses journal opening and receipt adapter/capability exposure
+on non-Unix targets before a remote mutation can be authorized. Unix behavior
+is unchanged. The native credential-free capability control covers the target
+boundary; a non-Unix journal test requires refusal before directory creation.
+The narrow receipt workflow stages Linux journal tests and Windows refusal/
+adapter-capability controls with source-bound evidence; execution remains pending.
+All receipt IPC mutation paths open the gated store before obtaining a provider;
+legacy ordinary deletion remains independent of the receipt workflow.
+Unix/mobile physical
+crash durability and full application qualification remain separate gates.
+
 ## Experimental CC recognition crops — 12 November 2026
 
 [Automatic app check 43290895137](https://github.com/CrispStrobe/CrispSorter/actions/runs/43290895137)

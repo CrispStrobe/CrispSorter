@@ -1,0 +1,68 @@
+name: Durable trash receipt contracts
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - src-tauri/src/drives/trash_receipts.rs
+      - src-tauri/src/drives/internxt_native_drive.rs
+      - src-tauri/src/drives/filesystem.rs
+      - tests/trash-receipt-contract/**
+      - .github/workflows/trash-receipt-contract.yml
+
+permissions:
+  contents: read
+
+jobs:
+  receipt-contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      CARGO_BUILD_JOBS: 2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Seal source identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p test-results
+          python - <<'PY'
+          import hashlib, json, pathlib, subprocess
+          paths = ['src-tauri/src/drives/trash_receipts.rs',
+                   'src-tauri/src/drives/internxt_native_drive.rs',
+                   'src-tauri/src/drives/filesystem.rs',
+                   'tests/trash-receipt-contract/Cargo.toml',
+                   'tests/trash-receipt-contract/Cargo.lock',
+                   'tests/trash-receipt-contract/build.rs',
+                   'tests/trash-receipt-contract/lib.rs']
+          git = lambda *args: subprocess.check_output(['git', *args], text=True).strip()
+          for path in paths:
+              committed = subprocess.check_output(['git', 'show', 'HEAD:' + path])
+              if pathlib.Path(path).read_bytes() != committed:
+                  raise ValueError('Contract source differs from its committed blob: ' + path)
+          receipt = {'source_commit': git('rev-parse', 'HEAD'),
+                     'source_tree': git('rev-parse', 'HEAD^{tree}'),
+                     'files': {p: hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest() for p in paths},
+                     'git_blobs': {p: git('rev-parse', 'HEAD:' + p) for p in paths},
+                     'native_model_inference': False, 'live_provider_execution': False}
+          pathlib.Path('test-results/source.json').write_text(json.dumps(receipt, indent=2) + '\n')
+          PY
+          rustc --version --verbose > test-results/rustc.txt
+      - name: Test Unix journal or Windows refusal without provider credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked --manifest-path tests/trash-receipt-contract/Cargo.toml -- --test-threads=1 2>&1 | tee test-results/receipt-contract.log
+      - name: Retain source-bound contract evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trash-receipt-contract-${{ matrix.os }}
+          path: test-results/
+          if-no-files-found: error
+          retention-days: 30

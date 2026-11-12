@@ -152,6 +152,7 @@ mod adapter {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn exact_object_survives_restart_and_same_name_trash_never_substitutes() {
         let dir = tempfile::tempdir().unwrap();
@@ -191,6 +192,7 @@ mod adapter {
         assert_eq!(remote.folders["folder-a"][0].uuid, "object-a");
     }
 
+    #[cfg(unix)]
     #[test]
     fn cross_drive_account_endpoint_and_root_mismatches_never_mutate() {
         let dir = tempfile::tempdir().unwrap();
@@ -230,6 +232,7 @@ mod adapter {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn lost_delete_response_recovers_by_observation_without_another_delete() {
         let dir = tempfile::tempdir().unwrap();
@@ -259,6 +262,7 @@ mod adapter {
         reopened.restore(&provider, "drive-a", &receipt.id).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn lost_restore_response_is_reconciled_without_replaying_mutation() {
         let dir = tempfile::tempdir().unwrap();
@@ -285,6 +289,7 @@ mod adapter {
         assert_eq!(provider.client.0.lock().unwrap().restores, 1);
     }
 
+    #[cfg(unix)]
     #[test]
     fn changed_uuid_kind_name_parent_and_destination_collision_fail_closed() {
         for change in ["uuid", "kind", "name", "parent", "collision"] {
@@ -324,6 +329,7 @@ mod adapter {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn ambiguous_source_and_failed_journal_never_delete() {
         let dir = tempfile::tempdir().unwrap();
@@ -368,6 +374,7 @@ mod adapter {
         assert_eq!(provider.client.0.lock().unwrap().deletes, 0);
     }
 
+    #[cfg(unix)]
     #[test]
     fn legacy_paths_and_arbitrary_receipt_ids_cannot_restore() {
         let dir = tempfile::tempdir().unwrap();
@@ -383,6 +390,7 @@ mod adapter {
         }
         assert_eq!(provider.client.0.lock().unwrap().restores, 0);
     }
+    #[cfg(unix)]
     #[test]
     fn pre_mutation_crashes_reconcile_without_replaying_delete_or_restore() {
         let dir = tempfile::tempdir().unwrap();
@@ -428,6 +436,7 @@ mod adapter {
         assert_eq!(provider.client.0.lock().unwrap().restores, 0);
     }
 
+    #[cfg(unix)]
     #[test]
     fn concurrent_restore_uses_a_single_durable_claim() {
         let dir = tempfile::tempdir().unwrap();
@@ -463,6 +472,7 @@ mod adapter {
         assert_eq!(provider.client.0.lock().unwrap().restores, 1);
     }
 
+    #[cfg(unix)]
     #[test]
     fn directory_receipts_preserve_object_kind_and_private_file_permissions() {
         let dir = tempfile::tempdir().unwrap();
@@ -498,6 +508,7 @@ mod adapter {
             }
         }
     }
+    #[cfg(unix)]
     #[test]
     fn incomplete_provider_trash_metadata_fails_closed() {
         let dir = tempfile::tempdir().unwrap();
@@ -519,10 +530,11 @@ mod adapter {
     #[test]
     fn app_exposes_receipt_restore_separately_from_legacy_path_restore() {
         let provider = drive();
-        assert!(provider.capabilities().trash_receipts);
+        assert_eq!(provider.capabilities().trash_receipts, cfg!(unix));
         assert!(!provider.capabilities().reversible_trash);
-        assert!(provider.receipt_trash().is_some());
+        assert_eq!(provider.receipt_trash().is_some(), cfg!(unix));
     }
+    #[cfg(unix)]
     #[test]
     fn reconcile_cannot_terminally_classify_an_in_flight_delete() {
         let dir = tempfile::tempdir().unwrap();
@@ -570,6 +582,7 @@ mod adapter {
         assert_eq!(provider.client.0.lock().unwrap().deletes, 1);
     }
 
+    #[cfg(unix)]
     #[test]
     fn reconcile_success_before_delete_response_is_idempotently_confirmed() {
         let dir = tempfile::tempdir().unwrap();
@@ -619,6 +632,7 @@ mod adapter {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn oversized_serialized_receipt_is_rejected_before_remote_deletion() {
         let dir = tempfile::tempdir().unwrap();

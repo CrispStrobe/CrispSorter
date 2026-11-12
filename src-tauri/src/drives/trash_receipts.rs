@@ -59,8 +59,18 @@ pub struct ReceiptStore {
     root: PathBuf,
 }
 
+/// The journal protocol requires directory-entry persistence before mutation.
+/// Only the Unix implementation currently performs the required directory fsync.
+pub fn platform_durability_supported() -> bool {
+    cfg!(unix)
+}
+
 impl ReceiptStore {
     pub fn open(data_dir: &Path) -> Result<Self> {
+        anyhow::ensure!(
+            platform_durability_supported(),
+            "durable trash receipts are unavailable on this platform; provider mutations are disabled"
+        );
         anyhow::ensure!(
             fs::metadata(data_dir)?.is_dir(),
             "application data directory is required"
@@ -273,6 +283,24 @@ impl ReceiptStore {
             _ => {}
         }
         Ok(self.summary(&receipt))
+    }
+}
+
+#[cfg(all(test, not(unix)))]
+mod platform_tests {
+    use super::*;
+
+    #[test]
+    fn unsupported_platform_refuses_the_journal_before_any_remote_authorization() {
+        let directory = tempfile::tempdir().unwrap();
+        assert!(!platform_durability_supported());
+        let error = ReceiptStore::open(directory.path())
+            .err()
+            .expect("journal must be refused");
+        assert!(error
+            .to_string()
+            .contains("provider mutations are disabled"));
+        assert!(!directory.path().join("trash-receipts").exists());
     }
 }
 
