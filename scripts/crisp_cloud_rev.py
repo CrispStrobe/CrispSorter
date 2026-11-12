@@ -48,6 +48,8 @@ def lock_revs(text):
         match = re.fullmatch(rf'git\+{re.escape(REPO)}\?rev=([0-9a-f]+)#([0-9a-f]{{40}})', source.group(1))
         if not match:
             raise SystemExit(f"Cargo.lock: unexpected source for {name.group(1)}: {source.group(1)}")
+        if match.group(1) != match.group(2):
+            raise SystemExit(f"Cargo.lock: requested and resolved revisions differ for {name.group(1)}")
         revs[name.group(1)] = match.group(2)
     missing = [package for package in PACKAGES if package not in revs]
     if missing:
@@ -60,8 +62,8 @@ def main():
     parser.add_argument("--root", default=Path(__file__).resolve().parent.parent, type=Path)
     parser.add_argument("--github-output", action="store_true")
     args = parser.parse_args()
-    manifest = manifest_revs((args.root / "src-tauri/Cargo.toml").read_text())
-    lock = lock_revs((args.root / "Cargo.lock").read_text())
+    manifest = manifest_revs((args.root / "src-tauri/Cargo.toml").read_text(encoding="utf-8"))
+    lock = lock_revs((args.root / "Cargo.lock").read_text(encoding="utf-8"))
     revs = set(manifest.values()) | set(lock.values())
     if len(revs) != 1:
         raise SystemExit(f"crisp-cloud-rs revisions disagree: manifest={manifest} lock={lock}")
