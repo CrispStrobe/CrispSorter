@@ -17,6 +17,15 @@ source checkout or package/token access. The replay selector is explicitly exclu
 from the App Store job even when `mac_appstore=true`; every unrelated build,
 signing and publication job stays excluded. No concurrency block is added or changed.
 
+The replay job alone requests `contents: write`: GitHub hides draft releases
+from callers without push access, even though published-release reads accept
+read permission. See [GitHub's release API documentation](https://docs.github.com/en/rest/releases/releases#list-releases).
+The initial read-scoped replay failed its first lookup while the exact draft was
+still present. This permission enables draft visibility; helper GitHub operations
+remain GET/list/view/download only. Both checkouts disable persisted credentials,
+and the packaged application receives no GitHub token. No other job permission
+is changed.
+
 Before execution, the helper dynamically verifies the unique unpublished
 `v0.15.1` draft, exact original target/tag, and both exact asset names, byte
 counts and SHA-256 digests. Downloaded bytes must independently match those

@@ -1,3 +1,4 @@
+import ast
 import copy
 import hashlib
 import io
@@ -640,6 +641,99 @@ class ReplayTests(unittest.TestCase):
             replay_job.index("guard(os.environ)"), replay_job.index("GH_TOKEN:")
         )
 
+    def test_draft_visibility_permission_is_job_local_and_gh_calls_remain_read_only(
+        self,
+    ):
+        workflow = (ROOT / ".github/workflows/release.yml").read_text()
+        before = subprocess.check_output(
+            [
+                "git",
+                "-C",
+                str(ROOT),
+                "show",
+                "origin/main:.github/workflows/release.yml",
+            ],
+            text=True,
+        )
+
+        def jobs(text):
+            return dict(
+                re.findall(
+                    r"^  ([A-Za-z0-9_-]+):\n(.*?)(?=^  [A-Za-z0-9_-]+:|\Z)",
+                    text.split("jobs:\n", 1)[1],
+                    re.M | re.S,
+                )
+            )
+
+        current, original = jobs(workflow), jobs(before)
+        replay_job = current["macos-package-validation-replay"]
+        self.assertIn("permissions:\n      contents: write", replay_job)
+        self.assertEqual(replay_job.count("GH_TOKEN:"), 1)
+        self.assertEqual(replay_job.count("persist-credentials: false"), 2)
+        for name, body in original.items():
+            permissions = re.search(r"^    permissions:\n(?:^      .*\n)*", body, re.M)
+            actual = re.search(
+                r"^    permissions:\n(?:^      .*\n)*", current[name], re.M
+            )
+            self.assertEqual(
+                actual.group() if actual else None,
+                permissions.group() if permissions else None,
+                name,
+            )
+        helper = ast.parse(
+            (ROOT / "scripts/replay_macos_package_validation.py").read_text()
+        )
+        observed = set()
+        for node in ast.walk(helper):
+            if (
+                not isinstance(node, ast.Call)
+                or not node.args
+                or not isinstance(node.args[0], ast.List)
+            ):
+                continue
+            args = node.args[0].elts
+            constants = [
+                arg.value
+                for arg in args
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+            ]
+            if not constants or constants[0] != "gh":
+                continue
+            self.assertTrue(
+                constants[:2] == ["gh", "api"]
+                or constants[:3] == ["gh", "release", "download"]
+            )
+            self.assertFalse(
+                set(constants)
+                & {"-X", "--method", "-f", "--field", "-F", "--raw-field", "--input"}
+            )
+            observed.add(tuple(constants[:3]))
+        self.assertIn(("gh", "release", "download"), observed)
+        self.assertTrue(any(prefix[:2] == ("gh", "api") for prefix in observed))
+        target = ast.parse((ROOT / "scripts/check_release_target.py").read_text())
+        for node in ast.walk(target):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "gh"
+            ):
+                constants = [
+                    arg.value for arg in node.args if isinstance(arg, ast.Constant)
+                ]
+                self.assertTrue(
+                    constants[:2] == ["release", "view"] or constants[:1] == ["api"]
+                )
+        with patch.dict(
+            r.os.environ,
+            {
+                "GH_TOKEN": "credential-must-not-reach-app",
+                "HTTPS_PROXY": "private-proxy",
+            },
+        ):
+            env = r.app_env(self.root / "credential-free-home")
+        self.assertNotIn("GH_TOKEN", env)
+        self.assertNotIn("HTTPS_PROXY", env)
+
     def test_workflow_no_build_sign_publish_or_concurrency_changes(self):
         text = (ROOT / ".github/workflows/release.yml").read_text()
         job = text.split("  macos-package-validation-replay:", 1)[1].split(
@@ -649,7 +743,7 @@ class ReplayTests(unittest.TestCase):
             "inputs.platform == 'macos_validate_b739'",
             "Reject contradictory replay flags",
             "guard(os.environ)",
-            "contents: read",
+            "contents: write",
             "if: always()",
             "persist-credentials: false",
             r.SOURCE,

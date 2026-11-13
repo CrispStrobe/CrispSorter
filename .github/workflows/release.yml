@@ -1142,8 +1142,10 @@ jobs:
   macos-package-validation-replay:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.platform == 'macos_validate_b739' }}
     runs-on: macos-15
+    # GitHub hides draft releases from tokens without push access. The helper
+    # uses only release reads/downloads; this grants visibility, not a write step.
     permissions:
-      contents: read
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
