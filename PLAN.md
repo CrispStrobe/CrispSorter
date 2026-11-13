@@ -14,8 +14,9 @@ they do not add approval or evidence requirements to normal retries.
 
 - Version 0.15.4 remains an unpublished standard release. The Linux retry and
   signed Android/iOS builds succeeded, and the iOS build was assigned to internal
-  TestFlight. A Windows retry is building; a focused macOS package diagnostic
-  is queued after the previous retry failed. Standard mobile packages
+  TestFlight. The Windows retry passed its package checks, and a focused macOS
+  package diagnostic passed after provisioning OCR models. A macOS release
+  rebuild is being retried. Standard mobile packages
   do not include native OCR. Windows and macOS desktop packages cannot be signed
   until the corresponding private signing keys are available.
 - Manual cloud pulls retain directory handles from root capture through queued
