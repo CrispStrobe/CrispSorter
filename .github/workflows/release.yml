@@ -1020,23 +1020,6 @@ jobs:
             fi
           done
 
-      - name: Released-model OCR smoke through app bindings (Linux)
-        if: runner.os == 'Linux'
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_BUILD_ARGS: ${{ matrix.tauri_args }}
-          CRISPSORTER_OCR_RECEIPT: ${{ github.workspace }}/CrispSorter_linux-x86_64.ocr.json
-          QWEN2VL_OCR_FORCE_CPU: '1'
-          MATH_OCR_FORCE_CPU: '1'
-          RUST_MIN_STACK: '16777216'
-        run: |
-          set -euo pipefail
-          FEATURES=$(python -c 'import os,shlex; args=shlex.split(os.environ["TAURI_BUILD_ARGS"]); print(args[args.index("--features")+1])')
-          cargo test -p crispsorter --release --lib --features "$FEATURES" ocr_task_presets_live -- --ignored --nocapture --test-threads=1
-          VERSION=$(python -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')
-          gh release upload "v$VERSION" CrispSorter_linux-x86_64.ocr.json --clobber
-
       - name: Verify final packages and attach source/checksum receipts
         shell: bash
         env:
@@ -1046,6 +1029,29 @@ jobs:
           python scripts/verify_release_artifacts.py --platform '${{ matrix.qualification_platform }}'
           VERSION=$(python -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')
           gh release upload "v$VERSION" "CrispSorter_${VERSION}_${{ matrix.qualification_platform }}.receipt.json" "CrispSorter_${VERSION}_${{ matrix.qualification_platform }}.sha256" --clobber
+
+      # Package verification uses permissive DBNet/TrOCR only. Licensed presets
+      # remain a separate mandatory gate for tag/publication-intended builds.
+      # No workflow step grants consent; without it, publication still fails.
+      - name: Qualify licensed OCR presets before publication (Linux)
+        if: runner.os == 'Linux' && (github.event_name != 'workflow_dispatch' || inputs.publish)
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_BUILD_ARGS: ${{ matrix.tauri_args }}
+          CRISPSORTER_OCR_RECEIPT: ${{ runner.temp }}/linux-native-ocr-smoke.json
+          QWEN2VL_OCR_FORCE_CPU: '1'
+          MATH_OCR_FORCE_CPU: '1'
+          RUST_MIN_STACK: '16777216'
+        run: |
+          set -euo pipefail
+          rm -f "$CRISPSORTER_OCR_RECEIPT"
+          FEATURES=$(python -c 'import os,shlex; args=shlex.split(os.environ["TAURI_BUILD_ARGS"]); print(args[args.index("--features")+1])')
+          cargo test -p crispsorter --release --lib --features "$FEATURES" ocr_task_presets_live -- --ignored --nocapture --test-threads=1
+          VERSION=$(python -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')
+          python scripts/release_ocr_qualification.py --receipt "CrispSorter_${VERSION}_linux-x86_64.receipt.json" \
+            --native-smoke "$CRISPSORTER_OCR_RECEIPT" --output "CrispSorter_${VERSION}_linux-x86_64.ocr.json"
+          gh release upload "v$VERSION" "CrispSorter_${VERSION}_linux-x86_64.ocr.json" --clobber
 
       - name: Remove temporary desktop signing credentials
         if: always() && (runner.os == 'macOS' || runner.os == 'Windows')
