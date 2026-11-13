@@ -29,14 +29,17 @@
 //! when the trait method is called from `tauri::command`s, because
 //! Tauri commands run on a worker thread.
 
+#[path = "webdav_delta_download.rs"]
+mod delta_download;
+
 #[path = "webdav_range.rs"]
 mod range_response;
 
 use anyhow::{anyhow, Context, Result};
 use quick_xml::events::Event;
 use quick_xml::Reader;
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::time::Duration;
 
@@ -367,6 +370,8 @@ impl WebDavDrive {
 
     /// Download only blocks that differ from an existing local file through
     /// WebDAV Range GET, using the server-app block map as the remote truth.
+    /// Ranges are staged and verified before in-place writes. Local commit
+    /// errors/concurrent writes may still leave partial changes; this is not atomic.
     pub fn delta_download_file(
         &self,
         remote_path: &Path,
@@ -375,27 +380,16 @@ impl WebDavDrive {
         let Some(remote_map) = self.fetch_delta_map(remote_path)? else {
             return Ok(None);
         };
-        if !local_path.exists() {
-            return Ok(None);
-        }
         let remote = Self::blockmap_from_server(&remote_map)?;
-        let local = crate::sync::delta::compute_local_blockmap_against(local_path, &remote)?;
-        let changed = crate::sync::delta::diff_blockmaps(&remote, &local)?;
-        let mut file = OpenOptions::new().read(true).write(true).open(local_path)?;
-        let mut transferred_bytes = 0;
-        for block in &changed {
-            let end = block.offset + block.size as u64 - 1;
-            let data = self.read_range(remote_path, block.offset, end)?;
-            if data.len() != block.size as usize {
-                return Err(anyhow!("range response size mismatch at {}", block.offset));
-            }
-            file.seek(SeekFrom::Start(block.offset))?;
-            file.write_all(&data)?;
-            transferred_bytes += block.size as u64;
-        }
-        file.set_len(remote.file_size)?;
+        let Some((changed_blocks, transferred_bytes)) =
+            delta_download::download(local_path, &remote, |start, end| {
+                self.read_range(remote_path, start, end)
+            })?
+        else {
+            return Ok(None);
+        };
         Ok(Some(DeltaTransferResult {
-            changed_blocks: changed.len(),
+            changed_blocks,
             total_blocks: remote.blocks.len(),
             transferred_bytes,
             total_bytes: remote.file_size,

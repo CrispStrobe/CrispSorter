@@ -14,13 +14,15 @@ they do not add approval or evidence requirements to normal retries.
 
 - Version 0.15.4 remains an unpublished standard release. The Linux retry and
   signed Android/iOS builds succeeded, and the iOS build was assigned to internal
-  TestFlight. macOS and Windows retries are in progress. Standard mobile packages
+  TestFlight. A Windows retry is building; a focused macOS package diagnostic
+  is queued after the previous retry failed. Standard mobile packages
   do not include native OCR. Windows and macOS desktop packages cannot be signed
   until the corresponding private signing keys are available.
-- Manual cloud pulls now avoid retrying uncertain writes and use the best known
-  file size when a provider listing is stale. Concurrent replacement of an
-  ancestor directory remains a security limitation: resolving it requires
-  platform-specific handle-based publication, not another pathname check.
+- Manual cloud pulls retain directory handles from root capture through queued
+  staging and publication, so replacing an ancestor cannot redirect writes.
+  Native Linux, macOS and Windows tests passed, including a Windows UNC case.
+  Another writer can still replace entries inside the held directory; an
+  uncertain Windows rename can leave a temporary file.
 - A real Qwen2.5-VL-3B CPU smoke passed one multilingual fixture. The accepted
   Qwen Research License covers internal non-commercial evaluation only; this
   result does not qualify a wider corpus, mobile, GPU or commercial release.

@@ -456,5 +456,10 @@ lengths fail before bytes reach the caller. Requests use a separate proxied,
 authenticated client with response decoders disabled and identity encoding;
 ordinary WebDAV requests retain their existing decoding behavior. Oversized
 bodies are read only through the declared span plus one byte. HTTP 416 remains
-an error. These checks do not make the existing in-place delta patch atomic if
-a later block fails; atomic delta replacement remains a separate follow-up.
+an error. Delta downloads now fetch and verify all changed ranges in a private disk stage
+before writing the original open file. A later HTTP/range/checksum failure leaves
+that file unchanged. Commit retains the existing inode and hardlink/metadata
+semantics; local write errors, process interruption or concurrent edits during
+commit can still leave partial changes. This is not atomic replacement. Initial
+pathname resolution remains subject to concurrent namespace changes; after open,
+commit follows the held file object even if moved.
