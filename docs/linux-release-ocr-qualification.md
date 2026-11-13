@@ -79,7 +79,8 @@ graph. Changed draft assets or tampered/incomplete retained evidence fail closed
 The reviewed evidence lock anchors these local operator observations; it is not
 a third-party build or execution attestation.
 
-The user declined the Qwen test. Leave it unrun and do not set its license
-acceptance; the Qwen-dependent publication qualification remains open unless the
-user later changes that decision. The separate permissive-model package
-observation does not satisfy that gate.
+The user authorized the Qwen2.5-VL-3B smoke test for internal non-commercial
+evaluation under the Qwen Research License. Record that limited scope alongside
+any test evidence; do not imply permission for other uses. The Qwen-dependent
+publication qualification remains open until its separately scoped test passes.
+The permissive-model package observation alone does not satisfy that gate.
