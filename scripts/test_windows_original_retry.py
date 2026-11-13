@@ -60,6 +60,8 @@ class WindowsRetryTests(unittest.TestCase):
         self.assertEqual(proof['app_source'], SOURCE)
         self.assertEqual(proof['workflow_source'], 'a' * 40)
         self.assertEqual(proof['version'], '0.15.1')
+        self.assertEqual(proof['cargo_lock']['original_sha256'], self.pin['files']['Cargo.lock'])
+        self.assertEqual(proof['cargo_lock']['effective_sha256'], self.pin['files']['Cargo.lock'])
         for key in ('draft_id', 'run_id', 'github_run_id', 'failed_run_id'):
             self.assertNotIn(key, proof)
             self.assertNotIn(key, self.pin)
@@ -98,7 +100,45 @@ class WindowsRetryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'version/dependency'): self.verify('check')
         manifest.write_bytes(rewritten)
         (self.app / 'Cargo.lock').write_text('changed lock')
-        with self.assertRaisesRegex(ValueError, 'version/dependency'): self.verify('seal')
+        with self.assertRaisesRegex(ValueError, 'Cargo.lock'): self.verify('seal')
+
+    def canonical_lock(self):
+        # Frozen independently reproduced Cargo reorder; no graph edit or
+        # arbitrary TOML serializer is used to manufacture a passing lock.
+        return self.data['Cargo.lock'].replace(
+            b' "rustls",\n "rustls-native-certs",\n "rten",\n "rusqlite",\n',
+            b' "rten",\n "rusqlite",\n "rustls",\n "rustls-native-certs",\n', 1)
+
+    def test_exact_canonical_lock_is_post_build_only_and_binds_both_hashes_and_full_graph(self):
+        original, canonical = self.data['Cargo.lock'], self.canonical_lock()
+        self.assertEqual(hashlib.sha256(canonical).hexdigest(),
+                         '2059e4df62369fb4e56db8ad6b539361d02d9f17f635ccc41da2607dbc813210')
+        self.assertEqual(retry.lock_metadata_graph(original), retry.lock_metadata_graph(canonical))
+        (self.app / 'Cargo.lock').write_bytes(canonical)
+        with self.assertRaisesRegex(ValueError, 'Pre-build Cargo.lock'): self.verify('prepare')
+        for phase in ('check', 'seal'):
+            proof = self.verify(phase)
+            self.assertEqual(proof['cargo_lock']['original_sha256'], self.pin['files']['Cargo.lock'])
+            self.assertEqual(proof['cargo_lock']['effective_sha256'], self.pin['post_build_cargo_lock']['effective_sha256'])
+            self.assertEqual(proof['cargo_lock']['lock_metadata_graph_sha256'], self.pin['post_build_cargo_lock']['lock_metadata_graph_sha256'])
+            self.assertTrue(proof['cargo_lock']['lock_metadata_graph_equal'])
+            self.assertTrue(proof['cargo_lock']['canonical_dependency_order_applied'])
+
+    def test_other_reorders_graph_metadata_and_whitespace_changes_remain_rejected(self):
+        original, canonical = self.data['Cargo.lock'], self.canonical_lock()
+        changes = [canonical + b'\n', canonical.replace(b'version = 4', b'version = 3', 1),
+                   canonical.replace(b' "rustls",', b' "unexpected-dependency",', 1),
+                   canonical.replace(b'checksum = "', b'checksum = "0', 1),
+                   canonical.replace(b'source = "registry+', b'source = "other+', 1),
+                   canonical.replace(b' "rten",\n "rusqlite",', b' "rusqlite",\n "rten",', 1)]
+        for changed in changes:
+            with self.subTest(sha=hashlib.sha256(changed).hexdigest()):
+                with self.assertRaises(ValueError): retry.verify_cargo_lock(original, changed, self.pin, 'check')
+                # An altered expected hash alone cannot waive exact byte
+                # transformation and complete metadata/graph equality.
+                pin = copy.deepcopy(self.pin)
+                pin['post_build_cargo_lock']['effective_sha256'] = hashlib.sha256(changed).hexdigest()
+                with self.assertRaises(ValueError): retry.verify_cargo_lock(original, changed, pin, 'seal')
 
     def test_draft_must_exist_uniquely_be_unpublished_and_target_original_source(self):
         good = {'tag_name': 'v0.15.1', 'draft': True, 'prerelease': False, 'target_commitish': SOURCE}
@@ -126,7 +166,8 @@ class WindowsRetryTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'API unavailable'): retry.lookup_draft('Example/Project', self.pin)
 
     def test_final_receipt_binds_original_source_and_actual_portable_bytes_to_workflow(self):
-        proof = self.verify()
+        (self.app / 'Cargo.lock').write_bytes(self.canonical_lock())
+        proof = self.verify('seal')
         package = self.app / 'CrispSorter_0.15.1_x64-windows-portable-unsigned.zip'
         package.write_bytes(b'nonexecutable portable archive fixture')
         runtime_lock = json.loads(self.data['scripts/crispembed-runtime-lock.json'])
@@ -143,6 +184,9 @@ class WindowsRetryTests(unittest.TestCase):
         self.assertEqual(sealed['app_source'], SOURCE)
         self.assertEqual(sealed['workflow_source'], 'a' * 40)
         self.assertEqual(sealed['artifacts'], value['artifacts'])
+        self.assertEqual(sealed['windows_original_retry']['cargo_lock']['original_sha256'], self.pin['files']['Cargo.lock'])
+        self.assertEqual(sealed['windows_original_retry']['cargo_lock']['effective_sha256'], self.pin['post_build_cargo_lock']['effective_sha256'])
+        self.assertTrue(sealed['windows_original_retry']['cargo_lock']['lock_metadata_graph_equal'])
         self.assertEqual(sealed['windows_original_retry']['verified_receipt_sha256'], hashlib.sha256(original).hexdigest())
         for case in ('source', 'runtime', 'platform', 'package', 'checksum'):
             changed = copy.deepcopy(value)

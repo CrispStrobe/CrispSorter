@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Verify one unpublished Windows retry with distinct app/workflow identities."""
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -52,6 +53,53 @@ def windows_recipe(workflow):
             'native_refs': {k: v.strip() for k, v in refs.items()}}
 
 
+def lock_metadata_graph(data):
+    metadata = tomllib.loads(data.decode())
+    graph = copy.deepcopy(metadata)
+    packages = graph.get('package', [])
+    roots = [package for package in packages if package.get('name') == 'crispsorter']
+    if len(roots) != 1 or roots[0].get('version') != '0.15.1':
+        raise ValueError('Canonical lock requires the exact original root package')
+    dependencies = roots[0].get('dependencies')
+    if (not isinstance(dependencies, list) or not all(isinstance(item, str) for item in dependencies)
+            or len(dependencies) != len(set(dependencies))):
+        raise ValueError('Canonical lock root dependency inventory is invalid')
+    # Every other parsed field and every other package/dependency array stays
+    # untouched. This is complete lock metadata equality, not just a package set.
+    roots[0]['dependencies'] = sorted(dependencies)
+    return graph
+
+
+def verify_cargo_lock(original, actual, pin, phase):
+    policy = pin['post_build_cargo_lock']
+    original_sha, effective_sha = digest(original), digest(actual)
+    if original_sha != pin['files']['Cargo.lock'] or original_sha != policy['original_sha256']:
+        raise ValueError('Original Cargo.lock differs from its exact source pin')
+    original_graph = lock_metadata_graph(original)
+    graph_sha = digest(json.dumps(original_graph, sort_keys=True, separators=(',', ':')).encode())
+    if graph_sha != policy['lock_metadata_graph_sha256']:
+        raise ValueError('Original full lock metadata/graph differs from the reviewed pin')
+    if phase == 'prepare' and actual != original:
+        raise ValueError('Pre-build Cargo.lock must match exact original bytes')
+    if actual != original:
+        # Independently reproduced Cargo output has exactly this root-array
+        # reorder. Reconstruct and verify those exact bytes as well as its hash.
+        before = b' "rustls",\n "rustls-native-certs",\n "rten",\n "rusqlite",\n'
+        after = b' "rten",\n "rusqlite",\n "rustls",\n "rustls-native-certs",\n'
+        root_start = original.index(b'[[package]]\nname = "crispsorter"\n')
+        root_end = original.index(b'\n[[package]]', root_start + 1)
+        block = original[root_start:root_end]
+        if block.count(before) != 1:
+            raise ValueError('Original root-array reorder does not match its reviewed source')
+        canonical = original[:root_start] + block.replace(before, after) + original[root_end:]
+        if (effective_sha != policy['effective_sha256'] or actual != canonical
+                or lock_metadata_graph(actual) != original_graph):
+            raise ValueError('Post-build Cargo.lock is not the exact graph-preserving canonical reorder')
+    return {'original_sha256': original_sha, 'effective_sha256': effective_sha,
+            'lock_metadata_graph_sha256': graph_sha, 'lock_metadata_graph_equal': True,
+            'canonical_dependency_order_applied': actual != original}
+
+
 def lookup_draft(repo, pin):
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo):
         raise ValueError('Invalid repository name')
@@ -93,11 +141,16 @@ def verify(project, tooling, repo, env, phase='prepare'):
         raise ValueError('Windows retry app checkout differs from the exact original source')
     if phase == 'prepare' and git(project, 'status', '--porcelain', '--untracked-files=no'):
         raise ValueError('Original Windows app checkout must have clean tracked sources before preparation')
+    lock_proof = None
     for name, expected in pin['files'].items():
         data = committed(project, name)
         actual = (project / name).read_bytes()
-        equivalent = (actual == data if phase == 'prepare' or name != 'src-tauri/Cargo.toml'
-                      else normalized_manifest(actual) == normalized_manifest(data))
+        if name == 'Cargo.lock':
+            lock_proof = verify_cargo_lock(data, actual, pin, phase)
+            equivalent = True
+        else:
+            equivalent = (actual == data if phase == 'prepare' or name != 'src-tauri/Cargo.toml'
+                          else normalized_manifest(actual) == normalized_manifest(data))
         if digest(data) != expected or committed(tooling, name) != data or not equivalent:
             raise ValueError('Windows retry version/dependency input changed: ' + name)
     original = committed(project, '.github/workflows/release.yml').decode()
@@ -110,6 +163,7 @@ def verify(project, tooling, repo, env, phase='prepare'):
             'workflow_source': workflow, 'workflow_tree': git(tooling, 'rev-parse', 'HEAD^{tree}'),
             'version': pin['version'], 'tag': pin['tag'],
             'pin_sha256': digest(pin_bytes), 'original_inputs': pin['files'],
+            'cargo_lock': lock_proof,
             'recipe': windows_recipe(original)}
 
 

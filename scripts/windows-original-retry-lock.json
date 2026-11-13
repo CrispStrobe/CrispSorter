@@ -11,5 +11,11 @@
     "src-tauri/tauri.conf.json": "d66f1e384ad772bc965756516c0661e16fde549aac524af56322670ebbf2beba",
     "package.json": "dcaa9b1ac506e09b73fa4f675fd29d93efafde0732f36eefe385788b5b22908a",
     "scripts/crispembed-runtime-lock.json": "b3715018bba76b5c7223736e555be78b6d4df5021cd0ff10a1f5208cc1b397e3"
+  },
+  "post_build_cargo_lock": {
+    "original_sha256": "cc0a1af878bec8ee7cbe6ea29a0a2981cf878fa1dc89a330cbe98092eb9c00b4",
+    "effective_sha256": "2059e4df62369fb4e56db8ad6b539361d02d9f17f635ccc41da2607dbc813210",
+    "lock_metadata_graph_sha256": "57832dd9163798f6a19f6bda355c25ae42c567fcc7ae10035532fb4e9c2a22e9",
+    "normalization": "Only crispsorter0.15.1 dependency-array order: rten/rusqlite before rustls/rustls-native-certs; exact bytes pinned, all parsed lock metadata/graph equal."
   }
 }
