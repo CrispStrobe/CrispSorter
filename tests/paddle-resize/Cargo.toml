@@ -1,0 +1,8 @@
+[package]
+name = "paddle-resize-regression"
+version = "0.0.0"
+edition = "2021"
+[dependencies]
+fast_image_resize = { version = "=5.5.0", default-features = false }
+
+[workspace]

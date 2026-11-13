@@ -20,6 +20,10 @@ use std::path::Path;
 
 use super::{ExtractedDocument, OcrRecLang};
 
+#[cfg(any(feature = "paddle-ocr", test))]
+#[path = "paddle_resize.rs"]
+mod paddle_resize;
+
 /// True when the `paddle-ocr` feature is compiled in.
 pub fn is_paddle_ocr_available() -> bool {
     #[cfg(feature = "paddle-ocr")]
@@ -187,7 +191,24 @@ fn recognize_paddle(path: &Path, use_cjk: bool, log: &crate::operation_log::Oper
     }
 
     region_pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    let sorted_crops: Vec<Image> = region_pairs.into_iter().map(|(_, img)| img).collect();
+    // usls FitHeight does not cap the resized width to the SVTR model canvas.
+    // Paddle clamps over-wide lines to that canvas. Rescale the full region
+    // to the actual model dimensions before usls performs its height fit.
+    let canvas_width = u32::try_from(recogniser.width).context("SVTR model width exceeds image dimensions")?;
+    let canvas_height = u32::try_from(recogniser.height).context("SVTR model height exceeds image dimensions")?;
+    let sorted_crops: Vec<Image> = region_pairs.into_iter().map(|(_, img)| {
+        let (width, height) = img.dimensions();
+        match paddle_resize::svtr_pre_resize(width, height, canvas_width, canvas_height)
+            .map_err(anyhow::Error::msg)? {
+            None => Ok(img),
+            Some((width, height)) => {
+                let alg = usls::ResizeAlg::default();
+                let mode = usls::ResizeMode::FitExact { width, height, alg };
+                img.resize_with_info(width, height, alg, &mode, 0)
+                    .map(|(image, _)| image).context("fitting text region to SVTR model canvas")
+            }
+        }
+    }).collect::<Result<_>>()?;
 
     // ── Recognition ────────────────────────────────────────────────────────
     let rec_results = recogniser.forward(&sorted_crops).context("SVTR text recognition failed")?;

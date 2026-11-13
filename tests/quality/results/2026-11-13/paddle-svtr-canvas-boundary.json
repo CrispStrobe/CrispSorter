@@ -1,0 +1,24 @@
+{
+  "schema": "crispsorter-paddle-svtr-preprocessing-observation-v1",
+  "observed_failure_app_source": "3ceb2838037cd311355685988e3ebd78a97cd749",
+  "failure_stage": "SVTR preprocessing after detector region cropping succeeded",
+  "failure": "Size of the crop box is out of the image boundaries",
+  "pinned_upstream": {
+    "crate": "usls",
+    "version": "0.2.0-alpha.3",
+    "archive_sha256": "ac1500061eff9d9777d30f3196fb5ad4d132b9fa435a9d9b56893f415b994082",
+    "source_path": "src/processor/image/transform/resize/impl.rs",
+    "cause": "FitHeight computes an unbounded scaled width, then creates a destination crop wider than the fixed model canvas"
+  },
+  "fix": "Pre-resize only over-wide regions to actual SVTR model width and height; retain full region extent and existing narrow-line height-fit behavior",
+  "validation": {
+    "standalone_geometry_tests": 4,
+    "pinned_fast_image_resize_pixel_regression": 1,
+    "original_error_reproduced": true,
+    "full_line_resize_retains_both_image_endpoints": true,
+    "whole_application_build": "not run",
+    "live_recognition_or_quality_execution": "not run",
+    "gpu_or_workflow_dispatch": "not run"
+  },
+  "scope": "Local preprocessing correction only; dependency pins, models, native runtime, application Cargo manifest/lock and workflow concurrency unchanged"
+}

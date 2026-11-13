@@ -4685,3 +4685,9 @@ here if it is taken, so the next person does not re-derive the same plan.
   config transport remains incomplete; separately reconstructed bytes match
   both historical digests exactly. No full local verifier/device/quality replay
   or distribution implied; full license-graph replay remains unavailable.
+- 2026-11-13: Prepared a narrow Paddle SVTR preprocessing fix: resize only
+  over-wide detected regions into the actual model canvas before usls's
+  height-fit step. The pinned resize backend reproduces the original boundary
+  error and verifies full-region endpoint preservation after the fix. Four
+  geometry checks plus one image regression pass; full live recognition remains
+  unrerun. Application Cargo pins/lock and workflows are unchanged.

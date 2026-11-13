@@ -690,3 +690,24 @@ provenance success does not establish physical device execution or OCR quality.
 No distribution, candidate promotion, or new build was performed for this
 observation. Sanitized details are in
 `tests/quality/results/2026-11-13/signed-ios-ocr-draft-independent-verification.json`.
+
+### Paddle recognition preprocessing boundary correction
+
+The live Paddle control from source `3ceb2838` failed during SVTR preprocessing,
+after detector region cropping succeeded. The SHA-verified pinned
+`usls 0.2.0-alpha.3` height-fit implementation computes a line width beyond the
+fixed recognition canvas and passes that width to `CroppedImageMut`, which
+rejects it. This is a recognizer resize boundary, not an out-of-page detector
+box. The app now pre-resizes only over-wide regions to the recognizer's actual
+model dimensions, keeping the complete region and leaving narrow-line
+preprocessing unchanged. This follows Paddle's own recognition width-clamping
+policy in its [recognizer preprocessing](https://github.com/PaddlePaddle/PaddleOCR/blob/main/tools/infer/predict_rec.py).
+
+Four standalone geometry tests and one CPU-only pinned resize-backend regression
+pass. The latter reproduces the exact original error, then checks that bounded
+resizing succeeds and retains both image endpoints. No usls/model/ORT/GPU build,
+whole-app build, live recognition rerun, or quality qualification was performed.
+The existing live Paddle fixture/cache/table test still needs to validate the
+full integration. Reproduction commands are in `tests/paddle-resize/README.md`;
+sanitized findings are in
+`tests/quality/results/2026-11-13/paddle-svtr-canvas-boundary.json`.
