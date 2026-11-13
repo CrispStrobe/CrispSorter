@@ -217,6 +217,14 @@ mean metadata-unchanged, not verified content equality; timestamp precision and
 clock skew can also hide differences. Keep-both and durable per-file manual
 resolution remain open.
 
+Sync inventory prefers a nonzero file-stat size over an omitted or stale listing
+size. Some adapters represent both missing size and an empty file as zero; when
+stat returns zero, a known listing size is retained. Consequently a truly empty
+file with a stale nonzero listing can still fail size validation. Missing sizes
+are not permission for unbounded transfer: contradictory bytes preserve the
+existing destination and report failure. A listed file that stat now identifies
+as a directory stops inventory before any download.
+
 ### Sync pull path boundary
 
 GUI and CLI sync inventory validate provider names before stat or recursive
