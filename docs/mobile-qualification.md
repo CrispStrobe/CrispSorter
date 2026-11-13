@@ -785,3 +785,7 @@ OCR text and raw test summary cannot be independently reconstructed from the
 artifact. This result supersedes the earlier statement that the integration
 fixture had not been run, but does not qualify general recognition quality,
 other languages, mobile devices or the release license inventory.
+
+### Standard 0.15.2 internal TestFlight
+
+The standard 0.15.2 iOS IPA from source `d204522ad7902eaa6494f92dd740f8c469dc1acc` was independently checked against its draft receipt, package digest, version, signing profile and offline signature evidence. App Store Connect accepted build 0.15.2, reported it valid and assigned it to Internal Testers. The standard profile omits native OCR. This records distribution and package evidence only; no physical device, OCR quality or broader release qualification is implied.
