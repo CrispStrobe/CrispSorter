@@ -38,6 +38,23 @@ def check_native(project, staging, target, app):
     native.verify_native_provenance(app, platform, runtime_path.parent, runtime, lock)
 
 
+def aapt_path(signer):
+    sibling = Path(signer).with_name('aapt')
+    if sibling.is_file() and os.access(sibling, os.X_OK):
+        return str(sibling)
+    found = shutil.which('aapt')
+    if found:
+        return found
+    for name in ['ANDROID_HOME', 'ANDROID_SDK_ROOT']:
+        if not os.environ.get(name):
+            continue
+        tools = (Path(os.environ[name]) / 'build-tools').glob('*/aapt')
+        for candidate in sorted(tools, key=lambda p: tuple(map(int, re.findall(r'\d+', p.parent.name))), reverse=True):
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+    raise FileNotFoundError('Android SDK aapt is required for APK metadata inspection')
+
+
 def check_android(project, staging, artifact, version):
     signer = signer_path(None)
     verified = subprocess.check_output([signer, 'verify', '--verbose', '--print-certs', str(artifact)],
@@ -51,7 +68,7 @@ def check_android(project, staging, artifact, version):
     signers = re.findall(r'(?m)^Signer #[0-9]+ certificate SHA-256 digest: ([0-9a-fA-F]{64})\s*$', verified)
     if len(signers) != 1 or signers[0].lower() != expected:
         raise ValueError('APK signer differs from the configured Android certificate')
-    aapt = Path(signer).with_name('aapt')
+    aapt = aapt_path(signer)
     metadata = subprocess.check_output([str(aapt), 'dump', 'badging', str(artifact)], text=True, timeout=30)
     package = re.search(r"(?m)^package: name='([^']+)'[^\n]* versionName='([^']+)'", metadata)
     if not package or package[1] != native.PACKAGE or package[2] != version:

@@ -138,6 +138,7 @@ class DraftRecording(unittest.TestCase):
             if command[1]=='verify':return 'Signer #1 certificate SHA-256 digest: '+hashlib.sha256(b'production certificate').hexdigest()+'\n'
             return badging or "package: name='com.crispstrobe.crispsorter' versionCode='1' versionName='0.15.1'\n"
         with patch.dict(os.environ,context(target,ANDROID_KEYSTORE='/sdk/configured.jks',ANDROID_KEY_ALIAS='configured')),patch.object(recording,'signer_path',return_value='/sdk/apksigner'), \
+                patch.object(recording,'aapt_path',return_value='/sdk/aapt'), \
                 patch.object(recording.subprocess,'run',side_effect=self.command) as commands, \
                 patch.object(recording.subprocess,'check_output',side_effect=output) as outputs, \
                 patch.object(recording,'check_native',side_effect=failure) as native:
@@ -236,6 +237,41 @@ class DraftRecording(unittest.TestCase):
                     verifier.side_effect=None
         runtime['target']='wrong';(self.root/'runtime/runtime-build.json').write_text(json.dumps(runtime))
         with self.assertRaises(ValueError):recording.check_native(self.project,self.root,'ios-arm64',self.root/'package')
+
+
+class AndroidMetadataTool(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
+        self.root=Path(self.tmp.name)
+
+    def tool(self,name):
+        path=self.root/name;path.parent.mkdir(parents=True,exist_ok=True)
+        path.write_text('#!/bin/sh\n');path.chmod(0o755)
+        return path
+
+    def test_prefers_signer_sibling_over_path_and_sdk(self):
+        sibling=self.tool('signer/aapt')
+        with patch.object(recording.shutil,'which',return_value='/other/aapt') as which:
+            self.assertEqual(recording.aapt_path(str(sibling.with_name('apksigner'))),str(sibling))
+            which.assert_not_called()
+
+    def test_system_signer_can_use_aapt_from_path(self):
+        with patch.object(recording.shutil,'which',return_value='/sdk/aapt'):
+            self.assertEqual(recording.aapt_path('/usr/bin/apksigner'),'/sdk/aapt')
+
+    def test_system_signer_can_use_either_configured_sdk(self):
+        for variable in ['ANDROID_HOME','ANDROID_SDK_ROOT']:
+            sdk=self.root/variable
+            self.tool(variable+'/build-tools/9.0.0/aapt')
+            expected=self.tool(variable+'/build-tools/36.0.0/aapt')
+            with patch.dict(os.environ,{'ANDROID_HOME':'','ANDROID_SDK_ROOT':'',variable:str(sdk)}), \
+                    patch.object(recording.shutil,'which',return_value=None):
+                self.assertEqual(recording.aapt_path('/usr/bin/apksigner'),str(expected))
+
+    def test_missing_tool_reports_actual_sdk_requirement(self):
+        with patch.dict(os.environ,{'ANDROID_HOME':'','ANDROID_SDK_ROOT':''}), \
+                patch.object(recording.shutil,'which',return_value=None):
+            with self.assertRaises(FileNotFoundError):recording.aapt_path(str(self.root/'missing/apksigner'))
 
 
 class WorkflowSafety(unittest.TestCase):
