@@ -84,8 +84,8 @@ class IosProjectTests(unittest.TestCase):
         self.assertIn('--retain-native-symbols', draft)
         self.assertNotIn('--retain-native-symbols', standard)
         verifier = (root / 'scripts/ocr_mobile_build_receipt.py').read_text()
-        self.assertIn("'_OrtGetApiBase' in line and '(undefined)' not in line", verifier)
-        self.assertIn('Built iOS app does not define the ONNX Runtime C API symbol', verifier)
+        self.assertIn("symbol_proof = defined_code_symbol(artifact / executable)", verifier)
+        self.assertIn("'defined_app_symbol_proof': symbol_proof", verifier)
 
     def test_conflicting_generated_settings_are_not_silently_replaced(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -368,15 +368,15 @@ def ort_identity(source, platform, artifact, runtime_path, expected_target):
         executable = info.get('CFBundleExecutable', '')
         if not executable or Path(executable).name != executable:
             raise ValueError('iOS application executable identity is invalid')
-        symbols = subprocess.run(['xcrun', 'nm', '-m', str(artifact / executable)], capture_output=True, text=True, check=True, timeout=60).stdout
-        if not any('_OrtGetApiBase' in line and '(undefined)' not in line for line in symbols.splitlines()):
-            raise ValueError('Built iOS app does not define the ONNX Runtime C API symbol')
+        from macho_symbol_proof import defined_code_symbol
+        symbol_proof = defined_code_symbol(artifact / executable)
         for basename, notice in notices.items():
             candidates = [item for item in artifact.rglob(basename) if item.is_file() and not item.is_symlink()]
             if len(candidates) != 1 or candidates[0].stat().st_size != notice['bytes'] or digest(candidates[0]) != notice['sha256']:
                 raise ValueError('App does not contain the qualified ONNX Runtime notice: ' + basename)
             packaged_notices[basename] = {'path': candidates[0].relative_to(artifact).as_posix(), 'sha256': notice['sha256']}
         linkage = {'linked_c_api_symbol': 'OrtGetApiBase', 'qualified_static_framework_sha256': digest(binary),
+                   'defined_app_symbol_proof': symbol_proof,
                    'interpretation': 'Qualified archive/config and defined app symbol; static linking transforms the archive, so this is not byte equality with the executable.'}
     return {'receipt_sha256': digest(runtime_path), 'runtime': runtime, 'linkage': linkage, 'packaged_notices': packaged_notices}
 

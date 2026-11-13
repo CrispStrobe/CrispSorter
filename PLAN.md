@@ -1,5 +1,16 @@
 # CrispSorter — Development Plan
 
+## Bounded retained-IPA ONNX symbol verification — 13 November 2026
+
+The corrected signed iOS draft retains the exact `_OrtGetApiBase`
+definition, but full `nm -m` output timed out. A bounded read-only Mach-O index
+verifier now proves that definition and executable hash directly; it passes on
+the retained corrected IPA and still rejects the original stripped one. Other
+source/runtime/framework/config/notice/signature checks remain intact. The
+artifact lacks original native archive/ORT/config/build inputs, so no full
+no-rebuild provenance pass is fabricated and no separately built inputs are
+substituted. See the [exact evidence and replay limits](docs/ocr-device-qualification.md#bounded-ios-c-api-symbol-proof-on-the-retained-ipa).
+
 ## Signed iOS OCR draft symbol evidence — 12 November 2026
 
 The signed OCR draft produced a provisioned device IPA at source 80b7a6ab but failed

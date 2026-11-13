@@ -481,10 +481,9 @@ build, signing operation, upload or rerun was performed for this preparation.
 
 The first symbol-retention follow-up produced and signed an OCR IPA, but its
 final provenance step timed out after 60 seconds while `nm` scanned the retained
-symbol table. The result remains failed and the IPA remains unqualified. Inspect
-the retained package with a bounded symbol-verification method that preserves the
-same required native and ONNX identities; do not infer linkage merely from version
-strings or rerun a full build until the existing evidence is exhausted.
+symbol table. The result remains failed and the IPA remains unqualified. The bounded symbol
+inspection described below establishes the specific linkage observation; full
+provenance still requires the original preparation inputs.
 
 The corrected Android OCR draft completed with final provenance at source
 `7a9094ee67b0a87fb204d714ef4532de14639087`. The retained signed APK is
@@ -496,3 +495,47 @@ notices and 16 KiB ZIP/ELF alignment. The generated license inventory is a
 recorded source exception; its raw generated file was not separately retained.
 This is a source-bound signed draft, not installation, physical-device execution,
 OCR inference or quality qualification. It was not published or uploaded.
+
+## Bounded iOS C API symbol proof on the retained IPA
+
+The corrected signed draft
+at source `7a9094ee` retained native symbols, then timed out while `xcrun nm -m`
+attempted to format/capture the entire large symbol table. Its artifact still
+contains only the unqualified IPA and `failure.json`. This is not a missing
+symbol result and is not a completed provenance pass.
+
+The [actual retained-package observation](../tests/quality/results/2026-11-13/ios-ocr-indexed-symbol-proof.json)
+records the IPA/executable hashes and exact linkage evidence: `_OrtGetApiBase`
+is external defined nlist entry 590343, in `__TEXT,__text` at `0x100b77dc0`.
+The executable has 621,151 symbol records and an 80,706,664-byte string table.
+The bounded verifier reads their index directly and verifies the exact name,
+non-debug section definition and aligned address inside file-backed executable
+instructions. It hashes the executable for binding; it never executes it or
+accepts string presence, imports, debug/absolute/indirect records, another symbol
+name or ambiguous duplicate definitions as linkage proof.
+
+`macho_symbol_proof.py` replaces only the full `nm` capture in the final-app ORT
+check. It accepts the explicitly supported thin ARM64 Mach-O executable format,
+limits file/load-command/symbol/string/name-match sizes, maps data read-only,
+streams hashing in 4 MiB chunks and enforces a 30-second inspection budget.
+No large symbol-name dump is generated. Existing qualified framework/header/
+archive/config/notice hashes, source/runtime identity, signature verification
+and final qualification requirements remain unchanged. The original stripped
+IPA still fails this exact proof; the corrected retained IPA passes in under
+two seconds on the inspection host, without rebuilding or changing either IPA.
+
+Full original provenance cannot be replayed from the currently retained artifact.
+The signed package does preserve the same-run `ocr-mobile-runtime.json`, including
+the hash of its original `libcrispembed.a`; it does **not** preserve those archive
+bytes. Original ORT preparation records/framework, forced Cargo configuration and
+generated license/build inputs are also absent from the artifact. Native/ORT staging was outside the cached Cargo target, and the artifact
+contains neither those original inputs nor the configuration/generated source
+records. No separate retained input artifact is listed. Recreating or substituting another build's archive
+would not establish the original receipt and is not done. This change emits no
+full success receipt for the retained IPA.
+
+A future replay-capable run must retain the exact original preparation inputs
+and generated build records before final verification can fail. Until those
+same-run inputs are available, the offline result is explicitly a recovered
+**linkage check only**. No new signed build, dispatch, upload, model inference or
+runtime-source promotion was performed to obtain it.
