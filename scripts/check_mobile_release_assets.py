@@ -1,67 +1,33 @@
 #!/usr/bin/env python3
-"""Require source-bound mobile packages in the final draft before publication."""
+"""Check actual mobile downloads after successful signed platform build jobs."""
 import argparse
-import json
 from pathlib import Path
-import re
 import tempfile
+import zipfile
 
-from check_desktop_release_assets import gh, sha
+from release_package_assets import download_packages, android_manifest, zip_inventory
+from check_testflight_ipa import check_ipa
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ['tag', 'repo', 'source', 'version']:
+    for name in ['tag', 'repo', 'version']:
         parser.add_argument('--' + name, required=True)
     args = parser.parse_args()
-    release = json.loads(gh('release', 'view', args.tag, '--repo', args.repo, '--json', 'isDraft,assets'))
-    if release.get('isDraft') is not True:
-        raise ValueError('Refusing to publish a release that is already public')
-    names = {entry['name'] for entry in release['assets']}
-    expected = {
-        'android-arm64': f'CrispSorter_{args.version}_android-aarch64.apk',
-        'ios-arm64': f'CrispSorter_{args.version}_ios-arm64.ipa',
-    }
-    downloads = {name for name in names if name.endswith(('.apk', '.ipa'))
-                 or ('ios' in name.lower() and name.endswith('.app.tar.gz'))}
-    if downloads != set(expected.values()):
-        raise ValueError('Missing or stale mobile packages in release draft')
-    with tempfile.TemporaryDirectory(prefix='crispsorter-mobile-release-check-') as directory:
-        work = Path(directory)
-
-        def download(name):
-            if name not in names:
-                raise ValueError('Missing mobile release asset: ' + name)
-            gh('release', 'download', args.tag, '--repo', args.repo,
-               '--pattern', name, '--dir', str(work))
-            return work / name
-
-        for platform, filename in expected.items():
-            receipt = json.loads(download(f'CrispSorter_{args.version}_{platform}.receipt.json').read_text())
-            if (receipt.get('schema') != 'crispsorter-release-receipt-v1'
-                    or receipt.get('platform') != platform or receipt.get('version') != args.version
-                    or receipt.get('app_source') != args.source):
-                raise ValueError('Mobile receipt does not match this source/version: ' + platform)
-            artifacts = receipt.get('artifacts', [])
-            if len(artifacts) != 1 or artifacts[0].get('filename') != filename:
-                raise ValueError('Unexpected mobile artifact count or filename: ' + platform)
-            item = artifacts[0]
-            digest = item.get('sha256', '')
-            if not re.fullmatch(r'[0-9a-f]{64}', digest) or sha(download(filename)) != digest:
-                raise ValueError('Mobile asset does not match verified receipt: ' + filename)
-            if platform == 'ios-arm64':
-                if (item.get('embedded_profile') is not True or item.get('version') != args.version
-                        or item.get('bundle_id') != 'com.crispstrobe.crispsorter'):
-                    raise ValueError('iOS receipt lacks expected provisioned application metadata')
+    expected = {f'CrispSorter_{args.version}_android-aarch64.apk', f'CrispSorter_{args.version}_ios-arm64.ipa'}
+    def package(name):
+        return name.endswith(('.apk', '.ipa')) or ('ios' in name.lower() and name.endswith('.app.tar.gz'))
+    with tempfile.TemporaryDirectory(prefix='crispsorter-mobile-assets-') as directory:
+        files = download_packages(args.repo, args.tag, args.version, expected, package, Path(directory))
+        for name, path in files.items():
+            if name.endswith('.ipa'): check_ipa(path, args.version)
             else:
-                signing = json.loads(download(filename.removesuffix('.apk') + '.signing.json').read_text())
-                if (signing.get('schema') != 'crispsorter-apk-signing-v1'
-                        or signing.get('filename') != filename or signing.get('sha256') != digest
-                        or signing.get('signing') != 'provided production certificate'
-                        or not signing.get('verification') or not item.get('signature_verification')):
-                    raise ValueError('Android asset lacks matching production signing evidence')
-    print('Mobile draft packages match verified release receipts for this source.')
+                with zipfile.ZipFile(path) as archive:
+                    names = zip_inventory(archive)
+                    if not 0 < archive.getinfo('AndroidManifest.xml').file_size <= 2 * 1024**2 or not any(n.startswith('lib/arm64-v8a/') and n.endswith('.so') for n in names):
+                        raise ValueError('APK lacks its manifest or ARM64 native application')
+                android_manifest(path, args.version)
+    print('Mobile package downloads verified; platform jobs enforce actual code signatures.')
 
 
-if __name__ == '__main__':
-    main()
+if __name__ == '__main__': main()

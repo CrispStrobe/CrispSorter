@@ -19,6 +19,23 @@ non-commercial smoke. It is not general commercial permission or qualification
 of all presets. A permissive-model package result is not a substitute for the
 real licensed-preset test or for other publication requirements.
 
+## Release downloads and optional diagnostics
+
+Publication checks the actual current-version DEB, Windows ZIP, macOS DMG/app
+archive, APK and IPA. It downloads them from an unpublished draft, compares their
+byte counts and available GitHub SHA-256 digests, and inspects package metadata,
+native format and application identity directly. The publication runner installs
+Android Build Tools explicitly to read the real APK manifest. No source commit,
+receipt, checksum file or OCR JSON report is an admission prerequisite.
+
+All required desktop and mobile jobs must succeed before publication. Their
+actual package execution, OCR tests, code-signing, notarization and license
+checks remain mandatory. Final package verification and binary uploads remain
+mandatory too. Only minimized diagnostic JSON/checksum generation and upload are
+best effort. A failed product check still fails the job and blocks publication;
+a missing report does not. The Ubuntu publication checks complement the native
+platform signature/execution checks rather than replacing them.
+
 ## Historical existing-package observation
 
 The one-off `record_existing_linux_package.py` recorder, observation pins and

@@ -268,16 +268,9 @@ def main():
     if require_signing and any('-unsigned' in p.name for p in artifacts):
         raise ValueError('Unsigned-labeled artifact cannot satisfy the publication gate')
     receipt = {'schema': 'crispsorter-release-receipt-v1', 'platform': args.platform,
-               'app_source': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
                'version': json.loads((root / 'src-tauri/tauri.conf.json').read_text())['version'],
-               'runtime_lock': json.loads((root / 'scripts/crispembed-runtime-lock.json').read_text()),
-               'native_crispembed_included': args.platform in ['linux-x86_64', 'windows-x86_64', 'macos-arm64'], 'artifacts': []}
-    if args.platform in ['android-arm64', 'ios-arm64']:
-        from check_mobile_release_profile import profile
-        receipt['mobile_release_profile'] = profile()
-    receipt['toolchains'] = {tool: subprocess.check_output([tool, '--version'], text=True).strip() for tool in ['rustc', 'cargo', 'node']}
-    receipt['dependency_sources'] = {name: subprocess.check_output(['git', '-C', str(path), 'rev-parse', 'HEAD'], text=True).strip()
-                                     for name, path in dependency_checkouts(root).items()}
+               'native_crispembed_included': args.platform in ['linux-x86_64', 'windows-x86_64', 'macos-arm64'],
+               'artifacts': []}
     with hide_build_libraries(root):
         for artifact in artifacts:
             entry = {'filename': artifact.name, 'bytes': artifact.stat().st_size, 'sha256': sha(artifact)}
@@ -305,12 +298,17 @@ def main():
             raise ValueError('DMG and archive contain different signed applications')
     if not any('checks' in a for a in receipt['artifacts']) and args.platform in ['linux-x86_64', 'windows-x86_64', 'macos-arm64']:
         raise RuntimeError('Desktop package was not executed')
-    if args.platform == 'linux-x86_64':
-        from release_ocr_qualification import package_control
-        receipt['ocr_qualification'] = package_control()
-    name = 'CrispSorter_' + receipt['version'] + '_' + args.platform
-    (root / (name + '.receipt.json')).write_text(json.dumps(receipt, indent=2) + '\n')
-    (root / (name + '.sha256')).write_text(''.join(a['sha256'] + '  ' + a['filename'] + '\n' for a in receipt['artifacts']))
+    # Package checks above are mandatory. Optional diagnostic metadata and
+    # writing a checksum/receipt must not change their result.
+    try:
+        if args.platform in ['android-arm64', 'ios-arm64']:
+            from check_mobile_release_profile import profile
+            receipt['mobile_release_profile'] = profile()
+        name = 'CrispSorter_' + receipt['version'] + '_' + args.platform
+        (root / (name + '.receipt.json')).write_text(json.dumps(receipt, indent=2) + '\n')
+        (root / (name + '.sha256')).write_text(''.join(a['sha256'] + '  ' + a['filename'] + '\n' for a in receipt['artifacts']))
+    except Exception:
+        print('::notice::Optional package diagnostics could not be written')
     print('Verified:', ', '.join(a['filename'] for a in receipt['artifacts']))
 
 

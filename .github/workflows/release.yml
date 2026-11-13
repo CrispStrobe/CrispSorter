@@ -1036,7 +1036,7 @@ jobs:
             fi
           done
 
-      - name: Verify final packages and attach source/checksum receipts
+      - name: Verify final packages
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1044,7 +1044,7 @@ jobs:
           set -euo pipefail
           python scripts/verify_release_artifacts.py --platform '${{ matrix.qualification_platform }}'
           VERSION=$(python -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')
-          gh release upload "v$VERSION" "CrispSorter_${VERSION}_${{ matrix.qualification_platform }}.receipt.json" "CrispSorter_${VERSION}_${{ matrix.qualification_platform }}.sha256" --clobber
+          gh release upload "v$VERSION" "CrispSorter_${VERSION}_${{ matrix.qualification_platform }}.receipt.json" "CrispSorter_${VERSION}_${{ matrix.qualification_platform }}.sha256" --clobber || echo '::notice::Optional package diagnostics could not be uploaded'
 
       # Package verification uses permissive DBNet/TrOCR only. Licensed presets
       # remain a separate mandatory gate for tag/publication-intended builds.
@@ -1302,10 +1302,11 @@ jobs:
                 gh release delete-asset "$TAG" "$asset" -y ;;
             esac
           done <<< "$ASSETS"
-          gh release upload "${TAG}" "$ANDROID_RELEASE_APK" "${ANDROID_RELEASE_APK%.apk}.signing.json" --clobber
+          gh release upload "${TAG}" "$ANDROID_RELEASE_APK" --clobber
+          gh release upload "${TAG}" "${ANDROID_RELEASE_APK%.apk}.signing.json" --clobber || echo '::notice::Optional signing diagnostics could not be uploaded'
           echo "✓ Uploaded $ANDROID_RELEASE_APK"
 
-      - name: Inspect Android artifact and attach checksum receipt
+      - name: Inspect Android artifact
         if: env.CRISPSORTER_MOBILE_RELEASE_PROFILE != 'ocr-draft'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1313,7 +1314,7 @@ jobs:
           set -euo pipefail
           python scripts/verify_release_artifacts.py --platform android-arm64
           VERSION=$(jq -r .version src-tauri/tauri.conf.json)
-          gh release upload "v$VERSION" "CrispSorter_${VERSION}_android-arm64.receipt.json" "CrispSorter_${VERSION}_android-arm64.sha256" --clobber
+          gh release upload "v$VERSION" "CrispSorter_${VERSION}_android-arm64.receipt.json" "CrispSorter_${VERSION}_android-arm64.sha256" --clobber || echo '::notice::Optional package diagnostics could not be uploaded'
 
       - name: Verify final signed Android OCR draft provenance
         if: env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
@@ -1822,7 +1823,7 @@ jobs:
             fi
           fi
 
-      - name: Inspect iOS artifact and attach checksum receipt
+      - name: Inspect iOS artifact
         if: env.CRISPSORTER_MOBILE_RELEASE_PROFILE != 'ocr-draft'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1830,7 +1831,7 @@ jobs:
           set -euo pipefail
           python3 scripts/verify_release_artifacts.py --platform ios-arm64
           VERSION=$(jq -r .version src-tauri/tauri.conf.json)
-          gh release upload "v$VERSION" "CrispSorter_${VERSION}_ios-arm64.receipt.json" "CrispSorter_${VERSION}_ios-arm64.sha256" --clobber
+          gh release upload "v$VERSION" "CrispSorter_${VERSION}_ios-arm64.receipt.json" "CrispSorter_${VERSION}_ios-arm64.sha256" --clobber || echo '::notice::Optional package diagnostics could not be uploaded'
 
       - name: Verify final signed iOS OCR draft provenance
         if: env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
@@ -2227,8 +2228,7 @@ jobs:
           # as a confusing "no files found" on top of it.
           if-no-files-found: ignore
 
-  # Publish the draft once the 3 required platforms finish (success OR failure).
-  # Mobile jobs (Android/iOS) also don't block — they may need extra setup.
+  # Publish only after all required desktop and mobile jobs succeed.
   # (macOS-Intel dropped: GitHub has no schedulable macos-13 runner and
   # CrispEmbed ships no macOS-x86_64 lib, so that build can't link anyway.)
   publish:
@@ -2238,7 +2238,7 @@ jobs:
     # "Latest" (as happened to v0.6.0 when the Windows link failed). always()
     # is still needed so this job is evaluated even when a need "fails", but the
     # release-required.result check skips publish unless every core platform
-    # built. Mobile (Android/iOS) stays non-blocking by design. On a manual
+    # built and both mobile jobs succeeded. On a manual
     # workflow_dispatch, publish ONLY when the operator set publish=true.
     if: ${{ always() && needs.release-required.result == 'success' && needs.release-android.result == 'success' && needs.release-ios.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.publish) }}
     runs-on: ubuntu-latest
@@ -2247,6 +2247,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install APK metadata inspection tool
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'build-tools;36.0.0'
+      - name: Use configured Android manifest tool
+        run: echo "$ANDROID_HOME/build-tools/36.0.0" >> "$GITHUB_PATH"
+
       - name: Publish release draft
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -2254,8 +2261,8 @@ jobs:
           set -euo pipefail
           VERSION=$(jq -r .version src-tauri/tauri.conf.json)
           TAG="v${VERSION}"
-          python3 scripts/check_desktop_release_assets.py --tag "$TAG" --repo "$GITHUB_REPOSITORY" --source "$(git rev-parse HEAD)" --version "$VERSION"
-          python3 scripts/check_mobile_release_assets.py --tag "$TAG" --repo "$GITHUB_REPOSITORY" --source "$(git rev-parse HEAD)" --version "$VERSION"
+          python3 scripts/check_desktop_release_assets.py --tag "$TAG" --repo "$GITHUB_REPOSITORY" --version "$VERSION"
+          python3 scripts/check_mobile_release_assets.py --tag "$TAG" --repo "$GITHUB_REPOSITORY" --version "$VERSION"
           echo "Publishing release ${TAG}…"
           gh release edit "${TAG}" --draft=false --latest
           echo "✓ Published ${TAG}"

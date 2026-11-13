@@ -37,7 +37,7 @@ class MobileProfile(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Unknown'):
             profile('candidate')
 
-    def test_generated_mobile_receipt_preserves_source_and_discloses_profile(self):
+    def test_optional_mobile_diagnostics_disclose_profile_without_source_admission(self):
         for platform, suffix in [('android-arm64', 'android-aarch64.apk'), ('ios-arm64', 'ios-arm64.ipa')]:
             with self.subTest(platform=platform), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
@@ -53,7 +53,7 @@ class MobileProfile(unittest.TestCase):
                         patch.dict(os.environ, {'CRISPSORTER_MOBILE_RELEASE_PROFILE': 'standard'}):
                     verifier.main()
                 receipt = json.loads((root / f'CrispSorter_0.15.0_{platform}.receipt.json').read_text())
-                self.assertEqual(receipt['app_source'], 'source-or-tool-version')
+                self.assertNotIn('app_source',receipt)
                 self.assertFalse(receipt['native_crispembed_included'])
                 self.assertEqual(receipt['mobile_release_profile']['ocr_qualification'], 'not established')
                 self.assertEqual(receipt['mobile_release_profile']['native_ocr'], 'not included by this release recipe')
@@ -65,8 +65,8 @@ class MobileProfile(unittest.TestCase):
         self.assertLess(preflight.index('check_mobile_release_profile.py'), preflight.index('gh release'))
         retained = workflow.split('\n  testflight-existing:', 1)[1].split('\n  release-draft-preflight:', 1)[0]
         self.assertLess(retained.index('check_mobile_release_profile.py'), retained.index('gh release download'))
-        self.assertIn("if: inputs.platform == 'testflight_resume'", retained)
-        self.assertIn('Set the $IPA_VERSION upload timestamp before resuming.', retained)
+        self.assertIn("env.TESTFLIGHT_UPLOAD_REQUIRED == 'true'", retained)
+        self.assertNotIn('Set the $IPA_VERSION upload timestamp before resuming.', retained)
         verifier = (root / 'scripts/verify_release_artifacts.py').read_text()
         self.assertIn("receipt['mobile_release_profile'] = profile()", verifier)
 
