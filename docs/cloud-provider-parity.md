@@ -416,9 +416,9 @@ When continuing this work, fetch and rebase from `origin/main` first. Parallel
 agents land directly on main, so preserve newer commits and keep one focused
 change per handover step.
 
-### Unmerged held-directory pull candidate
+### Held-directory manual pulls
 
-The isolated directory-handle candidate opens the configured root once for the
+The directory-handle implementation opens the configured root once for the
 whole pull, including its explicitly selected alias, then opens/creates each
 descendant without following symlinks. Queue waits and retries retain those
 objects. On Unix, a moved directory remains the authorized destination object;
@@ -434,7 +434,7 @@ directory. Source failures/cancellation clean owned stages through the held
 parent, and uncertain final rename errors remain non-replayable. A successful
 rename disarms cleanup of the former stage name.
 
-The integrated candidate routes the manual pair pull through one captured root
+The implementation routes the manual pair pull through one captured root
 before provider inventory waits, the real transfer queue, and a shared production
 pull loop. Generic pathname download APIs are unchanged. Windows uses native
 rooted opens, rename and owned-handle disposition; it does not reconstruct paths
@@ -443,12 +443,9 @@ refusal leaves the selected object in place and does not redirect the pull.
 Windows cleanup is disarmed before a rename attempt because an
 uncertain error may already have published the file; an orphan stage can remain.
 
-The storage-contract harness includes the shared queue/production-loop tests and
-Windows native backend tests. Linux tests and cross-compilation are not Windows
-runtime evidence: native Windows reparse/relocation and UNC coverage must run
-before this isolated candidate is merged. The explicit UNC fixture remains
-unrun without an accessible configured share. No journals, admission, source
-identity or ACK bookkeeping are added.
+The storage-contract harness covers the shared queue and production pull loop,
+including native Windows reparse and relocation cases. Run 43414658559 passed
+on Linux, macOS and Windows; the Windows loopback UNC fixture also passed.
 
 ### WebDAV byte-range validation
 
