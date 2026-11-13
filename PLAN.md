@@ -1,5 +1,15 @@
 # CrispSorter — Development Plan
 
+## Current testing and release policy
+
+Ordinary test failures should be fixed and rerun. Optional diagnostics, reports,
+replay inputs, source-identity records and admission paperwork do not gate a
+build or release. Keep checks that protect actual product correctness: package
+signing, bundle/version, native architecture/linkage, required licenses and
+security. Existing dated entries below describe historical work and constraints;
+they do not add approval or evidence requirements to normal retries.
+
+
 ## Bounded retained-IPA ONNX symbol verification — 13 November 2026
 
 The corrected signed iOS draft retains the exact `_OrtGetApiBase`

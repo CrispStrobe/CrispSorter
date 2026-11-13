@@ -1463,16 +1463,30 @@ jobs:
 
       - name: Verify final signed Android OCR draft provenance
         if: env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
+        env:
+          ANDROID_KEYSTORE: ${{ runner.temp }}/android-release.jks
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         run: |
           python3 scripts/record_signed_mobile_ocr_draft.py --target android-arm64 \
             --staging "$OCR_DRAFT_ROOT" --artifact "$ANDROID_RELEASE_APK"
-      - name: Retain signed OCR draft as explicitly unqualified build evidence
+      - name: Retain signed OCR draft package
+        if: success() && env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-ocr-draft-android-arm64-unqualified
+          path: ${{ runner.temp }}/signed-mobile-ocr-draft/artifact/*.apk
+          if-no-files-found: error
+          retention-days: 14
+      - name: Retain optional signed OCR draft diagnostics
         if: always() && env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: signed-ocr-draft-android-arm64-unqualified
-          path: ${{ runner.temp }}/signed-mobile-ocr-draft/artifact
+          name: signed-ocr-draft-android-arm64-diagnostics
+          path: |
+            ${{ runner.temp }}/signed-mobile-ocr-draft/artifact/signed-draft.json
+            ${{ runner.temp }}/signed-mobile-ocr-draft/artifact/failure.json
           if-no-files-found: warn
           retention-days: 14
 
@@ -1969,13 +1983,23 @@ jobs:
         run: |
           python3 scripts/record_signed_mobile_ocr_draft.py --target ios-arm64 \
             --staging "$OCR_DRAFT_ROOT" --artifact "$IPA"
-      - name: Retain signed OCR draft as explicitly unqualified build evidence
+      - name: Retain signed OCR draft package
+        if: success() && env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-ocr-draft-ios-arm64-unqualified
+          path: ${{ runner.temp }}/signed-mobile-ocr-draft/artifact/*.ipa
+          if-no-files-found: error
+          retention-days: 14
+      - name: Retain optional signed OCR draft diagnostics
         if: always() && env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: signed-ocr-draft-ios-arm64-unqualified
-          path: ${{ runner.temp }}/signed-mobile-ocr-draft/artifact
+          name: signed-ocr-draft-ios-arm64-diagnostics
+          path: |
+            ${{ runner.temp }}/signed-mobile-ocr-draft/artifact/signed-draft.json
+            ${{ runner.temp }}/signed-mobile-ocr-draft/artifact/failure.json
           if-no-files-found: warn
           retention-days: 14
 

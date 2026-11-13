@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import plistlib
 import re
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -110,95 +111,131 @@ class DraftStaging(unittest.TestCase):
 
 class DraftRecording(unittest.TestCase):
     def setUp(self):
-        temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(temporary.cleanup)
-        self.base = Path(temporary.name)
-        self.project = self.base / 'app'
-        (self.project / 'scripts').mkdir(parents=True)
-        (self.project / 'src-tauri').mkdir()
-        (self.project / staging.RUNTIME_LOCK).write_text('{}')
-        (self.project / 'src-tauri/tauri.conf.json').write_text('{"version":"0.15.1"}')
-        self.root = self.base / 'draft'
-        (self.root / 'runtime').mkdir(parents=True)
-        (self.root / 'ort').mkdir()
-        for name in ['layout.json', 'runtime/runtime-build.json', 'ort/ort-runtime.json']:
-            (self.root / name).write_text('{}')
-        self.build = {'sorter_commit': 'application', 'crispembed_commit': 'production'}
+        self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
+        self.project=Path(self.tmp.name)/'app';self.root=Path(self.tmp.name)/'draft'
+        (self.project/'src-tauri').mkdir(parents=True);self.root.mkdir()
+        (self.project/'src-tauri/tauri.conf.json').write_text('{"version":"0.15.1"}')
 
-    def artifact(self, target):
-        path = self.root / ('signed.apk' if target.startswith('android-') else 'signed.ipa')
-        preparation = {'target': target, 'app_source': 'application', 'production_source': 'production',
-                       'runtime_lock': staging.RUNTIME_LOCK, 'version': '0.15.1',
-                       'runtime_lock_sha256': hashlib.sha256(b'{}').hexdigest()}
-        (self.root / 'preparation.json').write_text(json.dumps(preparation))
-        if target.startswith('android-'):
+    def artifact(self,target):
+        path=self.root/('signed.apk' if target=='android-arm64' else 'signed.ipa')
+        if target=='android-arm64':
             path.write_bytes(b'APK fixture')
-            path.with_suffix('.signing.json').write_text(json.dumps({'signing': 'provided production certificate',
-                'sha256': recording.sha(path), 'filename': path.name}))
+            path.with_suffix('.signing.json').write_text(json.dumps({'signing':'provided production certificate',
+                'sha256':recording.sha(path),'filename':path.name,'unused_secret':'SECRET-SENTINEL'}))
         else:
-            with zipfile.ZipFile(path, 'w') as archive:
-                archive.writestr('Payload/App.app/embedded.mobileprovision', b'profile fixture')
-                archive.writestr('Payload/App.app/Info.plist', plistlib.dumps({'CFBundleShortVersionString': '0.15.1'}))
+            with zipfile.ZipFile(path,'w') as archive:
+                archive.writestr('Payload/App.app/embedded.mobileprovision',b'fixture')
+                archive.writestr('Payload/App.app/Info.plist',plistlib.dumps({'CFBundleShortVersionString':'0.15.1'}))
         return path
 
-    def command(self, command, **kwargs):
-        if command[0] == 'unzip':
-            with zipfile.ZipFile(command[2]) as archive:
-                archive.extractall(command[4])
+    def command(self,command,**kwargs):
+        if command[0]=='unzip':
+            with zipfile.ZipFile(command[2]) as archive:archive.extractall(command[4])
 
-    def run_record(self, target, artifact, build=None, failure=None):
-        with patch.dict(os.environ, context(target)), patch.object(recording, 'signer_path', return_value='apksigner'), \
-                patch.object(recording.subprocess, 'run', side_effect=self.command), \
-                patch.object(recording, 'record', return_value=build or self.build, side_effect=failure) as record, \
-                patch.object(recording.retention_schema, 'validated_ios_metadata', return_value={name: b'{}' for name in
-                    ['preparation.json', 'layout.json', 'runtime-build.json', 'ort-runtime.json']}):
-            result = recording.record_draft(self.project, self.root, target, artifact)
-        return result, record
+    def execute(self,target,artifact,failure=None,badging=None):
+        def output(command,**kwargs):
+            if command[0]=='keytool':return b'production certificate'
+            if command[1]=='verify':return 'Signer #1 certificate SHA-256 digest: '+hashlib.sha256(b'production certificate').hexdigest()+'\n'
+            return badging or "package: name='com.crispstrobe.crispsorter' versionCode='1' versionName='0.15.1'\n"
+        with patch.dict(os.environ,context(target,ANDROID_KEYSTORE='/sdk/configured.jks',ANDROID_KEY_ALIAS='configured')),patch.object(recording,'signer_path',return_value='/sdk/apksigner'), \
+                patch.object(recording.subprocess,'run',side_effect=self.command) as commands, \
+                patch.object(recording.subprocess,'check_output',side_effect=output) as outputs, \
+                patch.object(recording,'check_native',side_effect=failure) as native:
+            result=recording.record_draft(self.project,self.root,target,artifact)
+        return result,commands,native
 
-    def test_android_final_signed_bytes_bound_to_native_provenance(self):
-        artifact = self.artifact('android-arm64')
-        result, record = self.run_record('android-arm64', artifact)
-        self.assertEqual(result['sha256'], recording.sha(artifact))
-        self.assertEqual(result['validation_status'], 'passed')
-        self.assertIn('Not established', result['qualification'])
-        self.assertEqual(record.call_args.args[1], 'android')
-        self.assertEqual(record.call_args.args[-1], staging.RUNTIME_LOCK)
-        self.assertEqual(set(p.name for p in (self.root / 'artifact').iterdir()), {
-            result['filename'], 'android.signing.json', 'build-receipt.json', 'signed-draft.json',
-            'preparation.json', 'layout.json', 'runtime-build.json', 'ort-runtime.json'})
+    def test_real_signature_and_native_checks_for_both_targets(self):
+        for target in ['android-arm64','ios-arm64']:
+            artifact=self.artifact(target)
+            if target=='android-arm64':artifact.with_suffix('.signing.json').unlink()
+            result,commands,native=self.execute(target,artifact)
+            self.assertEqual(result['validation_status'],'passed')
+            self.assertEqual(result['sha256'],recording.sha(artifact))
+            native.assert_called_once();self.assertEqual(native.call_args.args[2],target)
+            if target=='ios-arm64':self.assertTrue(any(c.args[0][0]=='codesign' for c in commands.call_args_list))
+            self.assertEqual({p.name for p in (self.root/'artifact').iterdir()},{result['filename'],'signed-draft.json'})
+            self.assertNotIn('SECRET-SENTINEL',(self.root/'artifact/signed-draft.json').read_text())
 
-    def test_ios_final_signed_archive_binds_device_app_receipt(self):
-        artifact = self.artifact('ios-arm64')
-        result, record = self.run_record('ios-arm64', artifact)
-        self.assertEqual(record.call_args.args[1], 'ios-device')
-        self.assertEqual(result['sha256'], recording.sha(artifact))
-        self.assertEqual(result['validation_status'], 'passed')
+    def test_native_failure_replaces_previous_success_without_raw_exception(self):
+        artifact=self.artifact('android-arm64');self.execute('android-arm64',artifact)
+        with self.assertRaises(ValueError):self.execute('android-arm64',artifact,failure=ValueError('SECRET-SENTINEL'))
+        self.assertFalse((self.root/'artifact/signed-draft.json').exists())
+        self.assertTrue((self.root/'artifact/failure.json').exists())
+        self.assertNotIn('SECRET-SENTINEL',(self.root/'artifact/failure.json').read_text())
+        self.assertEqual(self.execute('android-arm64',artifact)[0]['validation_status'],'passed')
 
-    def test_native_provenance_failure_keeps_only_explicitly_unqualified_artifact(self):
-        artifact = self.artifact('android-arm64')
-        with self.assertRaisesRegex(ValueError, 'native mismatch'):
-            self.run_record('android-arm64', artifact, failure=ValueError('native mismatch'))
-        result = self.root / 'artifact'
-        self.assertFalse((result / 'signed-draft.json').exists())
-        self.assertFalse((result / 'build-receipt.json').exists())
-        self.assertEqual(json.loads((result / 'failure.json').read_text())['validation_status'], 'failed')
-        self.assertEqual(len(list(result.glob('*-unqualified.apk'))), 1)
+    def test_android_bundle_and_version_mismatch_fail(self):
+        for badging in ["package: name='wrong.bundle' versionCode='1' versionName='0.15.1'",
+                        "package: name='com.crispstrobe.crispsorter' versionCode='1' versionName='0.14.0'"]:
+            artifact=self.artifact('android-arm64')
+            with self.assertRaisesRegex(ValueError,'identifier or version'):self.execute('android-arm64',artifact,badging=badging)
 
-    def test_preparation_source_mismatch_cannot_produce_success_marker(self):
-        artifact = self.artifact('android-arm64')
-        with self.assertRaisesRegex(ValueError, 'differs from prepared'):
-            self.run_record('android-arm64', artifact, build={'sorter_commit': 'different', 'crispembed_commit': 'production'})
-        self.assertFalse((self.root / 'artifact/signed-draft.json').exists())
-        self.assertTrue((self.root / 'artifact/failure.json').is_file())
+    def test_ios_version_mismatch_fails_before_native_check(self):
+        artifact=self.artifact('ios-arm64')
+        (self.project/'src-tauri/tauri.conf.json').write_text('{"version":"0.15.2"}')
+        with self.assertRaisesRegex(ValueError,'version differs'):self.execute('ios-arm64',artifact)
 
-    def test_development_signature_is_not_accepted_as_signed_draft(self):
-        artifact = self.artifact('android-arm64')
-        value = json.loads(artifact.with_suffix('.signing.json').read_text())
-        value['signing'] = 'development certificate'
-        artifact.with_suffix('.signing.json').write_text(json.dumps(value))
-        with self.assertRaisesRegex(ValueError, 'production Android signing evidence'):
-            self.run_record('android-arm64', artifact)
-        self.assertFalse((self.root / 'artifact/signed-draft.json').exists())
+    def test_signature_failure_cannot_pass(self):
+        artifact=self.artifact('android-arm64')
+        with patch.object(recording.subprocess,'check_output',side_effect=subprocess.CalledProcessError(1,['signer'])), \
+                patch.dict(os.environ,context()),patch.object(recording,'signer_path',return_value='/sdk/apksigner'):
+            with self.assertRaises(subprocess.CalledProcessError):recording.record_draft(self.project,self.root,'android-arm64',artifact)
+
+    def test_wrong_android_certificate_is_not_accepted_without_signing_report(self):
+        artifact=self.artifact('android-arm64');artifact.with_suffix('.signing.json').unlink()
+        def output(command,**kwargs):
+            if command[0]=='keytool':return b'configured certificate'
+            return 'Signer #1 certificate SHA-256 digest: '+'a'*64+'\n'
+        with patch.object(recording.subprocess,'check_output',side_effect=output), \
+                patch.object(recording,'signer_path',return_value='/sdk/apksigner'), \
+                patch.dict(os.environ,context(ANDROID_KEYSTORE='/sdk/configured.jks',ANDROID_KEY_ALIAS='configured')):
+            with self.assertRaisesRegex(ValueError,'signer differs'):
+                recording.record_draft(self.project,self.root,'android-arm64',artifact)
+
+    def test_report_write_is_optional_but_package_copy_is_required(self):
+        artifact=self.artifact('android-arm64')
+        with patch.object(recording.shutil,'copy2',side_effect=OSError('private')):
+            with self.assertRaises(OSError):self.execute('android-arm64',artifact)
+        with patch.object(Path,'write_text',side_effect=OSError('private')):
+            self.assertEqual(self.execute('android-arm64',artifact)[0]['validation_status'],'passed')
+        self.assertTrue((self.root/'artifact/CrispSorter_0.15.1_android-arm64-ocr-draft-unqualified.apk').is_file())
+
+    def test_corrupt_package_copy_is_not_a_success(self):
+        artifact=self.artifact('android-arm64')
+        def corrupt(source,destination):Path(destination).write_bytes(b'corrupt package')
+        with patch.object(recording.shutil,'copy2',side_effect=corrupt):
+            with self.assertRaisesRegex(ValueError,'not retained intact'):
+                self.execute('android-arm64',artifact)
+        self.assertFalse((self.root/'artifact/signed-draft.json').exists())
+
+    def test_no_preparation_or_clean_tree_or_json_schema_admission(self):
+        artifact=self.artifact('android-arm64')
+        for name in ['preparation.json','layout.json','runtime/runtime-build.json','ort/ort-runtime.json']:
+            path=self.root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text('SECRET-SENTINEL')
+        (self.project/'local-edit').write_text('untracked working file')
+        self.assertEqual(self.execute('android-arm64',artifact)[0]['validation_status'],'passed')
+        for path in (self.root/'artifact').iterdir():self.assertNotIn(b'SECRET-SENTINEL',path.read_bytes())
+
+    def test_native_checks_keep_target_architecture_ort_linkage_and_notices(self):
+        (self.root/'runtime').mkdir();(self.project/'scripts').mkdir()
+        runtime={'target':'android-arm64','source_commit':'a','ggml_commit':'b'}
+        (self.root/'runtime/runtime-build.json').write_text(json.dumps(runtime))
+        (self.project/staging.RUNTIME_LOCK).write_text(json.dumps(runtime))
+        for target in ['android-arm64','ios-arm64']:
+            runtime['target']=target;(self.root/'runtime/runtime-build.json').write_text(json.dumps(runtime))
+            with patch.object(recording.native,'android_identity') as android, \
+                    patch.object(recording.native,'bundle_identity') as ios, \
+                    patch.object(recording.native,'ort_identity') as ort, \
+                    patch.object(recording.native,'verify_native_provenance') as notices:
+                recording.check_native(self.project,self.root,target,self.root/'package')
+                (android if target=='android-arm64' else ios).assert_called_once()
+                ort.assert_called_once();notices.assert_called_once()
+                for verifier in [ort,notices]:
+                    verifier.side_effect=ValueError('real package mismatch')
+                    with self.assertRaises(ValueError):recording.check_native(self.project,self.root,target,self.root/'package')
+                    verifier.side_effect=None
+        runtime['target']='wrong';(self.root/'runtime/runtime-build.json').write_text(json.dumps(runtime))
+        with self.assertRaises(ValueError):recording.check_native(self.project,self.root,'ios-arm64',self.root/'package')
 
 
 class WorkflowSafety(unittest.TestCase):
@@ -209,16 +246,24 @@ class WorkflowSafety(unittest.TestCase):
     def job(self, name, end):
         return self.workflow.split('\n  ' + name + ':', 1)[1].split('\n  ' + end + ':', 1)[0]
 
-    def test_diagnostic_uploads_are_optional_and_replay_inputs_not_collected(self):
+    def test_packages_are_required_and_diagnostics_optional_without_replay_collection(self):
         self.assertNotIn('retain_ios_ocr_draft_inputs.py',self.workflow)
         self.assertNotIn('/signed-mobile-ocr-draft/replay-inputs',self.workflow)
-        for target in ['android-arm64','ios-arm64']:
+        for target,suffix in [('android-arm64','apk'),('ios-arm64','ipa')]:
             marker='          name: signed-ocr-draft-'+target+'-unqualified'
             start=self.workflow.rindex('      - name: ',0,self.workflow.index(marker))
-            step=self.workflow[start:].split('\n      - ',1)[0].split('\n  # ',1)[0]
-            self.assertIn('        continue-on-error: true\n',step)
-            self.assertIn('          if-no-files-found: warn\n',step)
-            self.assertIn('          path: ${{ runner.temp }}/signed-mobile-ocr-draft/artifact\n',step)
+            package=self.workflow[start:].split('\n      - ',1)[0]
+            self.assertNotIn('continue-on-error',package)
+            self.assertIn('if: success()',package)
+            self.assertIn('if-no-files-found: error',package)
+            self.assertIn('/artifact/*.'+suffix,package)
+            marker='          name: signed-ocr-draft-'+target+'-diagnostics'
+            start=self.workflow.rindex('      - name: ',0,self.workflow.index(marker))
+            diagnostic=self.workflow[start:].split('\n      - ',1)[0]
+            self.assertIn('continue-on-error: true',diagnostic)
+            self.assertIn('if-no-files-found: warn',diagnostic)
+            self.assertIn('/artifact/signed-draft.json',diagnostic)
+            self.assertIn('/artifact/failure.json',diagnostic)
         for target in ['Android','iOS']:
             step=self.workflow.split('      - name: Verify final signed '+target+' OCR draft provenance\n',1)[1].split('\n      - ',1)[0]
             self.assertIn('record_signed_mobile_ocr_draft.py',step)

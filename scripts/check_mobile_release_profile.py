@@ -3,7 +3,7 @@
 
 The ordinary release recipe omits ocr-mobile and its native/ORT preparation.
 Public OCR remains unsupported. Explicit draft selectors use a separate
-unpublished signed build recipe with mandatory native/ORT provenance checks;
+unpublished signed build recipe with mandatory native/ORT package checks;
 changing an input or adding a runtime receipt cannot enable public OCR.
 """
 import argparse
@@ -22,7 +22,7 @@ def profile(requested=None):
                 or os.environ.get('CRISPSORTER_RELEASE_SELECTOR') not in ('android_ocr_draft', 'ios_ocr_draft')):
             raise ValueError('OCR drafts require the explicit manual draft selector, publish=false and mac_appstore=false')
         return {'requested': 'ocr-draft', 'recipe': 'ocr-mobile-draft',
-                'native_ocr': 'requested; final native/ORT provenance checks are mandatory',
+                'native_ocr': 'requested; final native/ORT package checks are mandatory',
                 'ocr_qualification': 'not established',
                 'scope': 'Unpublished signed build preparation only; no device or OCR quality qualification'}
     if requested == 'ocr':

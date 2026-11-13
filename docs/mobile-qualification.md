@@ -577,9 +577,16 @@ Qwen preset gate or a substitute for the missing automated release receipt.
 ### Historical same-run signed iOS draft input retention (2026-11-13)
 
 Automatic replay-input collection has been removed from the release workflow.
+The draft verifier checks the actual package, configured signing certificate,
+bundle/version, native target/linkage and packaged notices directly. It needs no
+preparation/layout/source-tree identity report. The final signed
+package must be retained intact and uploaded successfully. Only minimized JSON
+diagnostics are optional; their write or transport failures cannot fail otherwise
+successful package checks. Ordinary reruns replace recorder-owned output safely.
+No arbitrary runtime, signing or preparation metadata is copied into artifacts.
 The following records the earlier implementation and retained artifacts; those
 records remain historical observations. Normal signed drafts need no replay
-bundle. Both mobile draft artifact uploads are best effort, while final
+bundle. Mobile draft diagnostic JSON uploads are best effort. The signed package upload,
 signature, version, native-linkage and license checks remain required. No
 standard release or TestFlight selection behavior changed.
 
