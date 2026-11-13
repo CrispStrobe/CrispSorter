@@ -72,6 +72,27 @@ class SymbolProof(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'ambiguous duplicate'):
             self.check(macho([(1, 0x0f, 1, BASE + 208)] * 2))
 
+    def test_section_vm_file_mapping_cannot_claim_code_in_zero_filled_segment_tail(self):
+        data = macho()
+        # Keep the declared four file bytes inside the segment, but move the
+        # section and definition far beyond its actual file-backed VM extent.
+        struct.pack_into('<Q', data, 136, BASE + 0x800)  # section.addr
+        struct.pack_into('<Q', data, 220, BASE + 0x800)  # nlist.n_value
+        with self.assertRaisesRegex(ValueError, 'defined instruction section'):
+            self.check(data)
+        data = macho()
+        struct.pack_into('<I', data, 152, 204)  # section.offset, inconsistent with addr
+        with self.assertRaisesRegex(ValueError, 'defined instruction section'):
+            self.check(data)
+
+    def test_symbol_requires_a_full_file_backed_arm64_instruction(self):
+        for data in [macho(text=b'\0'), macho([(1, 0x0f, 1, BASE + 212)], text=b'\0' * 5)]:
+            with self.assertRaisesRegex(ValueError, 'defined instruction section'):
+                self.check(data)
+        # A final complete instruction ending exactly at the section boundary
+        # remains valid; only incomplete instruction ranges are rejected.
+        self.assertTrue(self.check(macho([(1, 0x0f, 1, BASE + 212)], text=b'\0' * 8))['defined'])
+
     def test_table_offsets_counts_and_load_command_shapes_are_bounded(self):
         original = macho()
         corruptions = [(16, MODULE.MAX_LOAD_COMMANDS + 1), (20, MODULE.MAX_LOAD_COMMAND_BYTES + 1),

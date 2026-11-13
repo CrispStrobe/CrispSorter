@@ -83,7 +83,7 @@ def defined_code_symbol(path, symbol=SYMBOL):
                     if segment != parent_name or address < vmaddr or address + nbytes > vmaddr + vmsize:
                         raise ValueError('Mach-O section exceeds its parent segment')
                     sections.append((segment, name, address, nbytes, file_offset, section_flags,
-                                     segment_file, segment_bytes, initial_protection))
+                                     segment_file, segment_bytes, vmaddr, initial_protection))
             at += length
         if at != command_end or table is None:
             raise ValueError('Mach-O load command table is incomplete')
@@ -123,11 +123,16 @@ def defined_code_symbol(path, symbol=SYMBOL):
                 continue
             if not 1 <= section_index <= len(sections):
                 raise ValueError('Defined Mach-O symbol has an invalid section index')
-            segment, name, start, length, file_offset, section_flags, segment_file, segment_bytes, protection = sections[section_index - 1]
-            if (not (section_flags & (0x80000000 | 0x400)) or not start <= address < start + length
+            segment, name, start, length, file_offset, section_flags, segment_file, segment_bytes, segment_address, protection = sections[section_index - 1]
+            # Section file offsets must describe the same linear mapping as
+            # their segment. Otherwise n_value can point into zero-filled VM
+            # while unrelated file bytes make the section appear file-backed.
+            # ARM64 definitions must address a complete four-byte instruction.
+            if (not (section_flags & (0x80000000 | 0x400)) or not start <= address or address + 4 > start + length
                     or address % 4 or segment not in ('__TEXT', '__TEXT_EXEC') or not (protection & 4)
                     or (section_flags & 0xff) in (1, 0xc, 0x12)
-                    or file_offset < segment_file or file_offset + length > segment_file + segment_bytes):
+                    or file_offset < segment_file or file_offset + length > segment_file + segment_bytes
+                    or start - segment_address != file_offset - segment_file):
                 raise ValueError('Mach-O symbol does not address a defined instruction section')
             bounds(file_offset, length, 'instruction section')
             if matches:
