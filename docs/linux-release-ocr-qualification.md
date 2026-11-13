@@ -36,3 +36,30 @@ the existing macOS/Windows signing and mobile publication checks remain required
 These controls change future release preparation. They do not grant consent,
 rebuild or relabel an existing draft artifact, reconstruct an earlier job's
 missing receipt, or prove its unretained post-build dependency-lock bytes.
+
+## Existing original-source package observations
+
+`record_existing_linux_package.py` provides a separate read-only check of the
+already retained version 0.15.1 DEB associated with original source `b739a3c0`.
+It requires that exact unpublished draft/tag target and pinned asset digest,
+checks the retained DEB bytes, and validates the existing startup, worker and
+offline DBNet/TrOCR observations against their source, model, fixture and output
+hashes. It reads committed, clean verifier tooling and records its source/tree
+separately from the original application source association.
+
+After reviewing the retained observations, invoke the recorder without rebuilding
+or rerunning inference:
+
+```sh
+python scripts/record_existing_linux_package.py --repo CrispStrobe/CrispSorter \
+  --evidence-dir /path/to/retained-linux-evidence \
+  --output /path/to/CrispSorter_0.15.1_linux-x86_64.observation.json
+```
+
+The only permitted output name ends in `.observation.json`. The distinct schema
+explicitly keeps Qwen unqualified and cannot pass the release publication gate.
+This recorder does not execute retained programs, download models, infer consent,
+upload assets, or reconstruct the original job's missing release receipt. Its
+source statement is the original build-log/draft-target association; it does not
+attest to unretained post-build lock bytes or reconstruct the compiled dependency
+graph. Changed draft assets or tampered/incomplete retained evidence fail closed.
