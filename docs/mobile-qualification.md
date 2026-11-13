@@ -648,3 +648,45 @@ and exception diagnostics. Failures print one fixed bounded category
 traceback or input values. Malformed license URL/timestamp checks also use
 constant parser errors. Subprocess regressions cover both secret-bearing input
 examples through both CLIs; their incomplete/failure evidence remains explicit.
+
+The successful draft exposed an upload transport gap: GitHub's default hidden-file
+exclusion omitted the original `.cargo/config.toml` despite its inclusion in the
+local manifest. The collector now stores these exact validated bytes at the
+non-hidden `source/cargo-config.toml`, with `original_source_path` set explicitly
+to `.cargo/config.toml` and the unchanged original content hash. Replay must
+restore that precise original source location. No blanket hidden-file upload
+is enabled. The earlier run's retention manifest therefore overstates actual
+transport completeness; its missing config must not be silently substituted.
+
+### Successful signed iOS OCR draft: independent artifact observation
+
+The signed OCR draft from exact app source
+`b5a42295848a1768a67f9936004a46d6ead9e19b` completed its final provenance
+checks. Independent inspection verified the retained IPA SHA-256
+`55b8bfaac04acaa09d1208265c56024e2b5639071cc5919021bfb49c79652232`
+(111,932,948 bytes), matching source/tree/build receipt, original native/ORT
+inputs and packaged notices, and the defined app `_OrtGetApiBase` symbol.
+The existing production runtime source pin remains unchanged.
+
+All 44 transported replay inputs matched their recorded hashes. The original
+transport remains **incomplete**: its declared hidden Cargo config was omitted.
+A separate reconstruction now provides exactly the original 387 config bytes:
+SHA-256 `d0af5f9979e9d57844d1de2257197a7cc6fecb07bd89af1fe47422d00c7ac285`
+matches both the historical retention manifest and final build receipt.
+Reconstruction used the source-pinned template and same-run path evidence,
+accepted only on the full original length/hash. The original artifact and
+receipts were preserved unchanged; no later build inputs were substituted.
+This makes the exact config bytes available for reviewed provenance replay
+preparation; a full verifier replay was not performed locally. Full
+license-graph replay remains unavailable because the arbitrary original Cargo
+metadata graph was deliberately omitted.
+
+Offline checks verified 76,586 signed executable pages, 21 resource hashes,
+app/profile CMS mathematical signatures, matching app/profile entitlements,
+and the app signer certificate's inclusion in its provisioning profile. Linux
+lacks Apple's `codesign`/`security` tooling here: these checks do not establish
+Apple trust-chain or code-signing requirements acceptance. The runner's signed
+provenance success does not establish physical device execution or OCR quality.
+No distribution, candidate promotion, or new build was performed for this
+observation. Sanitized details are in
+`tests/quality/results/2026-11-13/signed-ios-ocr-draft-independent-verification.json`.

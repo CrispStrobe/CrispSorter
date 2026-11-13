@@ -117,6 +117,18 @@ class Retention(unittest.TestCase):
             self.assertEqual(retention.sha(path), info['sha256'])
             self.assertNotIn(b'SECRET-SENTINEL', path.read_bytes())
 
+    def test_default_hidden_file_exclusion_keeps_every_retained_input(self):
+        result = self.collect()
+        files = result['files']
+        self.assertIn('source/cargo-config.toml', files)
+        self.assertEqual(files['source/cargo-config.toml']['original_source_path'], '.cargo/config.toml')
+        stored = self.stage / 'replay-inputs/source/cargo-config.toml'
+        self.assertEqual(stored.read_bytes(), (self.project / '.cargo/config.toml').read_bytes())
+        # actions/upload-artifact v4 excludes dot components unless opted in.
+        uploaded = {name for name in files if not any(part.startswith('.') for part in Path(name).parts)}
+        self.assertEqual(uploaded, set(files))
+        self.assertEqual(files['source/cargo-config.toml']['sha256'], retention.sha(self.project / '.cargo/config.toml'))
+
     def test_missing_original_archive_never_complete(self):
         (self.stage / 'runtime/lib/libcrispembed.a').unlink()
         self.fails()
@@ -140,7 +152,7 @@ class Retention(unittest.TestCase):
         with (self.project / '.cargo/config.toml').open('a') as stream:
             stream.write('# SECRET-SENTINEL\n')
         self.fails()
-        self.assertFalse((self.stage / 'replay-inputs/source/.cargo/config.toml').exists())
+        self.assertFalse((self.stage / 'replay-inputs/source/cargo-config.toml').exists())
 
     def test_changed_lock_source_rejected(self):
         self.write(self.project / 'Cargo.lock', 'changed')
@@ -247,7 +259,7 @@ class Retention(unittest.TestCase):
         with path.open('a') as stream:
             stream.write('debug_secret = "SECRET-SENTINEL"\n')
         self.fails()
-        self.assertFalse((self.stage / 'replay-inputs/source/.cargo/config.toml').exists())
+        self.assertFalse((self.stage / 'replay-inputs/source/cargo-config.toml').exists())
 
     def test_original_ios_recorder_cannot_copy_rejected_secret_metadata(self):
         path = self.stage / 'preparation.json'

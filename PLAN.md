@@ -4674,3 +4674,14 @@ here if it is taken, so the next person does not re-derive the same plan.
   bounded error categories, suppressing raw record/parser exception values and
   tracebacks. Subprocess tests verify malformed URL and generatedAt data never
   appears in either CLI output or retained failure artifacts.
+
+- 2026-11-13: The successful signed iOS OCR draft produced signed
+  provenance, but artifact transport excluded the hidden Cargo config. Store
+  its exact validated bytes under non-hidden `source/cargo-config.toml` with an
+  explicit original-path/hash binding; preserve default hidden-file exclusion.
+- 2026-11-13: Independently verified the successful signed iOS OCR draft from
+  exact source `b5a42295848a1768a67f9936004a46d6ead9e19b`: retained IPA/native/ORT
+  bindings, final app symbol and offline signature hashes/CMS passed. Original
+  config transport remains incomplete; separately reconstructed bytes match
+  both historical digests exactly. No full local verifier/device/quality replay
+  or distribution implied; full license-graph replay remains unavailable.

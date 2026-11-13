@@ -169,7 +169,8 @@ def collect(project, staging):
                        records[name]['sha256']) for name in notices]
         inventory += [('staging/ort/' + name, staging / 'ort' / name, staging, 64*MIB,
                        ort['files'][name]['sha256']) for name in ORT_FILES]
-        inventory += [('source/' + name, project / name, project, 8*MIB, None)
+        inventory += [('source/cargo-config.toml' if name == '.cargo/config.toml' else 'source/' + name,
+                       project / name, project, 8*MIB, None)
                       for name in ('.cargo/config.toml', 'static/licenses.json')]
         for name, original, root, limit, expected_sha in inventory:
             if original in snapshots:
@@ -187,6 +188,8 @@ def collect(project, staging):
                 destination.unlink()
                 raise ValueError('Original input changed or differs from its receipt')
             manifest['files'][name] = {'bytes': count, 'sha256': digest}
+            if original == project / '.cargo/config.toml':
+                manifest['files'][name]['original_source_path'] = '.cargo/config.toml'
             manifest['total_bytes'] += count
         summary_path = output / 'staging/cargo-binding-summary.json'
         summary_path.write_text(json.dumps(summary, indent=2) + '\n')
