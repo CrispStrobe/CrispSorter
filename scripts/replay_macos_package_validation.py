@@ -608,7 +608,10 @@ def doctor_pass(payload):
     )
 
 
-def probe(apps, fixture, env, output):
+def probe_executables(
+    executables, fixture, env, output, *, target="macos", arch="aarch64", runner=None
+):
+    runner = runner or command
     records = []
     originals = []
     missing_failures = []
@@ -627,13 +630,12 @@ def probe(apps, fixture, env, output):
         "--min-chars",
         "0",
     ]
-    for index, app in enumerate(apps):
-        exe = app / "Contents/MacOS/crispsorter"
+    for index, exe in enumerate(executables):
         for name, arguments in [
             ("version", ["--format", "json", "version"]),
             ("doctor", ["--format", "json", "doctor"]),
         ]:
-            rec, raw = command(exe, arguments, env, output, f"package-{index}-{name}")
+            rec, raw = runner(exe, arguments, env, output, f"package-{index}-{name}")
             records.append(rec)
             payload = json.loads(raw["stdout"]) if completed(rec) else None
             good &= completed(rec) and isinstance(payload, dict)
@@ -643,10 +645,10 @@ def probe(apps, fixture, env, output):
                 good &= payload == {
                     "name": "crispsorter",
                     "version": "0.15.1",
-                    "target": "macos",
-                    "arch": "aarch64",
+                    "target": target,
+                    "arch": arch,
                 }
-        rec, raw = command(
+        rec, raw = runner(
             exe, ["--crispsorter-ocr-worker"], env, output, f"package-{index}-worker"
         )
         records.append(rec)
@@ -655,7 +657,7 @@ def probe(apps, fixture, env, output):
             and diagnostics_complete(rec)
             and "OCR worker requires request and response paths" in raw["stderr"]
         )
-        rec, raw = command(exe, args, env, output, f"package-{index}-original-ocr", 600)
+        rec, raw = runner(exe, args, env, output, f"package-{index}-original-ocr", 600)
         records.append(rec)
         matched = ocr_pass(rec, raw)
         rec["fixture_evidence_matched"] = matched
@@ -667,8 +669,8 @@ def probe(apps, fixture, env, output):
         )
     provisioned = False
     if not all(originals):
-        exe = apps[0] / "Contents/MacOS/crispsorter"
-        rec, raw = command(
+        exe = executables[0]
+        rec, raw = runner(
             exe,
             ["--format", "json", "models", "plan", "dbnet_trocr"],
             env,
@@ -683,7 +685,7 @@ def probe(apps, fixture, env, output):
             ok or missing for ok, missing in zip(originals, missing_failures)
         ):
             return False, records, provisioned
-        rec, raw = command(
+        rec, raw = runner(
             exe,
             ["--format", "json", "models", "pull", "dbnet_trocr"],
             env,
@@ -697,9 +699,9 @@ def probe(apps, fixture, env, output):
         model_plan(json.loads(raw["stdout"]), installed=True)
         verify_models(Path(env["HOME"]), output)
         provisioned = True
-        for index, app in enumerate(apps):
-            rec, raw = command(
-                app / "Contents/MacOS/crispsorter",
+        for index, exe in enumerate(executables):
+            rec, raw = runner(
+                exe,
                 args,
                 env,
                 output,
@@ -710,6 +712,12 @@ def probe(apps, fixture, env, output):
             records.append(rec)
             good &= rec["fixture_evidence_matched"]
     return bool(good), records, provisioned
+
+
+def probe(apps, fixture, env, output):
+    return probe_executables(
+        [app / "Contents/MacOS/crispsorter" for app in apps], fixture, env, output
+    )
 
 
 def cleanup_mount(mount, output):

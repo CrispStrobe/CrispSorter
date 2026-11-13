@@ -222,7 +222,8 @@ class WindowsRetryTests(unittest.TestCase):
         workflow = (ROOT / '.github/workflows/release.yml').read_text()
         checkout = "ref: ${{ inputs.platform == 'windows_original_b739' && '" + SOURCE + "' || github.sha }}"
         self.assertEqual(workflow.count(checkout), 2)
-        self.assertEqual(workflow.count('ref: ${{ github.workflow_sha }}'), 2)
+        original_build_jobs = workflow.split('  windows-package-validation-replay:', 1)[0]
+        self.assertEqual(original_build_jobs.count('ref: ${{ github.workflow_sha }}'), 2)
         self.assertIn("inputs.platform == 'windows' || inputs.platform == 'windows_original_b739'", workflow)
         self.assertIn("env.CRISPSORTER_MOBILE_RELEASE_PROFILE != 'ocr-draft' && inputs.platform != 'windows_original_b739'", workflow)
         self.assertIn("--phase check", workflow)
