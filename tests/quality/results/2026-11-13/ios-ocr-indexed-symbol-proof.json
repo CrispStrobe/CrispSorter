@@ -19,8 +19,8 @@
     "string_table_bytes": 80706664,
     "verification": "Exact nlist_64 name/definition and instruction-section address; no nm dump or string-only fallback"
   },
-  "verifier_script_sha256": "4df9ab715654a563dda05452ac3c37b6801271fc95a79b8957ab66ccd9e0fb96",
-  "observed_verification_seconds": 1.751,
+  "verifier_script_sha256": "f3ac044841cdf2483f3833382d1a1dc6a0e5f3db51c30c598c534af1e580dc06",
+  "observed_verification_seconds": 1.467,
   "native_runtime_metadata_recovered_from_ipa": true,
   "embedded_runtime_receipt_sha256": "4ff458381d0518161706a69aef0c91f37d2d7e6cd495b638520d2aa30fd36cfd",
   "runtime_source": "c364feb974b91e14cbf328c6949f3df36e89ce81",
