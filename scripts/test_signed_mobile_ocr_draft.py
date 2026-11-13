@@ -272,6 +272,12 @@ class WorkflowSafety(unittest.TestCase):
                           ('release-required', 'release-windows')]:
             self.assertTrue(self.condition(self.job(name, end), values))
 
+    def test_android_draft_forwards_locked_to_cargo_without_changing_standard_build(self):
+        android = self.job('release-android', 'release-ios')
+        self.assertIn('npx tauri android build --target aarch64 --features ocr-mobile --apk --ci --config src-tauri/tauri.ocr-mobile.conf.json -- --locked', android)
+        self.assertIn('else\n            npx tauri android build --target aarch64\n', android)
+        self.assertIn('node scripts/native_license_inventory.mjs verify', android)
+
     def test_source_and_license_checks_precede_native_profile_build(self):
         self.assertIn('Record locked native OCR draft licenses', self.workflow)
         self.assertIn('--features ocr-mobile', self.workflow)

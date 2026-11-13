@@ -424,6 +424,18 @@ or signing result. No new upload or device execution is established. In particul
 signed iOS OCR-device app is not yet verified; required native symbol/provenance
 checks fail rather than being bypassed if export strips needed evidence.
 
+The Android signing helper and final APK provenance inspector also require every
+stored `.so` member's actual local ZIP data offset to be divisible by 16,384.
+Four-byte ZIP alignment and ELF load alignment alone do not establish direct
+mapping on a 16 KiB Android device. Misaligned packages fail before signing or
+before final native inspection; the helpers never rewrite an APK. Correct the
+upstream Gradle packaging/alignment and rebuild rather than modifying signed
+bytes. Compressed native libraries retain their existing extraction behavior
+and do not need aligned compressed ZIP offsets; their extracted ELF load
+segments still pass the independent 16 KiB check. The signing helper retains
+its four-byte alignment requirement for other stored members. A passing archive
+check remains packaging evidence, not device execution or OCR qualification.
+
 Next, inspect the iOS-only run and execute the Android selector on the exact
 committed source when the existing Android candidate run has finished. Inspect the retained build/provenance result and original
 failure logs before running application cases. The iOS artifact is not in
@@ -434,3 +446,35 @@ physical camera/provider behavior and signed iOS application execution retain
 the separate qualification requirements above. This draft implementation does
 not move runtime pins, turn on experimental crop behavior or remove the public
 OCR profile refusal.
+
+## Retained iOS draft: C API symbol retention
+
+The signed OCR draft
+built/exported the provisioned device IPA at application source `80b7a6ab`, then
+failed the unchanged final ORT check: `Built iOS app does not define the ONNX
+Runtime C API symbol`. Its retained artifact contains only the explicitly
+unqualified IPA and `failure.json`; there is no success marker, app-build receipt
+or unstripped archive. The [bounded package observation](../tests/quality/results/2026-11-12/ios-ocr-draft-symbol-retention.json)
+records the full source, package hash, identity and inspected symbol counts.
+
+The retained executable has no local code symbols and no ORT/CrispEmbed names in
+its symbol table or export trie. ONNX Runtime/version strings are present, but
+strings do not prove that `_OrtGetApiBase` is linked or used. The observations
+support stripping as a cause without resolving it conclusively; dead stripping
+or missing linkage remains a real failure if the next final symbol check fails.
+
+The generated-project helper has an explicit draft-only
+`--retain-native-symbols` option. It changes only `STRIP_STYLE` to `debugging`;
+[Apple documents that this mode retains local/global symbols while removing debug symbols](https://help.apple.com/xcode/mac/current/en.lproj/itcaec37c2a6.html).
+Framework paths, link flags, dead-code stripping, exports, signing settings,
+source/runtime pins and all provenance checks stay unchanged. It does not force
+an unused ORT function into the app or infer success from strings. Only the
+signed OCR draft preparation requests it; standard and simulator defaults retain
+their prior settings. Conflicting generated strip settings fail explicitly.
+
+This is a local, tested project-configuration preparation, not a verified native
+fix. A later authorized draft build must retain `_OrtGetApiBase` in its final
+signed app and pass the original native/ORT/source checks. If export removes it
+again, retain the unstripped archive and export logs to distinguish the stage;
+do not relax the check or report this failed IPA as qualified. No duplicate
+build, signing operation, upload or rerun was performed for this preparation.

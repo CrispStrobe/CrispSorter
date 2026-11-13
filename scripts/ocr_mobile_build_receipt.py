@@ -23,6 +23,7 @@ import tomllib
 import zipfile
 
 from mobile_native_provenance import verify_packaged as verify_native_provenance
+from android_apk_alignment import check_alignment as check_apk_zip_alignment
 
 PACKAGE = 'com.crispstrobe.crispsorter'
 MAX_LIBRARY_BYTES = 256 * 1024 * 1024
@@ -205,6 +206,7 @@ def android_identity(artifact, runtime_directory, runtime):
         native_identity = elf_allocated_identity(stream)
     with zipfile.ZipFile(artifact) as archive:
         names = apk_inventory(archive)
+        zip_alignment = check_apk_zip_alignment(artifact)
         if archive.testzip() is not None:
             raise ValueError('APK contains duplicate members or failed archive integrity')
         libraries = [name for name in names if re.fullmatch(r'lib/[^/]+/[^/]+\.so', name)]
@@ -225,6 +227,7 @@ def android_identity(artifact, runtime_directory, runtime):
     return {'kind': 'apk', 'sha256': digest(artifact), 'bytes': artifact.stat().st_size,
             'abis': abis, 'native_libraries': hashes, 'native_elf': native_elf,
             'native_library_bytes': sizes,
+            'native_zip_alignment': zip_alignment,
             'inspection_budget': {'member_bytes': MAX_PACKAGED_LIBRARY_BYTES,
                                   'paired_runtime_bytes': MAX_LIBRARY_BYTES,
                                   'aggregate_uncompressed_bytes': MAX_APK_UNCOMPRESSED_BYTES,

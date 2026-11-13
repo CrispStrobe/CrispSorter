@@ -1,5 +1,15 @@
 # CrispSorter — Development Plan
 
+## Signed iOS OCR draft symbol evidence — 12 November 2026
+
+The signed OCR draft produced a provisioned device IPA at source 80b7a6ab but failed
+final ORT C API symbol proof. The retained package has no local code symbols;
+ORT strings alone cannot prove linkage/use, and no unstripped archive was saved.
+A draft-only generated-project option now preserves local/global names during
+post-link stripping without changing linking, exports, signing or the exact
+provenance checks. The setting is locally tested and unexecuted on Xcode; the
+failed IPA remains unqualified. See the [artifact evidence and remaining gate](docs/ocr-device-qualification.md#retained-ios-draft-c-api-symbol-retention).
+
 ## Exact current-source TestFlight resume — 12 November 2026
 
 The `testflight_current_resume` selector recovers processing/group assignment

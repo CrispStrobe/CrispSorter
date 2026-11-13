@@ -1231,7 +1231,7 @@ jobs:
           done
           export PATH="$NDK_BIN:$PATH"
           if [[ "$CRISPSORTER_MOBILE_RELEASE_PROFILE" == ocr-draft ]]; then
-            npx tauri android build --target aarch64 --features ocr-mobile --apk --ci --config src-tauri/tauri.ocr-mobile.conf.json
+            npx tauri android build --target aarch64 --features ocr-mobile --apk --ci --config src-tauri/tauri.ocr-mobile.conf.json -- --locked
             node scripts/native_license_inventory.mjs verify
           else
             npx tauri android build --target aarch64
@@ -1484,7 +1484,7 @@ jobs:
           if [[ "$CRISPSORTER_MOBILE_RELEASE_PROFILE" == ocr-draft ]]; then
             npx tauri ios init --ci --config src-tauri/tauri.ocr-mobile.conf.json
             python3 scripts/prepare_ocr_ios_project.py src-tauri/gen/apple/project.yml \
-              --ort-framework "$OCR_ORT_ROOT/onnxruntime.xcframework/ios-arm64/onnxruntime.framework/onnxruntime"
+              --ort-framework "$OCR_ORT_ROOT/onnxruntime.xcframework/ios-arm64/onnxruntime.framework/onnxruntime" --retain-native-symbols
           else
             npx tauri ios init
           fi

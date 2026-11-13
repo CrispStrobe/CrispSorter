@@ -226,7 +226,9 @@ class BuildReceiptTests(unittest.TestCase):
         (root / 'lib/libcrispembed.so').write_bytes(native)
         runtime = {'target': 'android-x86_64', 'artifacts': {'libcrispembed.so': hashlib.sha256(native).hexdigest()}}
         artifact = root / 'app.apk'
-        with zipfile.ZipFile(artifact, 'w') as archive:
+        # These fixtures isolate ELF/provenance checks. Stored-member ZIP page
+        # alignment is exercised separately by test_android_apk_alignment.py.
+        with zipfile.ZipFile(artifact, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
             archive.writestr(f'lib/{abi}/libcrispembed.so', elf(debug=b'') if packaged is None else packaged)
             archive.writestr(f'lib/{abi}/libcrispsorter.so', elf(text=b'app!'))
         return runtime, artifact
@@ -245,7 +247,7 @@ class BuildReceiptTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             runtime, artifact = self.make_android(root)
-            with zipfile.ZipFile(artifact, 'w') as archive:
+            with zipfile.ZipFile(artifact, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
                 archive.writestr('lib/x86_64/libcrispembed.so', elf(debug=b''))
                 archive.writestr('lib/x86_64/libcrispsorter.so', elf(text=b'app!', alignment=4096))
             with self.assertRaisesRegex(ValueError, 'non-16-KiB'):

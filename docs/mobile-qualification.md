@@ -477,3 +477,88 @@ ordinary current-source upload selector instead. The existing legacy
 `testflight_resume` refusal remains unchanged. No new manual approval is added.
 The new route is source/test preparation, not evidence that a particular upload
 or internal group assignment has completed.
+
+## Current release execution
+
+The standard v0.15.1 draft build
+was dispatched from main commit `b739a3c0b70f39d3ae19e1bfcb412f3b44f77794`
+with publication and App Store upload disabled. Android and iOS artifacts and
+receipts completed; desktop jobs require their own results. Standard mobile
+packages omit native OCR. The current-source TestFlight run
+uploaded marketing version 0.15.1, build 0.15.1 and assigned the valid build to
+internal testers. Use `testflight_current_resume` with the original logged UTC
+cutoff if distribution recovery is needed; do not upload the same build again.
+
+The independent signed OCR draft runs for iOS and Android used their own
+recorded source commits and failed their final qualification gates as described
+below. The iOS run retained an unqualified IPA; the Android run retained no APK.
+Neither published or uploaded a package, and neither establishes physical-device
+or OCR quality behavior.
+
+The standard release's Windows leg failed before packaging: the locked
+`ort-sys` build script assumed Cargo's older output-directory layout and could
+not stage a native dependency under the runner's newer toolchain. The Linux,
+macOS, Android and iOS legs continued independently. A Windows-only workflow
+fix is being prepared; do not relabel another revision's binary as this draft's
+source. Preserve the draft's exact target and record any separate workflow-tooling
+revision if a narrow retry builds the original application commit.
+
+The iOS OCR draft built and exported a signed IPA but failed final provenance:
+the final executable did not expose the ONNX Runtime C API symbol required by
+its validator. The retained package is explicitly unqualified and was not
+uploaded. The executable contains ONNX Runtime version strings but those alone
+cannot establish that the required code was linked. A draft-only symbol-retention
+change is prepared for validation; keep the existing native/ORT provenance gate.
+
+
+The Android OCR draft run checked out `336c584b21ba1a6a155e60e5b4c650b41693c572`.
+Both Rust release compilations and the unsigned universal APK completed, then the
+native license check correctly rejected changed Cargo.lock bytes. Signing and
+final provenance never ran, and the artifact listing is empty: the retention step
+reported no files. This run provides no signed or qualified Android artifact.
+
+The mutation is reproduced exactly by **metadata resolution only**, with pinned
+sibling manifests and no compilation. Initial/committed lock SHA-256 was
+`cc0a1af878bec8ee7cbe6ea29a0a2981cf878fa1dc89a330cbe98092eb9c00b4`;
+Cargo's normalized lock is
+`2059e4df62369fb4e56db8ad6b539361d02d9f17f635ccc41da2607dbc813210`.
+The only change moves `rustls` and `rustls-native-certs` after `rten` and
+`rusqlite` in the application dependency array. Their insertion in the earlier
+opt-in transport change did not follow Cargo's canonical order. Parsed packages,
+versions, sources, checksums and dependency edges are identical; actual full
+locked/unlocked metadata is identical and selects the same 865 backend licenses.
+The logs bound mutation to after successful frontend license generation; they
+cannot identify which of the subsequent Cargo invocations first rewrote it.
+
+The local follow-up commits the canonical ordering and forwards `--locked` to
+Cargo via the Android OCR draft's Tauri runner arguments. The strict post-build
+license identity check remains in place. Regression controls run real offline
+Cargo metadata on local-only packages using the committed dependency order, and
+reproduce rejection of the historical drift. They do not compile or sign an APK.
+No build was rerun, concurrency changed or publication attempted. The active
+standard release source `b739a3c0b70f39d3ae19e1bfcb412f3b44f77794` remains unchanged;
+a future build using this fix has its own source identity.
+
+
+`b739a3c0` contains the same initial noncanonical lock bytes. A separate offline
+metadata-only reproduction using the standard Android target **without native
+OCR features** produces the identical `cc0a1af8…00b4` → `2059e4df…3210`
+normalization. The standard build commands are also unlocked, so they can incur
+this ordering rewrite. This establishes a reproducible possibility, not the
+actual post-build lock bytes of the standard release: those bytes were not
+retained or checked by this investigation.
+
+The current standard `crispsorter-release-receipt-v1` records checkout HEAD,
+package hashes, versions, runtime pins, sibling commits and applicable signature
+checks. The earlier source-layout check records the clean starting tree/lock.
+Neither receipt proves that Cargo.lock stayed byte-identical after compilation;
+there is no final dependency-lock digest or post-build clean-lock assertion in
+that standard receipt. Package hashes/signatures still identify their recorded
+bytes, but HEAD alone does not prove the final lock bytes or dependency graph of
+those packages. Our exact metadata-only reproduction found no dependency upgrade;
+it does not establish every dependency used by an already built standard asset.
+Keep this source-binding limitation explicit. A retry from b739 that permits
+only this known metadata-only reorder must record both original/effective lock
+hashes and the separate workflow-tooling identity; HEAD must not stand in for
+proof of a byte-identical post-build tree. A future source commit containing the
+canonical lock has its own application source identity.
