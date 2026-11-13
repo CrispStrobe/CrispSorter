@@ -10,6 +10,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts'))
 import retain_ios_ocr_draft_inputs as retention
+import record_signed_mobile_ocr_draft as recording
+import ios_draft_retention_schema as schema
 
 
 def digest(data):
@@ -37,21 +39,34 @@ class Retention(unittest.TestCase):
         self.write(self.project / 'scripts/ocr-mobile-ort-lock.json', {'ios': self.pin, 'header_sha256': digest(b'fixture')})
         for name in ['Cargo.lock', 'Cargo.toml', 'src-tauri/Cargo.toml', 'static/licenses.json']:
             self.write(self.project / name, '{}')
+        self.write(self.project / 'static/licenses.json', {'generatedAt': '2026-11-13T00:00:00Z',
+            'counts': {'frontend': 0, 'backend': 0, 'total': 0}, 'licenses': []})
         self.write(self.project / '.gitignore', '.cargo/\n')
         for args in [('init', '-q'), ('add', '.'), ('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture')]:
             subprocess.run(['git', '-C', str(self.project), *args], check=True, capture_output=True)
         commit = retention.git(self.project, 'rev-parse', 'HEAD')
-        self.write(self.stage / 'preparation.json', {'target': 'ios-arm64', 'app_source': commit, 'version': '0.15.1',
+        self.write(self.stage / 'preparation.json', {'schema': 'crispsorter-signed-ocr-draft-preparation-v1',
+            'profile': retention.profile('ocr-draft'), 'qualification': 'Not established; build preparation only', 'target': 'ios-arm64', 'app_source': commit, 'version': '0.15.1',
             'production_source': self.lock['source_commit'], 'runtime_lock': retention.RUNTIME_LOCK,
             'runtime_lock_sha256': retention.sha(self.project / retention.RUNTIME_LOCK)})
-        self.write(self.stage / 'layout.json', {'app_source': commit, 'app_tree': retention.git(self.project, 'rev-parse', 'HEAD^{tree}')})
-        notices = {name: {'bytes': 7, 'sha256': digest(b'fixture')} for name in retention.BASE_NOTICES}
+        self.write(self.stage / 'layout.json', {'schema': 'crispsorter-mobile-release-layout-v1', 'app_source': commit,
+            'app_tree': retention.git(self.project, 'rev-parse', 'HEAD^{tree}'), 'application_source_clean': True,
+            'tracked_source_clean': True, 'generated_tracked_files': [], 'cargo_lock_sha256': retention.sha(self.project / 'Cargo.lock'),
+            'cargo_manifest_sha256': retention.sha(self.project / 'src-tauri/Cargo.toml'),
+            'dependency_sources': {'CrispEmbed': 'b'*40, 'CrispASR': 'd'*40, 'crisp-docx': 'e'*40},
+            'checked_dependencies': ['crispembed'], 'mobile_qualification_lock_matches_release': True,
+            'scope': 'Clean source layout and dependency identity only; no native build or behavior qualification'})
+        notices = {name: {'source_repository': repo, 'source_path': path, 'git_blob': 'a'*40,
+            'bytes': 7, 'sha256': digest(b'fixture')} for name, (repo, path) in retention.BASE_NOTICES.items()}
         self.write(self.stage / 'runtime/runtime-build.json', {'target': 'ios-arm64', **self.lock,
-            'artifacts': {'libcrispembed.a': digest(b'fixture')}, 'native_provenance': {'notices': notices}})
+            'artifacts': {'libcrispembed.a': digest(b'fixture')}, 'native_provenance': {'schema_version': 1, 'components': {}, 'notices': notices}})
         self.write(self.stage / 'runtime/lib/libcrispembed.a', 'fixture')
         for name in notices:
             self.write(self.stage / 'runtime/notices' / name, 'fixture')
-        self.ort = {'target': 'ios-arm64', 'kind': 'ocr-mobile-ort-runtime',
+        self.ort = {'schema_version': 1, 'target': 'ios-arm64', 'kind': 'ocr-mobile-ort-runtime',
+            'version': '1.23.0', 'api_version': 23, 'rust_binding': '2.0.0-rc.11',
+            'details': {'framework_identifier': 'ios-arm64', 'architectures': ['arm64'], 'static': True, 'minimum_os_version': '15.1'},
+            'recorded_at': '2026-11-13T00:00:00Z',
             'lock_sha256': retention.sha(self.project / 'scripts/ocr-mobile-ort-lock.json'),
             'archive': {key: self.pin[key] for key in ('url', 'filename', 'bytes', 'sha256')},
             'files': {name: {'bytes': 7, 'sha256': digest(b'fixture')} for name in retention.ORT_FILES}}
@@ -62,7 +77,9 @@ class Retention(unittest.TestCase):
                   'ORT_IOS_XCFWK_LOCATION': str(self.stage / 'ort/onnxruntime.xcframework')}
         self.write(self.project / '.cargo/config.toml', '\n\n' + retention.MARKER + '\n' + '\n'.join(
             f'[env.{key}]\nvalue = {json.dumps(value)}\nforce = true\n' for key, value in values.items()))
-        self.write(self.stage / 'cargo-metadata.json', {'kind': 'locked-native-license-metadata', 'source_commit': commit,
+        self.write(self.stage / 'cargo-metadata.json', {'schema_version': 1, 'kind': 'locked-native-license-metadata', 'source_commit': commit,
+            'cargo_version': 'cargo 1.91.0 (abcd1234 2026-01-01)', 'backend_count': 5,
+            'metadata': {'packages': []}, 'metadata_sha256': digest(b'{"packages":[]}'),
             'target': 'aarch64-apple-ios', 'default_features': False, 'features': ['ocr-mobile', 'tauri/custom-protocol'],
             **{key: retention.sha(self.project / path) for key, path in [('cargo_lock_sha256', 'Cargo.lock'),
                 ('workspace_manifest_sha256', 'Cargo.toml'), ('application_manifest_sha256', 'src-tauri/Cargo.toml')]}})
@@ -76,7 +93,7 @@ class Retention(unittest.TestCase):
         return retention.collect(self.project, self.stage)
 
     def fails(self):
-        with self.assertRaises((ValueError, KeyError, TypeError)):
+        with self.assertRaises((ValueError, KeyError, TypeError, subprocess.CalledProcessError)):
             self.collect()
         manifest = json.loads((self.stage / 'replay-inputs/replay-inputs.json').read_text())
         self.assertEqual(manifest['input_retention_status'], 'incomplete')
@@ -149,6 +166,128 @@ class Retention(unittest.TestCase):
             self.fails()
         with self.assertRaisesRegex(ValueError, 'replace'):
             self.collect()
+
+    def test_unknown_fields_at_all_retained_record_levels_fail_before_copy(self):
+        cases = [('preparation.json', []), ('preparation.json', ['profile']),
+                 ('layout.json', []), ('layout.json', ['dependency_sources']),
+                 ('runtime/runtime-build.json', []), ('runtime/runtime-build.json', ['native_provenance']),
+                 ('runtime/runtime-build.json', ['native_provenance', 'notices', 'ggml-LICENSE.txt']),
+                 ('ort/ort-runtime.json', []), ('ort/ort-runtime.json', ['archive']),
+                 ('ort/ort-runtime.json', ['details']),
+                 ('ort/ort-runtime.json', ['files', 'include/onnxruntime_c_api.h'])]
+        for filename, nesting in cases:
+            with self.subTest(filename=filename, nesting=nesting):
+                path = self.stage / filename
+                original = path.read_bytes()
+                value = json.loads(original)
+                target = value
+                for key in nesting:
+                    target = target[key]
+                target['debug_secret'] = 'SECRET-SENTINEL'
+                self.write(path, value)
+                self.fails()
+                for retained in (self.stage / 'replay-inputs').rglob('*'):
+                    if retained.is_file():
+                        self.assertNotIn(b'SECRET-SENTINEL', retained.read_bytes())
+                import shutil
+                shutil.rmtree(self.stage / 'replay-inputs')
+                path.write_bytes(original)
+
+    def test_generated_license_nested_unknown_field_rejected(self):
+        path = self.project / 'static/licenses.json'
+        value = json.loads(path.read_text())
+        value['licenses'] = [{'name': 'fixture', 'version': '1.0', 'license': 'MIT', 'author': 'Fixture',
+                              'source': 'Backend', 'link': 'https://example.invalid', 'debug_secret': 'SECRET-SENTINEL'}]
+        value['counts'] = {'frontend': 0, 'backend': 1, 'total': 1}
+        self.write(path, value)
+        self.fails()
+        self.assertFalse((self.stage / 'replay-inputs/source/static/licenses.json').exists())
+
+    def test_duplicate_json_key_cannot_hide_discarded_secret(self):
+        path = self.stage / 'preparation.json'
+        path.write_text(path.read_text().replace('{', '{"version":"SECRET-SENTINEL",', 1))
+        self.fails()
+        self.assertFalse((self.stage / 'replay-inputs/staging/preparation.json').exists())
+
+    def test_graph_top_level_and_nested_arbitrary_metadata_are_never_retained(self):
+        path = self.stage / 'cargo-metadata.json'
+        value = json.loads(path.read_text())
+        value['debug_secret'] = 'SECRET-SENTINEL'
+        value['metadata']['packages'] = [{'metadata': {'debug_secret': 'SECRET-SENTINEL'}}]
+        value['metadata_sha256'] = digest(json.dumps(value['metadata'], separators=(',', ':')).encode())
+        self.write(path, value)
+        original_hash = retention.sha(path)
+        result = self.collect()
+        summary = json.loads((self.stage / 'replay-inputs/staging/cargo-binding-summary.json').read_text())
+        self.assertFalse(summary['original_graph_retained'])
+        self.assertEqual(summary['original_snapshot_sha256'], original_hash)
+        self.assertNotIn('staging/cargo-metadata.json', result['files'])
+        for retained in (self.stage / 'replay-inputs').rglob('*'):
+            if retained.is_file():
+                self.assertNotIn(b'SECRET-SENTINEL', retained.read_bytes())
+
+    def test_graph_hash_tamper_is_rejected_without_raw_graph_copy(self):
+        path = self.stage / 'cargo-metadata.json'
+        value = json.loads(path.read_text())
+        value['metadata']['debug_secret'] = 'SECRET-SENTINEL'
+        self.write(path, value)
+        self.fails()
+        self.assertFalse((self.stage / 'replay-inputs/staging/cargo-binding-summary.json').exists())
+
+    def test_summary_field_cannot_smuggle_arbitrary_text_or_nested_values(self):
+        path = self.stage / 'cargo-metadata.json'
+        value = json.loads(path.read_text())
+        value['cargo_version'] = {'debug_secret': 'SECRET-SENTINEL'}
+        self.write(path, value)
+        self.fails()
+
+    def test_config_unknown_nested_field_is_not_copied(self):
+        path = self.project / '.cargo/config.toml'
+        with path.open('a') as stream:
+            stream.write('debug_secret = "SECRET-SENTINEL"\n')
+        self.fails()
+        self.assertFalse((self.stage / 'replay-inputs/source/.cargo/config.toml').exists())
+
+    def test_original_ios_recorder_cannot_copy_rejected_secret_metadata(self):
+        path = self.stage / 'preparation.json'
+        value = json.loads(path.read_text())
+        value['debug_secret'] = 'SECRET-SENTINEL'
+        self.write(path, value)
+        result = self.stage / 'result'
+        result.mkdir()
+        with patch.object(recording, 'record') as record:
+            with self.assertRaises(ValueError):
+                recording.validate(self.project, self.stage, 'ios-arm64', self.stage / 'signed.ipa', value,
+                    retention.profile('ocr-draft'), result, '0.15.1', self.stage / 'retained.ipa')
+        record.assert_not_called()
+        self.assertEqual({p.name for p in result.iterdir()}, {'failure.json'})
+        self.assertNotIn('SECRET-SENTINEL', (result / 'failure.json').read_text())
+
+    def test_failure_record_does_not_copy_exception_secret_text(self):
+        result = self.stage / 'result'
+        result.mkdir()
+        with patch.object(recording, 'validate_inner', side_effect=ValueError('SECRET-SENTINEL')):
+            with self.assertRaises(ValueError):
+                recording.validate(self.project, self.stage, 'ios-arm64', self.stage / 'signed.ipa', {},
+                    retention.profile('ocr-draft'), result, '0.15.1', self.stage / 'retained.ipa')
+        self.assertNotIn('SECRET-SENTINEL', (result / 'failure.json').read_text())
+
+    def test_nested_native_component_unknown_fields_are_rejected(self):
+        value = json.loads((self.stage / 'runtime/runtime-build.json').read_text())
+        component = {'source_path': 'vendor/sheenbidi', 'source_tree': 'a'*40, 'upstream_commit': 'b'*40,
+            'artifacts': {'libcrispembed.a': {'sha256': digest(b'fixture'), 'defined_symbols': list(schema.SHEEN_SYMBOLS)}},
+            'linkage': 'Unity C implementation in the primary native library'}
+        value['native_provenance']['components'] = {'sheenbidi': component}
+        for name, (repo, path) in schema.SHEEN_NOTICES.items():
+            value['native_provenance']['notices'][name] = {'source_repository': repo, 'source_path': path,
+                'git_blob': 'a'*40, 'bytes': 7, 'sha256': digest(b'fixture')}
+        lock = {**self.lock, 'native_components': {'sheenbidi': {'source_tree': 'a'*40}}}
+        schema.native(value, lock)
+        for nested in [component, component['artifacts']['libcrispembed.a']]:
+            nested['debug_secret'] = 'SECRET-SENTINEL'
+            with self.assertRaises(ValueError):
+                schema.native(value, lock)
+            del nested['debug_secret']
 
     def test_workflow_failure_retention_and_no_concurrency_changes(self):
         repo = Path(__file__).resolve().parents[2]

@@ -4,11 +4,13 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
 import tomllib
 
+import ios_draft_retention_schema as schema
 from check_mobile_release_profile import profile
 from mobile_native_provenance import BASE_NOTICES, SHEEN_NOTICES
 from ocr_mobile_build_receipt import source_tree_identity
@@ -41,8 +43,11 @@ def regular(path, root, limit):
     return path
 
 
-def read(path, root, limit=8*MIB):
-    return json.loads(regular(path, root, limit).read_text())
+def read(path, root, limit=8*MIB, snapshots=None):
+    data = regular(path, root, limit).read_bytes()
+    if snapshots is not None:
+        snapshots[path] = hashlib.sha256(data).hexdigest()
+    return schema.decode(data)
 
 
 def git(project, *args):
@@ -61,18 +66,25 @@ def collect(project, staging):
     manifest = {'schema': 'crispsorter-ios-ocr-draft-replay-inputs-v1',
                 'input_retention_status': 'incomplete', 'validation_status': 'not_performed',
                 'qualification': 'Not established; original inputs only, not a signed-app validation receipt',
-                'run': {name: os.environ.get(name) for name in ('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_SHA')},
+                'run': {name: value if re.fullmatch(pattern, value) else None
+                        for name, pattern in [('GITHUB_RUN_ID', r'[0-9]{1,20}'),
+                                              ('GITHUB_RUN_ATTEMPT', r'[0-9]{1,10}'),
+                                              ('GITHUB_SHA', r'[0-9a-f]{40}')]
+                        for value in [os.environ.get(name, '')]},
                 'files': {}, 'total_bytes': 0}
     try:
-        profile('ocr-draft')
+        description = profile('ocr-draft')
+        snapshots = {}
         if os.environ.get('CRISPSORTER_RELEASE_SELECTOR') != 'ios_ocr_draft':
             raise ValueError('Only the explicit unpublished iOS OCR draft is supported')
         commit, tree = git(project, 'rev-parse', 'HEAD'), git(project, 'rev-parse', 'HEAD^{tree}')
         source = source_tree_identity(project)
-        prep = read(staging / 'preparation.json', staging)
-        layout = read(staging / 'layout.json', staging)
+        prep = read(staging / 'preparation.json', staging, snapshots=snapshots)
+        layout = read(staging / 'layout.json', staging, snapshots=snapshots)
         lock = read(project / RUNTIME_LOCK, project)
         production = read(project / PRODUCTION_LOCK, project)
+        schema.preparation(prep, description)
+        schema.layout(layout)
         if (prep.get('target') != 'ios-arm64' or prep.get('app_source') != commit
                 or layout.get('app_source') != commit or layout.get('app_tree') != tree
                 or prep.get('runtime_lock') != RUNTIME_LOCK
@@ -83,9 +95,11 @@ def collect(project, staging):
         manifest.update(app_source=commit, app_tree=tree, source_identity=source,
                         runtime_lock_sha256=sha(project / RUNTIME_LOCK),
                         ort_lock_sha256=sha(project / 'scripts/ocr-mobile-ort-lock.json'))
-        runtime = read(staging / 'runtime/runtime-build.json', staging)
-        ort = read(staging / 'ort/ort-runtime.json', staging)
+        runtime = read(staging / 'runtime/runtime-build.json', staging, snapshots=snapshots)
+        ort = read(staging / 'ort/ort-runtime.json', staging, snapshots=snapshots)
         ort_lock = read(project / 'scripts/ocr-mobile-ort-lock.json', project)
+        schema.native(runtime, lock)
+        schema.ort(ort, ORT_FILES)
         if (runtime.get('target') != 'ios-arm64' or runtime.get('source_commit') != lock['source_commit']
                 or runtime.get('ggml_commit') != lock['ggml_commit']
                 or set(runtime.get('artifacts', {})) != {'libcrispembed.a'}
@@ -99,7 +113,9 @@ def collect(project, staging):
                 or ort['files']['include/onnxruntime_c_api.h']['sha256'] != ort_lock['header_sha256']):
             raise ValueError('ORT framework or header differs from committed binary pin')
         config = regular(project / '.cargo/config.toml', project, MIB)
-        parsed = tomllib.loads(config.read_text())
+        config_bytes = config.read_bytes()
+        snapshots[config] = hashlib.sha256(config_bytes).hexdigest()
+        parsed = tomllib.loads(config_bytes.decode('utf-8'))
         env = parsed.get('env', {})
         expected = {'CRISPEMBED_SYS_LIB_DIR': str(staging / 'runtime/lib'),
                     'PROTOC': env.get('PROTOC', {}).get('value'),
@@ -109,9 +125,18 @@ def collect(project, staging):
         canonical = '\n\n' + MARKER + '\n' + '\n'.join(
             f'[env.{name}]\nvalue = {json.dumps(value, ensure_ascii=False)}\nforce = true\n'
             for name, value in expected.items())
-        if config.read_text() != canonical or parsed != {'env': {k: {'value': v, 'force': True} for k, v in expected.items()}}:
+        if config_bytes != canonical.encode('utf-8') or parsed != {'env': {k: {'value': v, 'force': True} for k, v in expected.items()}}:
             raise ValueError('Retain only the exact generated forced-path Cargo configuration')
-        metadata = read(staging / 'cargo-metadata.json', staging, 64*MIB)
+        metadata = read(staging / 'cargo-metadata.json', staging, 64*MIB, snapshots=snapshots)
+        summary = schema.cargo_summary(metadata, snapshots[staging / 'cargo-metadata.json'])
+        # JSON.stringify is the snapshot generator's exact graph-hash contract.
+        subprocess.run(['node', '-e',
+            "const f=require('fs'),c=require('crypto'),v=JSON.parse(f.readFileSync(process.argv[1]));"
+            "if(c.createHash('sha256').update(JSON.stringify(v.metadata)).digest('hex')!==v.metadata_sha256)process.exit(1);",
+            str(staging / 'cargo-metadata.json')], check=True, capture_output=True, timeout=30)
+        if sha(staging / 'cargo-metadata.json') != snapshots[staging / 'cargo-metadata.json']:
+            raise ValueError('Cargo snapshot changed during minimization')
+        schema.licenses(read(project / 'static/licenses.json', project, snapshots=snapshots))
         if (metadata.get('kind') != 'locked-native-license-metadata' or metadata.get('source_commit') != commit
                 or metadata.get('target') != 'aarch64-apple-ios' or metadata.get('default_features') is not False
                 or metadata.get('features') != ['ocr-mobile', 'tauri/custom-protocol']
@@ -124,7 +149,6 @@ def collect(project, staging):
                      for name, limit, digest in [
                          ('preparation.json', 8*MIB, None), ('layout.json', 8*MIB, None),
                          ('runtime/runtime-build.json', 8*MIB, None), ('ort/ort-runtime.json', 8*MIB, None),
-                         ('cargo-metadata.json', 64*MIB, None),
                          ('runtime/lib/libcrispembed.a', 512*MIB, runtime['artifacts']['libcrispembed.a'])]]
         notices = dict(BASE_NOTICES)
         if 'sheenbidi' in lock.get('native_components', {}):
@@ -147,6 +171,8 @@ def collect(project, staging):
         inventory += [('source/' + name, project / name, project, 8*MIB, None)
                       for name in ('.cargo/config.toml', 'static/licenses.json')]
         for name, original, root, limit, expected_sha in inventory:
+            if original in snapshots:
+                expected_sha = snapshots[original]
             regular(original, root, limit)
             count = original.stat().st_size
             if manifest['total_bytes'] + count > MAX_TOTAL:
@@ -161,6 +187,14 @@ def collect(project, staging):
                 raise ValueError('Original input changed or differs from its receipt')
             manifest['files'][name] = {'bytes': count, 'sha256': digest}
             manifest['total_bytes'] += count
+        summary_path = output / 'staging/cargo-binding-summary.json'
+        summary_path.write_text(json.dumps(summary, indent=2) + '\n')
+        manifest['files']['staging/cargo-binding-summary.json'] = {
+            'bytes': summary_path.stat().st_size, 'sha256': sha(summary_path)}
+        manifest['total_bytes'] += summary_path.stat().st_size
+        if manifest['total_bytes'] > MAX_TOTAL:
+            raise ValueError('Replay input bundle exceeds total byte bound')
+        manifest['license_graph_replay'] = 'unavailable; original arbitrary Cargo metadata deliberately not retained'
         version = prep.get('version', '')
         if not isinstance(version, str) or not version or any(c not in '0123456789.-abcdefghijklmnopqrstuvwxyz' for c in version):
             raise ValueError('Unexpected prepared application version')

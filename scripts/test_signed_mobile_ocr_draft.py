@@ -149,7 +149,9 @@ class DraftRecording(unittest.TestCase):
     def run_record(self, target, artifact, build=None, failure=None):
         with patch.dict(os.environ, context(target)), patch.object(recording, 'signer_path', return_value='apksigner'), \
                 patch.object(recording.subprocess, 'run', side_effect=self.command), \
-                patch.object(recording, 'record', return_value=build or self.build, side_effect=failure) as record:
+                patch.object(recording, 'record', return_value=build or self.build, side_effect=failure) as record, \
+                patch.object(recording.retention_schema, 'validated_ios_metadata', return_value={name: b'{}' for name in
+                    ['preparation.json', 'layout.json', 'runtime-build.json', 'ort-runtime.json']}):
             result = recording.record_draft(self.project, self.root, target, artifact)
         return result, record
 

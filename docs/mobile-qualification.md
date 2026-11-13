@@ -580,8 +580,10 @@ The signed iOS OCR draft now attempts allowlisted input retention after final
 validation, including when that validation fails. `replay-inputs/` is uploaded
 beside the recorder's `artifact/` directory for 14 days. It contains the original
 `libcrispembed.a`, native receipt/notices, exact device ONNX framework and headers,
-ORT receipt/notices, preparation/layout records, locked Cargo metadata snapshot,
-and generated Cargo config/license inventory. The collector never walks the
+ORT receipt/notices, preparation/layout records, minimized Cargo binding summary,
+and generated Cargo config/license inventory. The original Cargo metadata graph
+is deliberately omitted; the summary records its original snapshot hash and
+validated graph hash. The collector never walks the
 native build directory, runner home, signing directories, or arbitrary paths
 named by receipts. No separately built input may replace a missing original.
 
@@ -606,17 +608,35 @@ Staging uses hosted runner temporary storage, not local root storage.
 Privacy: retained metadata includes original runner paths, dependency package
 metadata, source identities and public license text. The Cargo config must match
 exactly the generated three forced-path template; unrelated config, comments or
-values are rejected. No environment dump, API key, certificate, keychain,
+values are rejected. Every raw copied JSON record has an explicit recursive
+field/type schema, including nested notices, components and license entries;
+unknown or duplicate JSON fields fail before copying. The original recorder
+applies these checks to its successful iOS metadata copies too, and uploaded
+failure records omit raw exception text. Arbitrary Cargo workspace/package
+metadata is never copied; only typed source/target/version/count/hash binding
+fields enter the minimized summary. Existing public license text, author and
+repository fields remain public package metadata; schema checks do not prove
+that arbitrary text placed inside an otherwise allowed public field is secret
+free. No environment dump, API key, certificate, keychain,
 standalone provisioning profile, signing export directory, build log, or whole
 checkout is copied. The separately retained signed IPA naturally contains its
 embedded public provisioning/signature material.
 
-Replay still requires the exact app checkout and sibling source commits, the
-original paths referenced by the retained Cargo configuration/metadata (or a
+Signed-app provenance replay still requires the exact app checkout and sibling
+source commits, the original paths referenced by the retained Cargo
+configuration (or a
 separately reviewed mapping that never rewrites historical evidence), macOS
 signature tools and the complete original signed IPA. Run the unchanged full
 verifier; retention is no replacement for its source, native, ORT, notice,
-signature, and app linkage checks. The prior draft did not retain these
+signature, and app linkage checks. Full license-graph replay remains unavailable:
+the original arbitrary Cargo metadata graph is intentionally not retained, and
+the binding summary cannot substitute for it. The prior draft did not retain these
 original inputs; its recovered symbol proof remains partial evidence and cannot
 be upgraded by substituting another run's archive/framework. This change does
 not rerun that build or enable TestFlight/public OCR distribution.
+
+The pinned official iOS ORT ZIP was independently rechecked for retention on
+2026-11-13: its committed 49,207,123-byte SHA-256 matched, and all 27 staged
+device framework/header/plist/notice paths match the explicit allowlist, with
+no additional device framework files omitted. This inspection was read-only
+and did not build or qualify an application.

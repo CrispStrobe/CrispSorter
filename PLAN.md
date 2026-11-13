@@ -4663,3 +4663,10 @@ here if it is taken, so the next person does not re-derive the same plan.
   See `docs/mobile-qualification.md` for privacy, size limits and full replay
   prerequisites; the prior draft remains unreplayable in full because its
   original native archive/ORT inputs were not retained.
+
+- 2026-11-13 retention review: reject unknown/duplicate fields recursively in
+  copied iOS JSON records and the recorder's successful metadata copies; omit
+  raw exception text from failure artifacts. Replace arbitrary Cargo metadata
+  with a typed binding summary plus original snapshot/graph hashes. Signed-app
+  provenance replay remains scoped to its existing verifier; full license-graph
+  replay is unavailable without the intentionally omitted original graph.
