@@ -573,3 +573,50 @@ retained PDF and hash-verified cached DBNet/TrOCR models: it exited successfully
 and produced the expected hOCR text. It performed no model download or Qwen
 license acceptance. This is package-specific DBNet/TrOCR evidence, not a passed
 Qwen preset gate or a substitute for the missing automated release receipt.
+
+### Same-run signed iOS draft input retention (2026-11-13)
+
+The signed iOS OCR draft now attempts allowlisted input retention after final
+validation, including when that validation fails. `replay-inputs/` is uploaded
+beside the recorder's `artifact/` directory for 14 days. It contains the original
+`libcrispembed.a`, native receipt/notices, exact device ONNX framework and headers,
+ORT receipt/notices, preparation/layout records, locked Cargo metadata snapshot,
+and generated Cargo config/license inventory. The collector never walks the
+native build directory, runner home, signing directories, or arbitrary paths
+named by receipts. No separately built input may replace a missing original.
+
+`replay-inputs.json` binds every retained file's bytes and SHA-256 to the source
+commit/tree, production runtime/ORT lock hashes, run ID/attempt, and retained
+unqualified IPA hash. `input_retention_status: complete` means these inputs were
+copied, **not** that the signed app passed provenance, device execution, OCR
+quality, or publication qualification. Failed/partial retention writes an
+`incomplete` manifest and fails its step; the subsequent always-run artifact
+upload can still preserve diagnostic inputs. It never writes a successful
+`signed-draft.json` or bypasses the existing final verifier.
+
+The explicit ORT file list must be reviewed if the pinned package changes. Each
+file is regular, source-contained, size-bounded and checked against its original
+receipt where applicable; receipts cannot add files to the copy list. Total
+retained inputs are capped at 768 MiB (native archive at 512 MiB, graph at 64 MiB;
+the current pinned ORT device binary is 38,398,152 bytes). Actual next-run size
+will be recorded by the manifest; it has not been measured by another build.
+The IPA is already retained separately and is hashed without duplicating it.
+Staging uses hosted runner temporary storage, not local root storage.
+
+Privacy: retained metadata includes original runner paths, dependency package
+metadata, source identities and public license text. The Cargo config must match
+exactly the generated three forced-path template; unrelated config, comments or
+values are rejected. No environment dump, API key, certificate, keychain,
+standalone provisioning profile, signing export directory, build log, or whole
+checkout is copied. The separately retained signed IPA naturally contains its
+embedded public provisioning/signature material.
+
+Replay still requires the exact app checkout and sibling source commits, the
+original paths referenced by the retained Cargo configuration/metadata (or a
+separately reviewed mapping that never rewrites historical evidence), macOS
+signature tools and the complete original signed IPA. Run the unchanged full
+verifier; retention is no replacement for its source, native, ORT, notice,
+signature, and app linkage checks. The prior draft did not retain these
+original inputs; its recovered symbol proof remains partial evidence and cannot
+be upgraded by substituting another run's archive/framework. This change does
+not rerun that build or enable TestFlight/public OCR distribution.

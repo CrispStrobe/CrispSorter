@@ -4655,3 +4655,11 @@ bookmarks make the sort workflow materially worse than the `.dmg`, the correct
 answer is to ship iOS, keep macOS on Developer ID, and stop — not to degrade
 the desktop product into something that fits a container. Record that decision
 here if it is taken, so the next person does not re-derive the same plan.
+
+- 2026-11-13: Signed iOS OCR draft workflow now retains a bounded explicit set of
+  original same-run native/ORT/config/license inputs after final validation,
+  including failed validation, with source/run/file-hash manifest and incomplete
+  failure status. Retention never qualifies an app or enables distribution.
+  See `docs/mobile-qualification.md` for privacy, size limits and full replay
+  prerequisites; the prior draft remains unreplayable in full because its
+  original native archive/ORT inputs were not retained.
