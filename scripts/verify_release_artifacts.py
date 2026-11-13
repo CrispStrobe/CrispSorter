@@ -14,6 +14,8 @@ import tarfile
 import tempfile
 import zipfile
 
+from paddle_live_diagnostics import sanitize_output
+
 
 def sha(path):
     digest = hashlib.sha256()
@@ -106,6 +108,30 @@ def check_ocr_worker(command, destination, env):
             'exit_codes': [missing.returncode, invalid.returncode]}
 
 
+def run_packaged(command, destination, env, timeout):
+    """Keep actual command failures fatal, with bounded safe captured diagnostics."""
+    try:
+        return subprocess.run(command, cwd=destination, env=env, text=True,
+                              capture_output=True, timeout=timeout, check=True)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        def decoded(value):
+            return value.decode('utf-8', errors='replace') if isinstance(value, bytes) else (value or '')
+        # Inspect before truncating: otherwise a token label could fall outside
+        # the retained tail while its value remains visible.
+        raw = decoded(error.stdout) + '\n' + decoded(error.stderr)
+        if len(raw) > 256 * 1024:
+            diagnostics = '<diagnostics withheld: output exceeds safe diagnostic bound>'
+        elif re.search(r'(?:[A-Za-z]:[\\/]|\\\\[^\\\s])', raw):
+            # Backslash escape decoding can change Windows path spellings
+            # before redaction. Withhold rather than expose a partial path.
+            diagnostics = '<diagnostics withheld: Windows path content>'
+        else:
+            diagnostics, _ = sanitize_output(raw, [destination, Path.cwd(), Path.home()])
+            diagnostics = diagnostics[-8000:]
+        status = f'exit {error.returncode}' if isinstance(error, subprocess.CalledProcessError) else 'timeout'
+        raise RuntimeError(f'Packaged command failed ({status}):\n{diagnostics}') from None
+
+
 def prepare_permissive_ocr_models(command, destination, env):
     """Provision only the packaged control's explicit permissive model pair."""
     expected = {'dbnet-det': 'apache-2.0', 'trocr-printed': 'mit'}
@@ -125,16 +151,14 @@ def prepare_permissive_ocr_models(command, destination, env):
                  'requires_consent': False} for row in models]
 
     arguments = ['--format', 'json', 'models', 'plan', 'dbnet_trocr']
-    result = subprocess.run([*command, *arguments], cwd=destination, env=env,
-                            text=True, capture_output=True, timeout=30, check=True)
+    result = run_packaged([*command, *arguments], destination, env, 30)
     plan = json.loads(result.stdout)
     inspect(plan)
     if plan['missing']:
         # This explicit request still uses the app's normal licensing and
         # hash-verifying model manager. No accept-license flag/env is added.
         arguments = ['--format', 'json', 'models', 'pull', 'dbnet_trocr']
-        result = subprocess.run([*command, *arguments], cwd=destination, env=env,
-                                text=True, capture_output=True, timeout=600, check=True)
+        result = run_packaged([*command, *arguments], destination, env, 600)
         plan = json.loads(result.stdout)
     return {'arguments': arguments, 'result': 'permissive OCR model pair available',
             'models': inspect(plan, complete=True)}
@@ -205,19 +229,20 @@ def inspect_package(platform, artifact, destination):
         launcher = [interpreter.group(1).strip(), '--inhibit-cache', '--library-path',
                     '/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu:/lib64:/usr/lib64', str(executable)]
     for arguments in [['--format', 'json', 'version'], ['--format', 'json', 'doctor']]:
-        result = subprocess.run([*launcher, *arguments], cwd=destination, env=env, text=True, capture_output=True, timeout=90, check=True)
+        result = run_packaged([*launcher, *arguments], destination, env, 90)
         payload = json.loads(result.stdout)
         checks.append({'arguments': arguments, 'result': payload, 'stderr': result.stderr[-4000:]})
     # The worker launches current_exe(), so test the packaged executable
     # directly rather than the Linux interpreter wrapper used for CLI smokes.
     checks.append(check_ocr_worker([str(executable)], destination, env))
-    if platform == 'linux-x86_64':
-        checks.append(prepare_permissive_ocr_models([str(executable)], destination, env))
+    # Fresh Windows and macOS runners need the same explicit permissive pair
+    # as Linux; packaged OCR must not rely on a developer's existing cache.
+    checks.append(prepare_permissive_ocr_models([str(executable)], destination, env))
     # Use the real executable for the OCR probe: invoking ld.so explicitly
     # changes current_exe(), which would invalidate resource-dir discovery.
     fixture = Path(__file__).resolve().parents[1] / 'tests/quality/ocr-task.pdf'
     arguments = ['ocr', str(fixture), '--engine', 'dbnet_trocr', '--cleanup', 'false', '--render', 'hocr', '--min-confidence', '0', '--min-chars', '0']
-    result = subprocess.run([str(executable), *arguments], cwd=destination, env=env, text=True, capture_output=True, timeout=600, check=True)
+    result = run_packaged([str(executable), *arguments], destination, env, 600)
     text = result.stdout.lower()
     if 'ocr_page' not in text or not all(word in text for word in ['cobalt', 'warranty', '2031']):
         raise ValueError('Packaged scanned-PDF OCR missed its known evidence: ' + result.stdout[-4000:] + result.stderr[-4000:])
