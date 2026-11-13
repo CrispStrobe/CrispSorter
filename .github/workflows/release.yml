@@ -564,6 +564,12 @@ jobs:
           shared-key: release-required
           key: ${{ matrix.rust_target }}
 
+      # ort-sys stores ONNX Runtime outside Cargo's restored target cache.
+      # Re-run its build script so a fresh runner downloads any missing archive.
+      - name: Refresh Linux ONNX Runtime build state
+        if: runner.os == 'Linux'
+        run: cargo clean -p ort-sys --release
+
       - name: Install frontend dependencies
         run: npm ci
 
