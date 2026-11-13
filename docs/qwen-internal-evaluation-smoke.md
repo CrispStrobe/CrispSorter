@@ -86,3 +86,17 @@ cannot make the CLI print success; raw exception text is not retained.
 
 If cleanup also fails after a primary validation/capture failure, the original
 failure category remains and a separate cleanup failure category is recorded.
+
+## Subsequent smoke result
+
+The source-bound CPU smoke subsequently passed for the authorized internal,
+non-commercial evaluation. Its native evidence contains the expected fixture
+text, “Cobalt warranty expires November 2031.”, with about 62 seconds spent in
+the inference call. An independent audit checked the retained artifact digest,
+source and input hashes, model size and digest, and the production OCR call.
+The privacy filter withheld the raw Cargo diagnostics, so the single-test count
+is supported by the source-bound runner receipt and successful job, rather than
+an independently readable Cargo transcript. The generated license-inventory
+exception is recorded in that evidence. This one fixture does not qualify the
+full preset suite, general OCR quality, mobile or GPU behavior, commercial use,
+or publication.
