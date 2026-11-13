@@ -774,3 +774,14 @@ readable. Withholding is a privacy decision and does not alter the separate raw
 test exit/count or source checks; it does not fabricate a model result.
 Twenty-eight model-free selector/source/capture/privacy tests and actionlint
 pass after these fixes. No live fixture execution is implied.
+
+### Subsequent source-bound Paddle fixture result
+
+The single Linux Paddle fixture was subsequently run on the reviewed source and
+passed once. The retained receipt binds the test, source, lock and native inputs;
+an independent audit checked those bindings and the test's word, cache-reuse and
+table assertions. The diagnostic filter withheld the raw output, so the decoded
+OCR text and raw test summary cannot be independently reconstructed from the
+artifact. This result supersedes the earlier statement that the integration
+fixture had not been run, but does not qualify general recognition quality,
+other languages, mobile devices or the release license inventory.
