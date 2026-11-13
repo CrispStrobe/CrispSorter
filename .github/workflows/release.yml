@@ -15,7 +15,7 @@ on:
         type: boolean
         default: false
       testflight_uploaded_after:
-        description: 'Only for testflight_current_resume: original successful-upload UTC cutoff (YYYY-MM-DDTHH:MM:SSZ). Required; never regenerated or used to upload again.'
+        description: 'Only for testflight_current_resume: optional upload-time filter (YYYY-MM-DDTHH:MM:SSZ). Exact IPA version/build selects the build when omitted.'
         type: string
         default: ''
       mobile_profile:
@@ -118,10 +118,12 @@ jobs:
     timeout-minutes: 60
     env:
       # Legacy upload/resume modes retain their qualified IPA pin. The current
-      # selector replaces these values only after exact draft/receipt validation.
+      # selector reads the configured version and checks the actual IPA identity.
       IPA_VERSION: '0.15.0'
       IPA_SHA256: '36856e33752836d0e51d327b09431afd34c4bc18da1f9f1e19bc60265ef017fa'
       IPA_FILE: CrispSorter_0.15.0_ios-arm64.ipa
+      UPLOADED_AFTER: ''
+      TESTFLIGHT_UPLOAD_REQUIRED: 'false'
     steps:
       - uses: actions/checkout@v4
       - name: Check requested mobile release profile
@@ -129,7 +131,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Select the exact current-source draft IPA
+      - name: Select the configured version IPA
         if: inputs.platform == 'testflight_current' || inputs.platform == 'testflight_current_resume'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -138,7 +140,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/prepare_testflight_current.py \
-            --repo "$GITHUB_REPOSITORY" --source "$(git rev-parse HEAD)" \
+            --repo "$GITHUB_REPOSITORY" \
             --output "$RUNNER_TEMP/testflight-current" \
             --publish '${{ inputs.publish }}' --mac-appstore '${{ inputs.mac_appstore }}' \
             --mode "$CURRENT_TESTFLIGHT_MODE" --uploaded-after "$ORIGINAL_UPLOAD_TIMESTAMP" \
@@ -161,8 +163,18 @@ jobs:
           test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$APP/Info.plist")" = "$IPA_VERSION"
           BUILD=$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' "$APP/Info.plist")
           echo "BUILD_NUMBER=$BUILD" >> "$GITHUB_ENV"
+      - name: Install TestFlight API dependency
+        run: python -m pip install 'cryptography==44.0.3'
+      - name: Check App Store Connect app and whether upload is needed
+        env:
+          TESTFLIGHT_SELECTION_MODE: ${{ (inputs.platform == 'testflight_resume' || inputs.platform == 'testflight_current_resume') && 'resume' || 'upload' }}
+          ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
+          ASC_APP_ID: ${{ secrets.APPSTORE_APP_ID }}
+          ASC_KEY_P8_BASE64: ${{ secrets.APPSTORE_API_KEY_P8 }}
+        run: python scripts/check_testflight_upload.py
       - name: Upload to App Store Connect
-        if: inputs.platform == 'testflight' || inputs.platform == 'testflight_current'
+        if: (inputs.platform == 'testflight' || inputs.platform == 'testflight_current') && env.TESTFLIGHT_UPLOAD_REQUIRED == 'true'
         env:
           ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
@@ -173,18 +185,10 @@ jobs:
           mkdir -p "$HOME/.appstoreconnect/private_keys"
           printf '%s' "$ASC_KEY_P8_BASE64" | base64 --decode > "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
           chmod 600 "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
-          UPLOAD_CUTOFF=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
-          echo "UPLOADED_AFTER=$UPLOAD_CUTOFF" >> "$GITHUB_ENV"
-          echo "Original upload UTC cutoff for an explicit resume: $UPLOAD_CUTOFF"
           xcrun altool --upload-package "$IPA_FILE" --type ios \
             --apple-id "$ASC_APP_ID" --bundle-id com.crispstrobe.crispsorter \
             --bundle-version "$BUILD_NUMBER" --bundle-short-version-string "$IPA_VERSION" \
             --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
-      - name: Resume the already accepted upload
-        if: inputs.platform == 'testflight_resume'
-        run: echo "::error::Set the $IPA_VERSION upload timestamp before resuming."; exit 1
-      - name: Install TestFlight API dependency
-        run: python -m pip install 'cryptography==44.0.3'
       - name: Assign the uploaded build to internal TestFlight
         env:
           ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
@@ -1463,15 +1467,30 @@ jobs:
 
       - name: Verify final signed Android OCR draft provenance
         if: env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
+        env:
+          ANDROID_KEYSTORE: ${{ runner.temp }}/android-release.jks
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         run: |
           python3 scripts/record_signed_mobile_ocr_draft.py --target android-arm64 \
             --staging "$OCR_DRAFT_ROOT" --artifact "$ANDROID_RELEASE_APK"
-      - name: Retain signed OCR draft as explicitly unqualified build evidence
-        if: always() && env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
+      - name: Retain signed OCR draft package
+        if: success() && env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
         uses: actions/upload-artifact@v4
         with:
           name: signed-ocr-draft-android-arm64-unqualified
-          path: ${{ runner.temp }}/signed-mobile-ocr-draft/artifact
+          path: ${{ runner.temp }}/signed-mobile-ocr-draft/artifact/*.apk
+          if-no-files-found: error
+          retention-days: 14
+      - name: Retain optional signed OCR draft diagnostics
+        if: always() && env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-ocr-draft-android-arm64-diagnostics
+          path: |
+            ${{ runner.temp }}/signed-mobile-ocr-draft/artifact/signed-draft.json
+            ${{ runner.temp }}/signed-mobile-ocr-draft/artifact/failure.json
           if-no-files-found: warn
           retention-days: 14
 
@@ -1968,19 +1987,23 @@ jobs:
         run: |
           python3 scripts/record_signed_mobile_ocr_draft.py --target ios-arm64 \
             --staging "$OCR_DRAFT_ROOT" --artifact "$IPA"
-      - name: Retain original same-run iOS OCR provenance inputs
-        if: always() && env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
-        run: |
-          python3 scripts/retain_ios_ocr_draft_inputs.py \
-            --staging "$RUNNER_TEMP/signed-mobile-ocr-draft"
-      - name: Retain signed OCR draft as explicitly unqualified build evidence
-        if: always() && env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
+      - name: Retain signed OCR draft package
+        if: success() && env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
         uses: actions/upload-artifact@v4
         with:
           name: signed-ocr-draft-ios-arm64-unqualified
+          path: ${{ runner.temp }}/signed-mobile-ocr-draft/artifact/*.ipa
+          if-no-files-found: error
+          retention-days: 14
+      - name: Retain optional signed OCR draft diagnostics
+        if: always() && env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-ocr-draft-ios-arm64-diagnostics
           path: |
-            ${{ runner.temp }}/signed-mobile-ocr-draft/artifact
-            ${{ runner.temp }}/signed-mobile-ocr-draft/replay-inputs
+            ${{ runner.temp }}/signed-mobile-ocr-draft/artifact/signed-draft.json
+            ${{ runner.temp }}/signed-mobile-ocr-draft/artifact/failure.json
           if-no-files-found: warn
           retention-days: 14
 

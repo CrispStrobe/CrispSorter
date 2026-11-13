@@ -115,10 +115,11 @@ class WorkflowBinding(unittest.TestCase):
         self.assertIn('--version "$BV" --uploaded-after "$MACOS_UPLOADED_AFTER"', job)
         self.assertIn("if: env.UPLOADED == 'true'", job)
 
-    def test_resume_still_requires_explicit_original_upload_timestamp(self):
+    def test_resume_selects_exact_version_build_without_required_timestamp(self):
         job = self.job('testflight-existing', 'release-draft-preflight')
-        self.assertIn("if: inputs.platform == 'testflight_resume'", job)
-        self.assertIn('Set the $IPA_VERSION upload timestamp before resuming.', job)
+        self.assertIn("      UPLOADED_AFTER: ''", job)
+        self.assertNotIn('Set the $IPA_VERSION upload timestamp before resuming.', job)
+        self.assertIn('--marketing-version "$IPA_VERSION"', job)
         self.assertIn('--version "$BUILD_NUMBER" --uploaded-after "$UPLOADED_AFTER"', job)
 
 

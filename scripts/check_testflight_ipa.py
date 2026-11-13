@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check the exact IPA archive identity before an authorized TestFlight upload.
 
-This does not replace codesign verification or source-bound build receipts.
+The workflow separately verifies the actual app signature.
 """
 import argparse
 import hashlib

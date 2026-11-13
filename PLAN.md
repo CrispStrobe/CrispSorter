@@ -1,5 +1,15 @@
 # CrispSorter — Development Plan
 
+## Current testing and release policy
+
+Ordinary test failures should be fixed and rerun. Optional diagnostics, reports,
+replay inputs, source-identity records and admission paperwork do not gate a
+build or release. Keep checks that protect actual product correctness: package
+signing, bundle/version, native architecture/linkage, required licenses and
+security. Existing dated entries below describe historical work and constraints;
+they do not add approval or evidence requirements to normal retries.
+
+
 ## Bounded retained-IPA ONNX symbol verification — 13 November 2026
 
 The corrected signed iOS draft retains the exact `_OrtGetApiBase`
@@ -4711,3 +4721,10 @@ here if it is taken, so the next person does not re-derive the same plan.
   Existing four-preset/release qualification remains unchanged. No weights,
   inference, GPU comparison or dispatch at preparation; the subsequent authorized
   CPU smoke passed. See docs/qwen-internal-evaluation-smoke.md for limitations.
+
+- 2026-11-13: Existing-IPA TestFlight selection now uses the configured version
+  and actual IPA bundle/build/signature, without source/receipt admission or a
+  required original timestamp. A read-only App Store Connect lookup skips an
+  existing exact version/build and continues internal assignment. Lookup errors
+  stop upload; normal retries can repeat selection and assignment. No upload or
+  dispatch was performed while preparing this change.

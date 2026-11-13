@@ -401,9 +401,11 @@ The final publication gate requires the current version's Android APK and
 provisioned iOS IPA, source-bound receipts, and matching downloaded SHA-256
 hashes. Android also requires matching production-signing evidence. A draft
 can still retain unsigned diagnostic artifacts, but publication must not
-substitute them for these packages. Ordinary iOS and macOS TestFlight uploads
-record the upload cutoff and select the exact uploaded build number; the resume
-path requires the original cutoff explicitly. These checks validate artifact
+substitute them for these packages. Ordinary iOS and macOS build jobs record an
+upload cutoff. The existing-IPA
+TestFlight route selects the exact marketing version and build number, and
+resumes assignment without requiring a recorded cutoff. These checks validate
+artifact
 identity and signing evidence, not physical-device behavior.
 
 The existing v0.15.0 draft and internal TestFlight build were produced from an
@@ -423,60 +425,34 @@ Connect. These archive checks supplement signing and source-bound receipts;
 they do not prove that an artifact was built from a given commit or executed on
 a device, and they introduce no approval requirement.
 
-The upload-only `testflight_current` selector consumes the existing standard IPA
-without rebuilding or publishing a release. Run it from the same source ref as
-the completed draft build:
+The upload-only `testflight_current` selector reads the marketing version from
+Tauri configuration and selects `CrispSorter_<version>_ios-arm64.ipa` from that
+version's existing release. It requires no source hash, receipt, empty output
+directory or original upload timestamp. The IPA itself supplies the app bundle,
+marketing version and build number; macOS verifies its actual code signature.
+The selector neither builds the app nor publishes a GitHub release.
 
-```sh
-gh workflow run release.yml --repo CrispStrobe/CrispSorter --ref <same-source-ref> \
-  -f platform=testflight_current -f mobile_profile=standard \
-  -f publish=false -f mac_appstore=false
-```
-
-It checks that the current version's unpublished draft resolves to the exact
-checkout SHA, then checks its standard iOS receipt's source/version/hash and the
-downloaded IPA's bytes and identity. macOS verifies the actual extracted code
-signature before upload. The actual IPA supplies the build number, and the UTC
-cutoff recorded before upload binds internal distribution to that fresh build.
-Public release and macOS App Store jobs cannot run under this selector; invalid
-publication flags fail before artifact selection. There is no new consent gate.
-If the source ref advances after the draft build, source matching rejects the
-old receipt. Legacy upload/resume selectors retain their separate old IPA pin.
-
-Current-source completion still requires new binaries for Linux, Windows, macOS,
-Android and iOS, their matching source/version/hash receipts and required signing
-evidence, and a newly uploaded iOS build selected by its exact build number and
-upload cutoff. A retained upload route can use the new IPA only after its exact
-version/hash are available from that source-bound artifact; the existing old
-IPA cannot establish new-source TestFlight coverage. Windows Authenticode and macOS Developer ID credentials
-are still required for signed desktop publication; see
-[desktop signing](desktop-signing.md).
+Before upload or assignment retry, a read-only App Store Connect query checks
+the configured app's bundle ID. Upload modes also check the exact
+marketing-version/build pair. If that build is
+already present, including PROCESSING or INVALID, upload is skipped and the
+workflow proceeds to the existing internal TestFlight assignment logic. Failed
+API requests or missing version relationships stop the workflow; they never
+mean the build is absent. A normal retry can repeat the lookup. Concurrent
+uploads or a newly accepted build not yet visible in Apple's API can still
+produce Apple's duplicate-build rejection; no automatic second upload is made.
 
 ### Resume an accepted current-source TestFlight upload
 
-`testflight_current_resume` is an upload-free recovery selector. Supply
-`testflight_uploaded_after` with the **original** upload's UTC cutoff, exactly in
-`YYYY-MM-DDTHH:MM:SSZ` form. The upload step prints that value before contacting
-Apple. Do not substitute the retry time: processing/assignment recovery must
-remain bound to the original accepted upload. Missing, malformed, naive or future
-timestamps fail before any draft lookup or environment update.
-
-Resume retains `publish=false`, `mac_appstore=false`, standard-profile admission,
-exact current source/draft/tag/receipt binding, final IPA hash/size/version checks
-and platform signature verification. It derives the build number from that
-verified IPA. It then queries/assigns only the exact app marketing-version and
-build-number pair uploaded at or after the explicit original cutoff. A reused
-build number from another marketing version, missing version relationship,
-missing exact build or non-VALID processing state cannot select another build.
-There is no fallback to the newest or older valid build.
-
-This selector never runs altool upload, rebuilds the app, starts another release
-platform or publishes a release. It only recovers processing/group assignment
-for an already accepted upload; an upload that was not accepted needs the
-ordinary current-source upload selector instead. The existing legacy
-`testflight_resume` refusal remains unchanged. No new manual approval is added.
-The new route is source/test preparation, not evidence that a particular upload
-or internal group assignment has completed.
+`testflight_current_resume` only waits for and assigns the exact verified IPA's
+marketing-version/build pair. It never uploads. The optional
+`testflight_uploaded_after` filter accepts `YYYY-MM-DDTHH:MM:SSZ`; omitting it is
+the normal assignment retry. There is no newest-build fallback. Existing builds
+must reach VALID before assignment, and a missing, invalid or failed build cannot
+be substituted with another version. Legacy selectors retain their old IPA pin.
+All selectors preserve `publish=false`, `mac_appstore=false` and standard-profile
+behavior. No new approval is required. Device and OCR qualification are separate
+from upload and internal group assignment.
 
 ## Current release execution
 
@@ -486,8 +462,8 @@ with publication and App Store upload disabled. Android and iOS artifacts and
 receipts completed; desktop jobs require their own results. Standard mobile
 packages omit native OCR. The current-source TestFlight run
 uploaded marketing version 0.15.1, build 0.15.1 and assigned the valid build to
-internal testers. Use `testflight_current_resume` with the original logged UTC
-cutoff if distribution recovery is needed; do not upload the same build again.
+internal testers. Use `testflight_current_resume` for distribution recovery; it does not upload
+the same build again.
 
 The independent signed OCR draft runs for iOS and Android used their own
 recorded source commits and failed their final qualification gates as described
@@ -574,9 +550,23 @@ and produced the expected hOCR text. It performed no model download or Qwen
 license acceptance. This is package-specific DBNet/TrOCR evidence, not a passed
 Qwen preset gate or a substitute for the missing automated release receipt.
 
-### Same-run signed iOS draft input retention (2026-11-13)
+### Historical same-run signed iOS draft input retention (2026-11-13)
 
-The signed iOS OCR draft now attempts allowlisted input retention after final
+Automatic replay-input collection has been removed from the release workflow.
+The draft verifier checks the actual package, configured signing certificate,
+bundle/version, native target/linkage and packaged notices directly. It needs no
+preparation/layout/source-tree identity report. The final signed
+package must be retained intact and uploaded successfully. Only minimized JSON
+diagnostics are optional; their write or transport failures cannot fail otherwise
+successful package checks. Ordinary reruns replace recorder-owned output safely.
+No arbitrary runtime, signing or preparation metadata is copied into artifacts.
+The following records the earlier implementation and retained artifacts; those
+records remain historical observations. Normal signed drafts need no replay
+bundle. Mobile draft diagnostic JSON uploads are best effort. The signed package upload,
+signature, version, native-linkage and license checks remain required. No
+standard release or TestFlight selection behavior changed.
+
+The earlier signed iOS OCR draft attempted allowlisted input retention after final
 validation, including when that validation fails. `replay-inputs/` is uploaded
 beside the recorder's `artifact/` directory for 14 days. It contains the original
 `libcrispembed.a`, native receipt/notices, exact device ONNX framework and headers,
