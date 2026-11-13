@@ -26,7 +26,7 @@ on:
       platform:
         description: 'Build all platforms, retry a desktop (windows_original_b739 keeps the original source), upload/resume an IPA, or prepare an OCR draft. Original-source, upload-only and OCR draft selectors require publish=false and mac_appstore=false.'
         type: choice
-        options: [all, windows, windows_original_b739, macos, testflight, testflight_resume, testflight_current, testflight_current_resume, certificate_audit, android_ocr_draft, ios_ocr_draft]
+        options: [all, windows, windows_original_b739, macos, testflight, testflight_resume, testflight_current, testflight_current_resume, certificate_audit, android_ocr_draft, ios_ocr_draft, macos_validate_b739]
         default: all
 
 # ── Sibling-repo version pins (single source of truth) ──────────────
@@ -1138,6 +1138,51 @@ jobs:
     env: *desktop_release_env
     steps: *desktop_release_steps
 
+  # Reuse only exact original unsigned packages; no build or release writes.
+  macos-package-validation-replay:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.platform == 'macos_validate_b739' }}
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: replay-tooling
+          persist-credentials: false
+      - name: Reject contradictory replay flags before any package access
+        run: |
+          python3 - <<'PYGUARD'
+          import os
+          import sys
+          sys.path.insert(0, "replay-tooling/scripts")
+          from replay_macos_package_validation import guard
+          guard(os.environ)
+          PYGUARD
+      - uses: actions/checkout@v4
+        with:
+          ref: b739a3c0b70f39d3ae19e1bfcb412f3b44f77794
+          path: original-source
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Diagnose exact original unsigned macOS packages
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 replay-tooling/scripts/replay_macos_package_validation.py --repo "$GITHUB_REPOSITORY" \
+            --source "$GITHUB_WORKSPACE/original-source" --output "$RUNNER_TEMP/macos-package-replay"
+      - name: Retain bounded sanitized package diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-original-package-validation-unqualified
+          path: |
+            ${{ runner.temp }}/macos-package-replay/*.json
+            ${{ runner.temp }}/macos-package-replay/*.txt
+          if-no-files-found: warn
+          retention-days: 14
+
   release-macos:
     needs: release-draft-preflight
     if: ${{ github.event_name == 'workflow_dispatch' && !inputs.mac_appstore && inputs.platform == 'macos' }}
@@ -1889,7 +1934,7 @@ jobs:
     # skipped it entirely, so a tagged release produced no App Store build
     # and therefore nothing for the macOS TestFlight step to distribute —
     # silently, since a skipped job is not a failed one.
-    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mac_appstore && inputs.platform != 'testflight_current' && inputs.platform != 'testflight_current_resume' && inputs.platform != 'android_ocr_draft' && inputs.platform != 'ios_ocr_draft' && inputs.platform != 'windows_original_b739')
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mac_appstore && inputs.platform != 'testflight_current' && inputs.platform != 'testflight_current_resume' && inputs.platform != 'android_ocr_draft' && inputs.platform != 'ios_ocr_draft' && inputs.platform != 'windows_original_b739' && inputs.platform != 'macos_validate_b739')
             || (github.event_name != 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v')) }}
     permissions:
       contents: write
