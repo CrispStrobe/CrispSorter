@@ -24,9 +24,9 @@ on:
         options: [standard, ocr]
         default: standard
       platform:
-        description: 'Build all platforms, retry Windows or macOS, upload/resume an IPA, or prepare an OCR draft. Upload-only and OCR draft selectors require publish=false and mac_appstore=false.'
+        description: 'Build all platforms, retry Linux, Windows or macOS, upload/resume an IPA, or prepare an OCR draft. Upload-only and OCR draft selectors require publish=false and mac_appstore=false.'
         type: choice
-        options: [all, windows, macos, testflight, testflight_resume, testflight_current, testflight_current_resume, certificate_audit, android_ocr_draft, ios_ocr_draft]
+        options: [all, linux, windows, macos, testflight, testflight_resume, testflight_current, testflight_current_resume, certificate_audit, android_ocr_draft, ios_ocr_draft]
         default: all
 
 # ── Sibling-repo version pins (single source of truth) ──────────────
@@ -200,7 +200,7 @@ jobs:
           python scripts/testflight_distribute.py --platform IOS --mode internal --version "$BUILD_NUMBER" --uploaded-after "$UPLOADED_AFTER" --marketing-version "$IPA_VERSION" --wait-minutes 35 --notes 'Test library search, cited chat, document review, and mobile navigation.'
 
   release-draft-preflight:
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'android_ocr_draft' || inputs.platform == 'ios_ocr_draft' || (!inputs.mac_appstore && (inputs.platform == 'all' || inputs.platform == 'windows' || inputs.platform == 'macos')) }}
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'android_ocr_draft' || inputs.platform == 'ios_ocr_draft' || (!inputs.mac_appstore && (inputs.platform == 'all' || inputs.platform == 'linux' || inputs.platform == 'windows' || inputs.platform == 'macos')) }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -310,7 +310,8 @@ jobs:
             crispembed_lib_asset: crispembed-windows-x86_64.zip
             pdfium_asset: pdfium-win-x64.tgz
             pdfium_lib_glob: 'bin/pdfium.dll'
-          - platform: ubuntu-24.04
+          - &linux_release
+            platform: ubuntu-24.04
             qualification_platform: linux-x86_64
             rust_target: x86_64-unknown-linux-gnu
             llama_asset: llama-b8340-bin-ubuntu-vulkan-x64.tar.gz
@@ -1093,6 +1094,19 @@ jobs:
     env: *desktop_release_env
     steps: *desktop_release_steps
 
+  release-linux:
+    needs: release-draft-preflight
+    if: ${{ github.event_name == 'workflow_dispatch' && !inputs.mac_appstore && inputs.platform == 'linux' }}
+    permissions:
+      contents: write
+    strategy:
+      matrix:
+        include:
+          - *linux_release
+    runs-on: ${{ matrix.platform }}
+    env: *desktop_release_env
+    steps: *desktop_release_steps
+
   release-macos:
     needs: release-draft-preflight
     if: ${{ github.event_name == 'workflow_dispatch' && !inputs.mac_appstore && inputs.platform == 'macos' }}
@@ -1871,7 +1885,7 @@ jobs:
     # skipped it entirely, so a tagged release produced no App Store build
     # and therefore nothing for the macOS TestFlight step to distribute —
     # silently, since a skipped job is not a failed one.
-    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mac_appstore && inputs.platform != 'testflight_current' && inputs.platform != 'testflight_current_resume' && inputs.platform != 'android_ocr_draft' && inputs.platform != 'ios_ocr_draft')
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mac_appstore && inputs.platform != 'linux' && inputs.platform != 'testflight_current' && inputs.platform != 'testflight_current_resume' && inputs.platform != 'android_ocr_draft' && inputs.platform != 'ios_ocr_draft')
             || (github.event_name != 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v')) }}
     permissions:
       contents: write
