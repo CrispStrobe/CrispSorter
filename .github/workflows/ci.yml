@@ -385,11 +385,12 @@ jobs:
 
       - name: Retain scoped Paddle test diagnostics
         if: always() && github.event_name == 'workflow_dispatch' && inputs.scope == 'paddle-live'
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: paddle-live-test-results
           path: ${{ runner.temp }}/paddle-live
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
 
       - name: Run only the consented internal Qwen smoke
@@ -402,11 +403,12 @@ jobs:
 
       - name: Retain internal Qwen evaluation evidence only
         if: always() && github.event_name == 'workflow_dispatch' && inputs.scope == 'qwen-live'
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: qwen-internal-evaluation-test-results
           path: ${{ runner.temp }}/qwen-internal-smoke
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
 
       # The OCR model manager against the real network: installs tesseract-eng

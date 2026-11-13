@@ -71,6 +71,14 @@ class WorkflowScope(unittest.TestCase):
         self.assertIn('mkdir -p src-tauri/bin && touch src-tauri/bin/.gitkeep',rust)
         self.assertIn('scripts/verify_crispembed_bundle.py',rust)
 
+    def test_optional_diagnostics_uploads_cannot_fail_passing_tests(self):
+        rust=jobs()['rust']
+        for name in ['Retain scoped Paddle test diagnostics','Retain internal Qwen evaluation evidence only']:
+            step=rust.split('      - name: '+name+'\n',1)[1].split('\n      - ',1)[0]
+            self.assertIn('        continue-on-error: true\n',step)
+            self.assertIn('          if-no-files-found: warn\n',step)
+            self.assertNotIn('if-no-files-found: error',step)
+
     def test_native_archives_stay_outside_checked_out_source(self):
         rust=jobs()['rust']
         for archive in ['crispembed-libs.tar.gz','crispasr-libs.tar.gz']:
