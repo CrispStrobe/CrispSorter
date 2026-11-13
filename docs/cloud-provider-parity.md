@@ -160,6 +160,16 @@ with bounded backoff. Queue adapters exist because `CloudDrive` is synchronous
 and object-safe; changing the trait to capture borrowed provider state in an
 async `'static` worker would be unsafe and would break FUSE/legacy adapters.
 
+File-target pulls stage complete bytes beside the destination. Source/validation
+failures and cancellation before publication preserve the previous file. If the
+final rename reports failure, the destination may already have been replaced:
+the transfer stays failed and automatic retry is disabled, including when
+cancellation races with that acknowledgement. This protects later user edits.
+The shared publisher also marks local-upload publication errors non-replayable;
+this change does not alter upload cancellation reporting, which may still report
+cancelled for an uncertain failed upload. It adds no durable operation journal
+or provider identity requirement.
+
 Native resumable state is provider/session/key/chunk-specific. A resume state
 must validate source/destination identity and metadata before continuing; an
 incompatible checkpoint is rejected or discarded rather than applied to a
