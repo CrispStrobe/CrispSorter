@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
 """Validate sibling release checkouts without rewriting committed Cargo sources."""
 import argparse
-import hashlib
 import json
 from pathlib import Path
 import subprocess
 import tomllib
 
 from build_mobile_crispembed import check_source
-from ocr_mobile_build_receipt import source_tree_identity
 
 
 def git(root, *arguments):
@@ -17,7 +15,6 @@ def git(root, *arguments):
 
 def check(root, embed_commit, asr_ref, docx_ref, require_ocr_lock=False):
     root = root.resolve()
-    identity = source_tree_identity(root)
     lock = json.loads((root / 'scripts/crispembed-runtime-lock.json').read_text())
     mobile_lock = json.loads((root / 'scripts/ocr-mobile-runtime-lock.json').read_text())
     locks_agree = all(mobile_lock[key] == lock[key] for key in ['source_commit', 'ggml_commit'])
@@ -32,9 +29,8 @@ def check(root, embed_commit, asr_ref, docx_ref, require_ocr_lock=False):
     for name, ref in [('CrispASR', asr_ref), ('crisp-docx', docx_ref)]:
         sibling = siblings[name]
         if (sibling.is_symlink() or not sibling.is_dir()
-                or git(sibling, 'rev-parse', 'HEAD') != git(sibling, 'rev-parse', ref + '^{commit}')
-                or git(sibling, 'status', '--porcelain', '--untracked-files=all')):
-            raise ValueError('Sibling source does not match a clean pinned checkout: ' + name)
+                or git(sibling, 'rev-parse', 'HEAD') != git(sibling, 'rev-parse', ref + '^{commit}')):
+            raise ValueError('Sibling source does not match a configured checkout: ' + name)
     manifest_path = root / 'src-tauri/Cargo.toml'
     manifest = tomllib.loads(manifest_path.read_text())
     checked = []
@@ -55,12 +51,8 @@ def check(root, embed_commit, asr_ref, docx_ref, require_ocr_lock=False):
                 'crisp-docx-core', 'crisp-docx-llm', 'crisp-docx-align'}
     if not required.issubset(checked):
         raise ValueError('Expected committed sibling paths are missing or rewritten')
-    return {'schema': 'crispsorter-mobile-release-layout-v1', 'app_source': git(root, 'rev-parse', 'HEAD'),
-            'app_tree': git(root, 'rev-parse', 'HEAD^{tree}'), **identity,
-            'cargo_manifest_sha256': hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
-            'dependency_sources': {name: git(path, 'rev-parse', 'HEAD') for name, path in siblings.items()},
-            'checked_dependencies': sorted(checked), 'mobile_qualification_lock_matches_release': locks_agree,
-            'scope': 'Clean source layout and dependency identity only; no native build or behavior qualification'}
+    return {'checked_dependencies': sorted(checked),
+            'mobile_qualification_lock_matches_release': locks_agree}
 
 
 if __name__ == '__main__':

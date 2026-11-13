@@ -42,16 +42,16 @@ class DraftStaging(unittest.TestCase):
     def native(self, source, output, target, jobs, ndk, lock):
         self.assertEqual(jobs, 2)
         self.assertEqual(lock, self.project / staging.RUNTIME_LOCK)
-        (output / 'lib').mkdir(parents=True)
+        (output / 'lib').mkdir(parents=True, exist_ok=True)
         (output / 'lib' / ('libcrispembed.so' if target.startswith('android-') else 'libcrispembed.a')).write_bytes(b'native fixture')
-        (output / 'notices').mkdir()
+        (output / 'notices').mkdir(exist_ok=True)
         (output / 'notices/native-LICENSE.txt').write_text('notice')
         (output / 'runtime-build.json').write_text('{}')
 
     def ort(self, command, **kwargs):
         self.assertIn('prepare_mobile_ort.py', command[1])
         root = Path(command[command.index('--output') + 1])
-        (root / 'notices').mkdir(parents=True)
+        (root / 'notices').mkdir(parents=True, exist_ok=True)
         for name in ['LICENSE', 'ThirdPartyNotices.txt']:
             (root / 'notices' / name).write_text('notice')
         (root / 'ort-runtime.json').write_text('{}')
@@ -79,7 +79,8 @@ class DraftStaging(unittest.TestCase):
                 self.assertTrue((self.project / 'src-tauri/bin/onnxruntime-LICENSE.txt').is_file())
                 self.assertEqual(cargo.call_args.kwargs['ort_lib_dir'], self.output / 'ort/lib' if target.startswith('android-') else None)
                 self.assertEqual(cargo.call_args.kwargs['ort_xcframework'], self.output / 'ort/onnxruntime.xcframework' if target.startswith('ios-') else None)
-                self.assertEqual(json.loads((self.output / 'preparation.json').read_text())['qualification'], 'Not established; build preparation only')
+                self.assertFalse((self.output / 'preparation.json').exists())
+                self.assertFalse((self.output / 'layout.json').exists())
                 native.assert_called_once()
 
     def test_publish_tag_or_mas_context_rejected_before_native_build(self):
@@ -89,10 +90,37 @@ class DraftStaging(unittest.TestCase):
                 self.prepare(**invalid)
         self.assertFalse(self.output.exists())
 
-    def test_existing_output_refused(self):
+    def test_same_staging_can_retry_after_failure_and_success_without_clearing_other_files(self):
         self.output.mkdir()
-        with self.assertRaisesRegex(ValueError, 'fresh draft'):
-            self.prepare()
+        marker = self.output / 'keep.txt'; marker.write_text('unrelated')
+        with patch.object(staging, 'prepare_cargo', side_effect=ValueError('interrupted')):
+            # Exercise a later failure using the same real outer orchestration.
+            with patch.dict(os.environ, context()), patch.object(staging, 'select_lock', return_value={'source':'production'}), \
+                    patch.object(staging, 'check_layout', return_value={'app_source':'application'}), \
+                    patch.object(staging, 'check_versions', return_value='0.15.1'), \
+                    patch.object(staging, 'build_runtime', side_effect=self.native), \
+                    patch.object(staging.subprocess, 'run', side_effect=self.ort), self.assertRaisesRegex(ValueError, 'interrupted'):
+                staging.prepare(self.project, self.output, 'android-arm64', 'production', 'asr', 'docx', Path('/host/protoc'))
+        first, _, _ = self.prepare()
+        second, native, cargo = self.prepare()
+        self.assertEqual(first, second)
+        self.assertEqual(marker.read_text(), 'unrelated')
+        native.assert_called_once(); cargo.assert_called_once()
+        self.output = self.base / 'ios-rerun'
+        first, _, _ = self.prepare('ios-arm64')
+        second, _, _ = self.prepare('ios-arm64')
+        self.assertEqual(first, second)
+
+    def test_symlinked_output_or_generated_file_is_not_overwritten(self):
+        outside = self.base / 'outside'; outside.mkdir()
+        self.output.symlink_to(outside, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, 'regular directory'): self.prepare()
+        self.output.unlink(); self.output.mkdir()
+        sentinel = outside / 'sentinel'; sentinel.write_text('unrelated')
+        resources = self.project / 'src-tauri/bin'; resources.mkdir()
+        (resources / 'ocr-mobile-runtime.json').symlink_to(sentinel)
+        with self.assertRaisesRegex(ValueError, 'regular file'): self.prepare()
+        self.assertEqual(sentinel.read_text(), 'unrelated')
 
     def test_staging_inside_dependency_source_is_rejected_before_build(self):
         self.output = self.project.parent / 'CrispEmbed/generated'

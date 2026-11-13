@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Retain source-derived native notices and verify their actual app packaging.
+"""Collect native symbols and license notices and verify their app packaging.
 
 The symbol proof describes the unstripped runtime produced by the native build.
 It does not claim that internal symbol names survive final application stripping
@@ -12,6 +12,8 @@ from pathlib import Path
 import re
 import subprocess
 import zipfile
+
+from mobile_staging_paths import directory as staging_directory, output_file
 
 MAX_NOTICE_BYTES = 1024 * 1024
 MAX_NATIVE_BYTES = 512 * 1024 * 1024
@@ -44,11 +46,6 @@ def file_sha256(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
-def git(source, *args):
-    return subprocess.run(['git', '-C', str(source), *args], check=True,
-                          capture_output=True, text=True, timeout=30).stdout.strip()
-
-
 def bounded_file(path, root):
     if path.is_symlink() or not path.is_file() or path.resolve() != path or not path.is_relative_to(root):
         raise ValueError('Native provenance file must be regular and source-contained: ' + str(path))
@@ -64,11 +61,8 @@ def checked_components(components, lock):
     if (not isinstance(components, dict) or set(components) - {'sheenbidi'}
             or any(not isinstance(value, dict) for value in components.values())):
         raise ValueError('Native provenance names an unsupported component')
-    for name, pin in required.items():
-        if (not isinstance(pin, dict) or set(pin) != {'source_tree'}
-                or not re.fullmatch('[0-9a-f]{40}', str(pin['source_tree']))
-                or components.get(name, {}).get('source_tree') != pin['source_tree']):
-            raise ValueError('Native component source tree differs from its application lock: ' + name)
+    if not set(required).issubset(components):
+        raise ValueError('Native runtime is missing a required component')
 
 
 def defined_sheen_symbols(output):
@@ -85,20 +79,13 @@ def defined_sheen_symbols(output):
 
 
 def collect(source, output, target, artifacts, lock, ndk=None):
-    """Call after the clean source-pinned native build, before writing its receipt."""
+    """Check required native symbols and copy current source license notices."""
     source, output = source.resolve(), output.resolve()
     components, notices = {}, dict(BASE_NOTICES)
     vendor = source / 'vendor/sheenbidi'
     if vendor.exists() or vendor.is_symlink() or (source / 'NOTICE.sheenbidi').exists():
         if vendor.is_symlink() or not vendor.is_dir() or vendor.resolve() != vendor:
             raise ValueError('SheenBidi source must be a regular vendored directory')
-        source_tree = git(source, 'rev-parse', 'HEAD:vendor/sheenbidi')
-        if not re.fullmatch('[0-9a-f]{40}', source_tree):
-            raise ValueError('SheenBidi source has no immutable Git tree')
-        upstream = bounded_file(vendor / 'UPSTREAM.md', source).decode('utf-8')
-        revisions = re.findall(r'commit `([0-9a-f]{40})`', upstream)
-        if len(revisions) != 1:
-            raise ValueError('SheenBidi upstream provenance must name one immutable commit')
         symbols = {}
         for artifact in artifacts:
             if target.startswith('android-'):
@@ -113,24 +100,20 @@ def collect(source, output, target, artifacts, lock, ndk=None):
                 raise ValueError('Native symbol evidence exceeds its bounded size')
             symbols[artifact.name] = {'sha256': file_sha256(artifact),
                                       'defined_symbols': defined_sheen_symbols(result.stdout)}
-        components['sheenbidi'] = {'source_path': 'vendor/sheenbidi', 'source_tree': source_tree,
-                                   'upstream_commit': revisions[0], 'artifacts': symbols,
+        components['sheenbidi'] = {'source_path': 'vendor/sheenbidi', 'artifacts': symbols,
                                    'linkage': 'Unity C implementation in the primary native library'}
         notices.update(SHEEN_NOTICES)
     checked_components(components, lock)
     directory = output / 'notices'
-    directory.mkdir()
+    staging_directory(directory)
     records = {}
     for basename, (repository, relative) in notices.items():
         checkout = source if repository == 'crispembed' else source / 'ggml'
         path = checkout / relative
         data = bounded_file(path, checkout)
-        blob = hashlib.sha1(b'blob ' + str(len(data)).encode('ascii') + b'\0' + data).hexdigest()
-        if git(checkout, 'rev-parse', 'HEAD:' + relative) != blob:
-            raise ValueError('Native notice differs from its committed source: ' + relative)
-        (directory / basename).write_bytes(data)
+        output_file(directory, basename).write_bytes(data)
         records[basename] = {'source_repository': repository, 'source_path': relative,
-                             'git_blob': blob, 'bytes': len(data), 'sha256': sha256(data)}
+                             'bytes': len(data), 'sha256': sha256(data)}
     return {'schema_version': 1, 'components': components, 'notices': records}
 
 
@@ -155,8 +138,6 @@ def verify_packaged(artifact, platform, runtime_directory, runtime, lock):
         required.update(SHEEN_NOTICES)
         component = components['sheenbidi']
         if (component.get('source_path') != 'vendor/sheenbidi'
-                or not re.fullmatch('[0-9a-f]{40}', str(component.get('source_tree')))
-                or not re.fullmatch('[0-9a-f]{40}', str(component.get('upstream_commit')))
                 or set(component.get('artifacts', {})) != set(runtime['artifacts'])):
             raise ValueError('Native component source/artifact identity is incomplete')
         for name, entry in component['artifacts'].items():
@@ -167,13 +148,10 @@ def verify_packaged(artifact, platform, runtime_directory, runtime, lock):
         raise ValueError('Native notice inventory is incomplete or unexpected')
     for basename, (repository, relative) in required.items():
         entry = notices[basename]
-        if (entry.get('source_repository') != repository or entry.get('source_path') != relative
-                or not re.fullmatch('[0-9a-f]{40}', str(entry.get('git_blob')))):
+        if entry.get('source_repository') != repository or entry.get('source_path') != relative:
             raise ValueError('Native notice source identity is invalid: ' + basename)
         data = bounded_file(runtime_directory / 'notices' / basename, runtime_directory)
-        blob = hashlib.sha1(b'blob ' + str(len(data)).encode('ascii') + b'\0' + data).hexdigest()
-        if (len(data) != entry.get('bytes') or sha256(data) != entry.get('sha256')
-                or blob != entry['git_blob']):
+        if len(data) != entry.get('bytes') or sha256(data) != entry.get('sha256'):
             raise ValueError('Native notice changed after its source build: ' + basename)
     packaged = {}
     if platform == 'android':

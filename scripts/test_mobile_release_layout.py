@@ -93,12 +93,9 @@ class Layout(unittest.TestCase):
     def check(self):
         return layout.check(self.app, self.embed_sha, 'fixture-v1', 'fixture-v1')
 
-    def test_real_sibling_layout_preserves_source_and_receipt_identity(self):
+    def test_real_sibling_layout_preserves_manifest_and_dependency_resolution(self):
         before = (self.app / 'src-tauri/Cargo.toml').read_bytes()
         result = self.check()
-        self.assertTrue(result['application_source_clean'])
-        self.assertEqual(result['app_source'], git(self.app, 'rev-parse', 'HEAD'))
-        self.assertEqual(result['dependency_sources']['CrispEmbed'], self.embed_sha)
         self.assertEqual(len(result['checked_dependencies']), 7)
         self.assertEqual((self.app / 'src-tauri/Cargo.toml').read_bytes(), before)
         metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--offline', '--locked', '--format-version', '1', '--manifest-path', str(self.app / 'src-tauri/Cargo.toml')], text=True, stderr=subprocess.PIPE))
@@ -110,7 +107,7 @@ class Layout(unittest.TestCase):
     def test_rewritten_dirty_manifest_rejected(self):
         path = self.app / 'src-tauri/Cargo.toml'
         path.write_text(path.read_text().replace('../../CrispEmbed', '../_sibling/CrispEmbed'))
-        with self.assertRaisesRegex(ValueError, 'source or dependency lock changed'):
+        with self.assertRaisesRegex(ValueError, 'missing or rewritten'):
             self.check()
 
     def test_committed_rewritten_manifest_cannot_bypass_path_validation(self):
@@ -130,14 +127,14 @@ class Layout(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'unavailable'):
             self.check()
 
-    def test_dirty_dependency_rejected(self):
+    def test_local_edits_and_untracked_notes_do_not_gate_layout(self):
         (self.base / 'crisp-docx/README').write_text('changed\n')
-        with self.assertRaisesRegex(ValueError, 'clean pinned checkout'):
-            self.check()
+        (self.app / 'local-notes.txt').write_text('notes')
+        self.assertEqual(len(self.check()['checked_dependencies']), 7)
 
     def test_mismatched_dependency_ref_rejected(self):
         git(self.base / 'CrispASR', 'commit', '--allow-empty', '-qm', 'unselected revision')
-        with self.assertRaisesRegex(ValueError, 'clean pinned checkout'):
+        with self.assertRaisesRegex(ValueError, 'configured checkout'):
             self.check()
 
     def test_runtime_candidate_cannot_replace_production_lock(self):

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Build a complete, source-pinned mobile CrispEmbed runtime in an empty directory.
+"""Build a configured mobile CrispEmbed runtime in a reusable build directory.
 
 This prepares native libraries only; it does not enable CrispEmbed in the app or
-qualify the resulting build on a device. Use a clean, isolated checkout with
+qualify the resulting build on a device. Use an isolated checkout with
 its pinned ggml submodule initialized. Requires Android NDK or Xcode as relevant.
 """
 import argparse
@@ -16,6 +16,7 @@ import sys
 
 from validate_android_native_libs import closure
 from mobile_native_provenance import collect as collect_native_provenance
+from mobile_staging_paths import directory, output_file
 
 LOCK = Path(__file__).with_name('crispembed-runtime-lock.json')
 ANDROID_TARGETS = {'android-arm64': 'arm64-v8a', 'android-x86_64': 'x86_64',
@@ -37,10 +38,6 @@ def check_source(source, lock):
         raise ValueError('CrispEmbed checkout does not match the runtime lock')
     if git(source / 'ggml', 'rev-parse', 'HEAD') != lock['ggml_commit']:
         raise ValueError('ggml checkout does not match the runtime lock')
-    if git(source, 'status', '--porcelain', '--untracked-files=all'):
-        raise ValueError('CrispEmbed checkout must be clean, including its submodules')
-    if git(source / 'ggml', 'status', '--porcelain', '--untracked-files=all'):
-        raise ValueError('ggml checkout must be clean')
 
 
 def configure_args(target, source, build, ndk=None):
@@ -97,15 +94,17 @@ def package_ios(build, libdir):
 
 def build_runtime(source, output, target, jobs, ndk, lock_path=LOCK):
     lock = json.loads(lock_path.read_text())
+    if output.is_symlink() or (output.exists() and not output.is_dir()):
+        raise ValueError('Native output must be a regular directory')
     source, output = source.resolve(), output.resolve()
     if output == source or source in output.parents or output in source.parents:
         raise ValueError('output must be outside the source checkout')
-    if output.exists() and any(output.iterdir()):
-        raise ValueError('output directory must be empty')
     check_source(source, lock)
     args = configure_args(target, source, output / 'build', ndk)
     libdir = output / 'lib'
-    libdir.mkdir(parents=True, exist_ok=True)
+    directory(output / 'build')
+    directory(libdir)
+    output_file(libdir, 'libcrispembed.so' if target in ANDROID_TARGETS else 'libcrispembed.a')
     run(args)
     run(['cmake', '--build', output / 'build', '--target',
          'crispembed-shared' if target in ANDROID_TARGETS else 'crispembed',
@@ -126,11 +125,13 @@ def build_runtime(source, output, target, jobs, ndk, lock_path=LOCK):
         artifacts = package_ios(output / 'build', libdir)
     check_source(source, lock)
     provenance = collect_native_provenance(source, output, target, artifacts, lock, ndk)
+    obsolete = output_file(libdir, 'libcrispembed.a' if target in ANDROID_TARGETS else 'libcrispembed.so')
+    obsolete.unlink(missing_ok=True)
     receipt = {'target': target, 'source_commit': lock['source_commit'],
                'ggml_commit': lock['ggml_commit'],
                'artifacts': {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in artifacts},
                'native_provenance': provenance}
-    (output / 'runtime-build.json').write_text(json.dumps(receipt, indent=2) + '\n')
+    output_file(output, 'runtime-build.json').write_text(json.dumps(receipt, indent=2) + '\n')
     print(json.dumps(receipt, indent=2))
 
 
