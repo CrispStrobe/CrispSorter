@@ -40,8 +40,8 @@ crispcat             = { path = "../crates/crispcat", features = ["lance"] }
 # https://github.com/CrispStrobe/crisp-cloud-rs (no vendored copies).
 # Both lines must name the same rev: provider-conformance.yml and the
 # crisp-cloud-rs job in ci.yml read it from here and verify that commit.
-crisp-internxt = { git = "https://github.com/CrispStrobe/crisp-cloud-rs", rev = "9b57beee7ac2e6ae9aaa15a1332a92bcfb5e1460", optional = true }
-crisp-filen = { git = "https://github.com/CrispStrobe/crisp-cloud-rs", rev = "9b57beee7ac2e6ae9aaa15a1332a92bcfb5e1460", optional = true }
+crisp-internxt = { git = "https://github.com/CrispStrobe/crisp-cloud-rs", rev = "841ebb1e516d27841d2a231899edcb0ed4d45d20", optional = true }
+crisp-filen = { git = "https://github.com/CrispStrobe/crisp-cloud-rs", rev = "841ebb1e516d27841d2a231899edcb0ed4d45d20", optional = true }
 
 # Document translation pipeline. The `crisp-docx` workspace is a
 # sibling checkout (../../crisp-docx). These path deps are
