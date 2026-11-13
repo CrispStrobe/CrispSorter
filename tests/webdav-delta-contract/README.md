@@ -1,9 +1,10 @@
 This small harness compiles production delta calculations and staged in-place
-WebDAV uploads/downloads without Tauri, OCR models or networking. The harness
-extracts both production transfer methods and supplies a fake transport. Run
+WebDAV uploads/downloads and delta metadata without Tauri, OCR models or
+networking. The harness extracts production transfer/status/block-map methods
+and metadata types, and supplies a fake transport. Run
 with one Cargo job:
 
-    CARGO_BUILD_JOBS=1 cargo test --locked --manifest-path tests/webdav-delta-contract/Cargo.toml
+    CARGO_BUILD_JOBS=1 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0 cargo test --locked --manifest-path tests/webdav-delta-contract/Cargo.toml -- --test-threads=1
 
 All changed ranges are fetched, size checked and hash verified in a private,
 automatically cleaned temporary file before any destination write. Only changed
@@ -51,7 +52,51 @@ and inject 307/308 responses to check failure before finalization. They do not
 verify reqwest redirect replay or real HTTP headers. Real-client mockito tests
 in `src-tauri/src/drives/webdav.rs` cover body/content-length/If-Match and actual
 small-body replay versus large-body refusal; those require the application test
-build. Block-map JSON parsing and metadata storage remain unbounded.
+build.
+
+Delta status and block-map JSON are read through an 8 KiB scratch buffer before
+parsing, with decoded response budgets of 64 KiB and 32 MiB respectively. Actual
+bytes read determine the limit; Content-Length never sizes an allocation. The
+reader requests at most the budget plus one byte and stops as soon as it exceeds
+the budget, including for chunked, close-delimited or decompressed responses.
+These are input-byte limits, not total peak RAM limits: Vec capacity, parsed
+strings/signatures and subsequent local/remote maps also occupy memory.
+Unknown JSON fields still count toward the byte limit.
+
+The block-map budget allows compact maps with 100,000 signatures (over 390 GiB
+at the usual 4 MiB blocks), covered by a valid-input regression. File size alone
+is not limited. Larger or unusually verbose maps are explicitly refused with
+the decoded limit and advice to use a full transfer. This returns an error; the
+caller/user must select a full transfer, rather than receiving an automatic
+fallback. Normal app detection, map 404, HTTP errors, JSON errors and map-shape
+checks keep their existing branches.
+
+`metadata_contract.rs` tests the extracted production metadata methods with
+real serde parsing and a stub transport. `metadata_http.rs` separately tests
+the production reader against a real reqwest client and a local TCP server:
+valid and oversized fixed/chunked/close-delimited bodies, inflated declared
+length with truncation, parser-rejected extreme lengths, and a small gzip body
+that expands beyond the decoded budget. HTTP framing defines body length;
+bytes beyond an undersized Content-Length are not claimed to be detectable.
+These reader checks do not compile the complete WebDAV module.
+
+To run the HTTP checks without a new dependency build, supply an existing
+compatible reqwest rlib built with `blocking` and `gzip`, and its dependency
+directory (for example from the oauth-proxy-contract harness). From repo root:
+
+    REQWEST_RLIB=/path/to/debug/deps/libreqwest-HASH.rlib
+    REQWEST_DEPS=/path/to/debug/deps
+    rustc --edition=2021 --test tests/webdav-delta-contract/metadata_http.rs -L "dependency=$REQWEST_DEPS" --extern "reqwest=$REQWEST_RLIB" -o /tmp/webdav-metadata-http-tests
+    /tmp/webdav-metadata-http-tests --test-threads=1
+    rm /tmp/webdav-metadata-http-tests
+
+The reader's std-only tests can also run without Cargo or reqwest by compiling
+a temporary wrapper that declares the production metadata file as a module:
+
+    printf '#[path="%s/src-tauri/src/drives/webdav_delta_metadata.rs"] mod metadata;\n' "$PWD" > /tmp/webdav-metadata-std.rs
+    rustc --edition=2021 --test /tmp/webdav-metadata-std.rs -o /tmp/webdav-metadata-std-tests
+    /tmp/webdav-metadata-std-tests
+    rm /tmp/webdav-metadata-std.rs /tmp/webdav-metadata-std-tests
 
 The dependency-free streaming import regression can also run without Cargo or
 an application build:

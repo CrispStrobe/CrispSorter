@@ -9,6 +9,11 @@ mod webdav_delta_download;
 #[path = "../../src-tauri/src/drives/webdav_delta_upload.rs"]
 mod webdav_delta_upload;
 
+#[path = "../../src-tauri/src/drives/webdav_delta_metadata.rs"]
+mod delta_metadata;
+#[cfg(test)]
+mod metadata_contract;
+
 #[cfg(test)]
 mod actual_wiring {
     use super::{

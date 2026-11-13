@@ -35,6 +35,9 @@ mod delta_download;
 #[path = "webdav_delta_upload.rs"]
 mod delta_upload;
 
+#[path = "webdav_delta_metadata.rs"]
+mod delta_metadata;
+
 #[path = "webdav_range.rs"]
 mod range_response;
 
@@ -253,7 +256,13 @@ impl WebDavDrive {
         if !response.status().is_success() {
             return Ok(false);
         }
-        let status: DeltaStatus = response.json().context("parsing crispcloud_delta status")?;
+        let bytes = delta_metadata::read_bounded(response, delta_metadata::STATUS_LIMIT)
+            .map_err(|error| {
+                let message = format!("reading crispcloud_delta status: {error}");
+                anyhow::Error::new(error).context(message)
+            })?;
+        let status: DeltaStatus =
+            serde_json::from_slice(&bytes).context("parsing crispcloud_delta status")?;
         Ok(status.app.as_deref() == Some("crispcloud_delta")
             && status.algorithm.as_deref() == Some("adler32+sha256")
             && status.block_size.is_some())
@@ -269,9 +278,13 @@ impl WebDavDrive {
             return Ok(None);
         }
         let response = response.error_for_status()?;
-        let map: ServerBlockMap = response
-            .json()
-            .context("parsing crispcloud_delta block map")?;
+        let bytes = delta_metadata::read_bounded(response, delta_metadata::BLOCK_MAP_LIMIT)
+            .map_err(|error| {
+                let message = format!("reading crispcloud_delta block map: {error}");
+                anyhow::Error::new(error).context(message)
+            })?;
+        let map: ServerBlockMap =
+            serde_json::from_slice(&bytes).context("parsing crispcloud_delta block map")?;
         if map.block_count != map.signatures.len() || map.block_size == 0 {
             return Err(anyhow!(
                 "invalid crispcloud_delta block map for {}",
