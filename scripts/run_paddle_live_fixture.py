@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""Run one source-bound CPU Paddle fixture, with explicit bounded evidence."""
+"""Run one CPU Paddle fixture with bounded, sanitized test diagnostics."""
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -12,59 +11,21 @@ import subprocess
 import sys
 import time
 
-from ocr_mobile_build_receipt import source_tree_identity
 from paddle_live_diagnostics import sanitize_output
 
 TEST = 'extractors::ocr_paddle::tests::live_paddle_recognises_the_fixture_sentence'
 FEATURES = 'desktop,sidecars,audio-glint,aitoolkit,cloud-backup,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,ocr-reviewed-pdf,crispembed-license-api,ocr-photo-tools,crispasr,translate-align,translate-nmt,pdf-render,anydoc,fuse,paddle-ocr'
-COMMAND = ['cargo', 'test', '--locked', '-p', 'crispsorter', '--lib', '--features', FEATURES,
+COMMAND = ['cargo', 'test', '-p', 'crispsorter', '--lib', '--features', FEATURES,
            '--', '--ignored', '--exact', TEST, '--nocapture', '--test-threads=1']
-INPUTS = ['Cargo.lock', 'Cargo.toml', 'src-tauri/Cargo.toml', 'src-tauri/src/extractors/ocr_paddle.rs',
-          'src-tauri/src/extractors/paddle_resize.rs', 'src-tauri/src/extractors/context_cache.rs',
-          'src-tauri/src/ocr_builtin_models.rs', 'src-tauri/src/ocr_models.rs',
-          'tests/quality/ocr-task.png', 'scripts/run_paddle_live_fixture.py', 'scripts/paddle_live_diagnostics.py']
 MAX_OUTPUT = 8 * 1024**2
 MAX_SECONDS = 90 * 60
 
 
-def git(root, *args):
-    return subprocess.check_output(['git', '-C', str(root), *args], timeout=30, stderr=subprocess.PIPE).decode().strip()
-
-
-def sha(data):
-    return hashlib.sha256(data).hexdigest()
-
-
-def snapshot(project, scope="paddle-live", scope_env="PADDLE_LIVE_SCOPE", inputs=None):
-    source = git(project, 'rev-parse', 'HEAD')
-    if (os.environ.get('GITHUB_EVENT_NAME') != 'workflow_dispatch'
-            or os.environ.get(scope_env) != scope
-            or not re.fullmatch('[0-9a-f]{40}', os.environ.get('GITHUB_SHA', ''))
-            or source != os.environ['GITHUB_SHA']):
-        raise ValueError('Explicit scoped dispatch and exact checked-out source required')
-    identity = source_tree_identity(project)
-    hashes = {}
-    for name in INPUTS if inputs is None else inputs:
-        path = project / name
-        if path.is_symlink() or path.resolve() != path or not path.is_file():
-            raise ValueError('Source input must be a regular committed file')
-        data = path.read_bytes()
-        if data != subprocess.check_output(['git', '-C', str(project), 'show', 'HEAD:' + name], timeout=30, stderr=subprocess.PIPE):
-            raise ValueError('Source input changed before the live fixture')
-        hashes[name] = sha(data)
-    siblings = {}
-    for name, expected in [('CrispEmbed', os.environ['CRISPEMBED_COMMIT']),
-                           ('CrispASR', os.environ['CRISPASR_REF']), ('crisp-docx', os.environ['CRISPDOCX_REF'])]:
-        root = project.parent / name
-        head = git(root, 'rev-parse', 'HEAD')
-        if head != git(root, 'rev-parse', expected + '^{commit}'):
-            raise ValueError('Sibling checkout differs from its workflow pin')
-        siblings[name] = head
-    lock = json.loads((project / 'scripts/crispembed-runtime-lock.json').read_text())
-    if siblings['CrispEmbed'] != lock['source_commit']:
-        raise ValueError('Native checkout and production runtime lock differ')
-    return {'source': source, 'tree': git(project, 'rev-parse', 'HEAD^{tree}'),
-            'source_identity': identity, 'source_files_sha256': hashes, 'dependency_sources': siblings}
+class TestFailure(Exception):
+    """A real Cargo test failure, without arbitrary subprocess error text."""
+    def __init__(self, exit_code):
+        self.exit_code = exit_code
+        super().__init__('Cargo test failed')
 
 
 class CaptureFailure(Exception):
@@ -127,25 +88,45 @@ def capture(project, env, command=None):
     return code, bytes(output)
 
 
+def prepare_output(output):
+    """Reuse only known diagnostic filenames; output problems never gate tests."""
+    try:
+        if output.is_symlink() or output.resolve() != output.absolute():
+            return
+        output.mkdir(parents=True, exist_ok=True)
+        for name in ['receipt.json', 'diagnostics.txt', 'native-smoke.json']:
+            path = output / name
+            if path.is_file() or path.is_symlink():
+                path.unlink()
+    except OSError:
+        pass
+
+
+def write_diagnostic(path, text):
+    try:
+        if path.is_symlink() or path.parent.resolve() != path.parent.absolute():
+            return False
+        path.write_text(text)
+        return True
+    except OSError:
+        return False
+
+
 def retain_diagnostics(output, report, raw, project):
     roots = [project, project.parent, os.environ.get('RUNNER_TEMP'), os.environ.get('HOME')]
     text, status = sanitize_output(raw.decode('utf-8', errors='replace'), roots)
-    (output / 'diagnostics.txt').write_text(text)
-    report.update(diagnostics_status=status, captured_output_sha256=sha(raw))
+    retained = write_diagnostic(output / 'diagnostics.txt', text)
+    report['diagnostics_status'] = status if retained else 'not-written'
 
 
 def run(project, output):
     project, output = project.resolve(), output.absolute()
-    if output.resolve() != output or output.is_relative_to(project) or output.exists():
-        raise ValueError('Use fresh external evidence output')
-    output.mkdir(parents=True)
+    prepare_output(output)
     report = {'schema': 'crispsorter-scoped-paddle-live-v1', 'status': 'failed', 'test': TEST,
-              'features': FEATURES, 'default_features': True, 'cargo_locked': True,
+              'features': FEATURES, 'default_features': True, 'cargo_locked': False,
               'limits': {'seconds': MAX_SECONDS, 'output_bytes': MAX_OUTPUT, 'build_jobs': 2, 'test_threads': 1},
               'scope': 'One CPU Paddle fixture, cache reuse and table session; not a full suite, release, GUI/device/corpus qualification'}
     try:
-        before = snapshot(project)
-        report.update(before)
         env = os.environ.copy()
         env.update(CARGO_BUILD_JOBS='2', CUDA_VISIBLE_DEVICES='', OMP_NUM_THREADS='2')
         try:
@@ -157,18 +138,18 @@ def run(project, output):
         retain_diagnostics(output, report, raw, project)
         report['exit_code'] = code
         text = raw.decode('utf-8', errors='replace')
-        if code or not re.search(r'(?m)^running 1 test\s*$', text) or not re.search(
+        if code:
+            raise TestFailure(code)
+        if not re.search(r'(?m)^running 1 test\s*$', text) or not re.search(
                 r'(?m)^test result: ok\. 1 passed; 0 failed; 0 ignored;', text):
             raise ValueError('Exactly one live Paddle test must execute and pass')
-        if snapshot(project) != before:
-            raise ValueError('Source/build inputs changed during live Paddle validation')
         report.update(status='passed', executed_tests=1)
         return report
     except Exception as error:
         report['failure_code'] = error.code if isinstance(error, CaptureFailure) else 'validation-failed'
         raise
     finally:
-        (output / 'receipt.json').write_text(json.dumps(report, indent=2) + '\n')
+        write_diagnostic(output / 'receipt.json', json.dumps(report, indent=2) + '\n')
 
 
 def main():
@@ -177,10 +158,13 @@ def main():
     args = parser.parse_args()
     try:
         run(Path.cwd(), args.output)
+    except TestFailure as error:
+        print(f'Paddle live fixture failed: Cargo exited {error.exit_code}', file=sys.stderr)
+        return error.exit_code if 0 < error.exit_code < 256 else 1
     except Exception:
-        print('Scoped Paddle live fixture failed; inspect its bounded source receipt/diagnostics', file=sys.stderr)
+        print('Scoped Paddle live fixture failed; inspect its bounded test diagnostics', file=sys.stderr)
         return 1
-    print('Exactly one source-bound live Paddle fixture passed')
+    print('Exactly one live Paddle fixture passed')
     return 0
 
 

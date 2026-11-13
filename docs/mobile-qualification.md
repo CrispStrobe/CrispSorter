@@ -785,3 +785,7 @@ OCR text and raw test summary cannot be independently reconstructed from the
 artifact. This result supersedes the earlier statement that the integration
 fixture had not been run, but does not qualify general recognition quality,
 other languages, mobile devices or the release license inventory.
+
+### Standard 0.15.2 internal TestFlight
+
+The standard 0.15.2 iOS build was accepted as valid and assigned to Internal Testers. It omits native OCR; no physical-device or OCR quality qualification is implied.

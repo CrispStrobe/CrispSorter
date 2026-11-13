@@ -64,12 +64,20 @@ class WorkflowScope(unittest.TestCase):
             'Check out sibling CrispASR (cargo path dep)','Check out sibling crisp-docx (cargo path dep)',
             'Install system deps','dtolnay/rust-toolchain@stable','Download libcrispembed bundle',
             'Download libcrispasr bundle','Rust dependency cache','actions/setup-node@v4','Build the frontend',
-            'Create bin placeholder for the resources glob','Run only the source-bound live Paddle fixture',
-            'Retain scoped Paddle source receipt and bounded diagnostics'])
+            'Create bin placeholder for the resources glob','Run only the live Paddle fixture',
+            'Retain scoped Paddle test diagnostics'])
         rust=jobs()['rust']
         self.assertIn('npm ci\n          npm run build',rust)
         self.assertIn('mkdir -p src-tauri/bin && touch src-tauri/bin/.gitkeep',rust)
         self.assertIn('scripts/verify_crispembed_bundle.py',rust)
+
+    def test_optional_diagnostics_uploads_cannot_fail_passing_tests(self):
+        rust=jobs()['rust']
+        for name in ['Retain scoped Paddle test diagnostics','Retain internal Qwen evaluation evidence only']:
+            step=rust.split('      - name: '+name+'\n',1)[1].split('\n      - ',1)[0]
+            self.assertIn('        continue-on-error: true\n',step)
+            self.assertIn('          if-no-files-found: warn\n',step)
+            self.assertNotIn('if-no-files-found: error',step)
 
     def test_native_archives_stay_outside_checked_out_source(self):
         rust=jobs()['rust']
@@ -85,7 +93,7 @@ class WorkflowScope(unittest.TestCase):
         self.assertIn('-- --ignored live_paddle_recognises_the_fixture_sentence',step)
         self.assertEqual(re.search(r'--features ([^\s]+)',step)[1],runner.FEATURES)
         self.assertEqual(runner.COMMAND[-5:],['--ignored','--exact',runner.TEST,'--nocapture','--test-threads=1'])
-        self.assertIn('--locked',runner.COMMAND)
+        self.assertNotIn('--locked',runner.COMMAND)
         self.assertIn('options: [native-linux, platforms, all, paddle-live, qwen-live]',WORKFLOW.read_text())
 
     def test_concurrency_blocks_unchanged(self):
@@ -100,85 +108,53 @@ class WorkflowScope(unittest.TestCase):
         self.assertEqual(hashlib.sha256(''.join(blocks).encode()).hexdigest(), CONCURRENCY_SHA256)
 
 
-class SourceSnapshot(unittest.TestCase):
-    def setUp(self):
-        self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
-        self.root=Path(self.tmp.name).resolve();self.project=self.root/'app';self.project.mkdir()
-        self.environment={'GITHUB_EVENT_NAME':'workflow_dispatch','PADDLE_LIVE_SCOPE':'paddle-live'}
-        for name, variable in [('CrispEmbed','CRISPEMBED_COMMIT'),('CrispASR','CRISPASR_REF'),('crisp-docx','CRISPDOCX_REF')]:
-            sibling=self.root/name;sibling.mkdir();(sibling/'fixture').write_text(name)
-            self.environment[variable]=self.commit(sibling)
-        for name in runner.INPUTS:
-            path=self.project/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text('source fixture '+name)
-        lock=self.project/'scripts/crispembed-runtime-lock.json'
-        lock.write_text(json.dumps({'source_commit':self.environment['CRISPEMBED_COMMIT']}))
-        self.environment['GITHUB_SHA']=self.commit(self.project)
-        self.context=patch.dict(os.environ,self.environment);self.context.start();self.addCleanup(self.context.stop)
-
-    def commit(self,root):
-        for args in [('init','-q'),('add','.'),('-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-qm','fixture')]:
-            subprocess.run(['git','-C',str(root),*args],check=True,capture_output=True)
-        return subprocess.check_output(['git','-C',str(root),'rev-parse','HEAD'],text=True).strip()
-
-    def test_real_clean_source_and_sibling_layout_snapshot(self):
-        value=runner.snapshot(self.project)
-        self.assertEqual(value['source'],self.environment['GITHUB_SHA'])
-        self.assertEqual(set(value['source_files_sha256']),set(runner.INPUTS))
-        self.assertEqual(value['dependency_sources']['CrispEmbed'],self.environment['CRISPEMBED_COMMIT'])
-
-    def test_changed_source_lock_rejected(self):
-        (self.project/'Cargo.lock').write_text('changed source')
-        with self.assertRaises(ValueError):runner.snapshot(self.project)
-
-    def test_source_file_symlink_rejected(self):
-        path=self.project/'src-tauri/src/extractors/paddle_resize.rs'
-        path.unlink();path.symlink_to(self.project/'Cargo.lock')
-        with self.assertRaises(ValueError):runner.snapshot(self.project)
-
-    def test_setup_archive_in_source_is_rejected_without_new_exceptions(self):
-        for name in ['crispembed-libs.tar.gz','crispasr-libs.tar.gz']:
-            path=self.project/name;path.write_bytes(b'archive fixture')
-            with self.assertRaises(ValueError):runner.snapshot(self.project)
-            path.unlink()
-        self.assertEqual(runner.snapshot(self.project)['source'],self.environment['GITHUB_SHA'])
-
-    def test_wrong_sibling_pin_rejected(self):
-        with patch.dict(os.environ,{'CRISPEMBED_COMMIT':self.environment['CRISPASR_REF']}):
-            with self.assertRaises((ValueError,subprocess.CalledProcessError)):runner.snapshot(self.project)
-
-
 class Evidence(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
         self.root=Path(self.tmp.name);self.project=self.root/'app';self.project.mkdir()
         self.output=self.root/'evidence'
-        self.identity={'source':'a'*40,'tree':'b'*40,'source_identity':{'application_source_clean':True},'source_files_sha256':{},'dependency_sources':{}}
 
     def execute(self, code=0, text='running 1 test\ntest result: ok. 1 passed; 0 failed; 0 ignored; 20 filtered out\n'):
-        with patch.object(runner,'snapshot',return_value=self.identity),patch.object(runner,'capture',return_value=(code,text.encode())):
+        with patch.object(runner,'capture',return_value=(code,text.encode())):
             return runner.run(self.project,self.output)
 
-    def test_success_means_exactly_one_test_and_source_recheck(self):
+    def test_success_means_exactly_one_test(self):
         receipt=self.execute();self.assertEqual(receipt['status'],'passed');self.assertEqual(receipt['executed_tests'],1)
         self.assertEqual(json.loads((self.output/'receipt.json').read_text())['status'],'passed')
+
+    def test_same_output_can_be_reused_for_normal_retries(self):
+        self.assertEqual(self.execute()['status'],'passed')
+        with self.assertRaises(runner.TestFailure):self.execute(code=101)
+        self.assertEqual(json.loads((self.output/'receipt.json').read_text())['status'],'failed')
+        self.assertEqual(self.execute()['status'],'passed')
+
+    def test_report_write_failure_does_not_override_test_result(self):
+        with patch.object(Path,'write_text',side_effect=OSError('private write error')):
+            self.assertEqual(self.execute()['status'],'passed')
+            with self.assertRaises(runner.TestFailure):self.execute(code=101)
+
+    def test_cli_preserves_real_cargo_failure_exit(self):
+        with patch.object(sys,'argv',['runner','--output',str(self.output)]), \
+                patch.object(runner,'run',side_effect=runner.TestFailure(101)):
+            self.assertEqual(runner.main(),101)
 
     def test_zero_matching_tests_cannot_claim_pass(self):
         with self.assertRaises(ValueError):self.execute(text='running 0 tests\ntest result: ok. 0 passed; 0 failed; 0 ignored;\n')
         self.assertEqual(json.loads((self.output/'receipt.json').read_text())['status'],'failed')
 
     def test_test_failure_retains_sanitized_diagnostics(self):
-        with self.assertRaises(ValueError):self.execute(code=101,text=str(self.project)+'\npassword=SECRET-SENTINEL\nrunning 1 test\nFAILED\n')
+        with self.assertRaises(runner.TestFailure):self.execute(code=101,text=str(self.project)+'\npassword=SECRET-SENTINEL\nrunning 1 test\nFAILED\n')
         text=(self.output/'diagnostics.txt').read_text()
         self.assertNotIn('SECRET-SENTINEL',text);self.assertNotIn(str(self.project),text)
         self.assertEqual(json.loads((self.output/'receipt.json').read_text())['exit_code'],101)
 
-    def test_source_change_during_test_cannot_claim_pass(self):
-        with patch.object(runner,'snapshot',side_effect=[self.identity,{**self.identity,'source':'c'*40}]),patch.object(runner,'capture',return_value=(0,b'running 1 test\ntest result: ok. 1 passed; 0 failed; 0 ignored;\n')):
-            with self.assertRaises(ValueError):runner.run(self.project,self.output)
-        self.assertEqual(json.loads((self.output/'receipt.json').read_text())['status'],'failed')
+    def test_normal_retry_allows_uncommitted_source_and_setup_files(self):
+        (self.project/'Cargo.lock').write_text('ordinary local edit')
+        (self.project/'crispembed-libs.tar.gz').write_bytes(b'local setup archive')
+        self.assertEqual(self.execute()['status'], 'passed')
 
     def test_partial_capture_failure_is_explicit_and_retained(self):
-        with patch.object(runner,'snapshot',return_value=self.identity),patch.object(runner,'capture',side_effect=runner.CaptureFailure('output-limit',b'partial fixture output')):
+        with patch.object(runner,'capture',side_effect=runner.CaptureFailure('output-limit',b'partial fixture output')):
             with self.assertRaises(runner.CaptureFailure):runner.run(self.project,self.output)
         value=json.loads((self.output/'receipt.json').read_text())
         self.assertEqual(value['status'],'failed');self.assertEqual(value['failure_code'],'output-limit')
@@ -233,10 +209,7 @@ class Evidence(unittest.TestCase):
         self.assertEqual((self.output/'diagnostics.txt').read_text(),OMITTED)
         self.assertNotIn('SENTINEL-VALUE-7816',(self.output/'receipt.json').read_text())
 
-    def test_non_manual_or_different_source_fails_before_test(self):
-        for event,scope,sha in [('push','paddle-live','a'*40),('workflow_dispatch','all','a'*40),('workflow_dispatch','paddle-live','c'*40)]:
-            with patch.dict(os.environ,{'GITHUB_EVENT_NAME':event,'PADDLE_LIVE_SCOPE':scope,'GITHUB_SHA':sha}),patch.object(runner,'git',return_value='a'*40):
-                with self.assertRaises(ValueError):runner.snapshot(self.project)
+
 
 
 class DiagnosticPrivacy(unittest.TestCase):

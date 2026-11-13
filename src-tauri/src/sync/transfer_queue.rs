@@ -126,14 +126,20 @@ impl TransferCancellation {
     fn publish<T>(&self, publish: impl FnOnce() -> Result<T>) -> Result<T> {
         let mut published = self.publication.lock().expect("transfer publication lock poisoned");
         anyhow::ensure!(!self.is_cancelled(), "transfer cancelled");
-        let result = publish()?;
-        *published = true;
-        Ok(result)
+        let result = publish();
+        if result.is_ok() || result.as_ref().err().is_some_and(|error|
+            error.downcast_ref::<crate::drives::NonReplayableWrite>().is_some()) {
+            // A lost publication acknowledgement cannot be undone by cancellation.
+            // Keep an uncertain write failed and prevent automatic replay.
+            *published = true;
+            self.cancelled.store(false, Ordering::Release);
+        }
+        result
     }
 
-    /// A synchronous provider returning success has already committed its
-    /// upload. Cancellation cannot undo that mutation, even when requested
-    /// while the provider was writing or waiting for its acknowledgement.
+    /// A synchronous provider returning success or an explicitly uncertain
+    /// publication is beyond cancellation. Cancellation cannot undo that write,
+    /// even when requested while the provider awaited its acknowledgement.
     fn uploaded(&self) {
         let mut published = self.publication.lock().expect("transfer publication lock poisoned");
         *published = true;
@@ -474,7 +480,9 @@ impl TransferQueue {
 
     /// Stream into a private file beside the destination, verify its size,
     /// and publish only a completed transfer. Each retry starts with a fresh
-    /// private stage; failure/cancellation preserves any previous destination.
+    /// private stage; failures before publication and cancellation before commit
+    /// preserve the previous destination. A publication error may already have
+    /// replaced it, so it stays failed and is never automatically retried.
     pub fn submit_drive_download_to_file(
         &self,
         drive_id: String,
@@ -693,7 +701,9 @@ async fn run_with_retries<T: TransferOutput + Send + 'static>(
         };
         drop(permit);
 
-        if direction == TransferDirection::Upload && result.is_ok() {
+        if direction == TransferDirection::Upload && (result.is_ok()
+            || result.as_ref().err().is_some_and(|error|
+                error.downcast_ref::<crate::drives::NonReplayableWrite>().is_some())) {
             cancellation.uploaded();
         }
         if cancellation.is_cancelled() {
@@ -1187,25 +1197,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn possibly_published_upload_is_not_retried_after_transient_failure() {
-        let directory = tempfile::tempdir().unwrap();
-        let target = directory.path().join("published.bin");
-        let destination = target.clone();
-        let attempts = Arc::new(AtomicUsize::new(0));
-        let calls = Arc::clone(&attempts);
-        let queue = TransferQueue::with_concurrency(1);
-        let transfer = queue.submit_upload("smb".into(), "published.bin".into(), b"bytes".to_vec(),
-            move |_, bytes| {
-                calls.fetch_add(1, Ordering::SeqCst);
-                std::fs::write(&destination, bytes)?;
-                Err(crate::drives::NonReplayableWrite::mark(anyhow!("connection timeout after publication")))
-            });
-        let error = transfer.handle.await.unwrap().unwrap_err();
-        assert!(error.to_string().contains("connection timeout after publication"));
-        assert!(error.downcast_ref::<crate::drives::NonReplayableWrite>().is_some());
-        assert_eq!(attempts.load(Ordering::SeqCst), 1);
-        assert_eq!(std::fs::read(target).unwrap(), b"bytes");
-        assert!(matches!(&queue.snapshot()[0].state, TransferState::Failed { .. }));
+    async fn possibly_published_upload_stays_failed_without_retry_or_late_cancellation() {
+        for cancel_during_ack in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let target = directory.path().join("published.bin");
+            let destination = target.clone();
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let calls = Arc::clone(&attempts);
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+            let started = Mutex::new(Some(started_tx));
+            let release = Mutex::new(Some(release_rx));
+            let queue = TransferQueue::with_concurrency(1);
+            let transfer = queue.submit_upload("smb".into(), "published.bin".into(), b"bytes".to_vec(),
+                move |_, bytes| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    std::fs::write(&destination, bytes)?;
+                    started.lock().unwrap().take().unwrap().send(()).unwrap();
+                    tokio::runtime::Handle::current().block_on(release.lock().unwrap().take().unwrap()).unwrap();
+                    Err(crate::drives::NonReplayableWrite::mark(anyhow!("connection timeout after publication")))
+                });
+            started_rx.await.unwrap();
+            assert_eq!(std::fs::read(&target).unwrap(), b"bytes");
+            // A later edit must survive both a lost acknowledgement and a click
+            // on Cancel while the provider is returning that uncertain result.
+            std::fs::write(&target, b"later user edit").unwrap();
+            if cancel_during_ack { transfer.cancellation.cancel(); }
+            release_tx.send(()).unwrap();
+            let error = transfer.handle.await.unwrap().unwrap_err();
+            assert!(error.to_string().contains("connection timeout after publication"));
+            assert!(error.downcast_ref::<crate::drives::NonReplayableWrite>().is_some());
+            assert_eq!(attempts.load(Ordering::SeqCst), 1);
+            assert_eq!(std::fs::read(target).unwrap(), b"later user edit");
+            assert!(matches!(transfer.progress_rx.borrow().state, TransferState::Failed { .. }));
+            assert!(!transfer.cancellation.is_cancelled());
+            transfer.cancellation.cancel();
+            assert!(!transfer.cancellation.is_cancelled());
+            assert!(matches!(&queue.snapshot()[0].state, TransferState::Failed { .. }));
+        }
     }
 
     #[tokio::test]
