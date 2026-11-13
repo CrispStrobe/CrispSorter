@@ -3,7 +3,7 @@
 The operator explicitly accepted the Qwen Research License for
 Qwen2.5-VL-3B **internal non-commercial evaluation only**. This preparation does
 not authorize commercial use, publication, candidate promotion, or other
-restricted models. It has not run inference yet.
+restricted models. The subsequent smoke result appears below.
 
 The existing CI workflow's proposed `scope=qwen-live` selects only its Linux
 Rust job. `qwen_noncommercial_evaluation=true` records this explicit evaluation
@@ -68,15 +68,14 @@ The VPS cache inspection found no exact Qwen file. Loading/downloading this
 model locally would burden its constrained RAM/disk, so no inference or app
 compilation ran there. Existing Kaggle CPU definitions lacked offline model and
 toolchain inputs; that route was excluded under the usage guide. Existing
-Paddle work is unrelated and is not duplicated. Execution is pending review,
-integration of this prepared scope into the intended PR source, and lifting the
-current dispatch hold. The user's model-specific acceptance is already recorded;
-no additional license approval is requested. No inference success is asserted by this document.
+Paddle work is unrelated and is not duplicated. At preparation, execution was
+pending review and integration. The later smoke result is recorded below; the
+user's acceptance applies only to the stated internal evaluation.
 
 Local validation: seventeen Qwen model-free tests and twenty-eight shared
 selector/source/capture/privacy tests pass, plus actionlint and Rust syntax
-parsing. A full application typecheck and live inference have not been run.
-The next run must use the intended reviewed immutable PR revision,
+parsing. At preparation a full application typecheck and live inference had not
+been run. Any later run must use the intended reviewed immutable PR revision,
 `scope=qwen-live`, and `qwen_noncommercial_evaluation=true`; no other scope
 receives model acceptance.
 
