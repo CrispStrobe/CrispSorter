@@ -126,9 +126,15 @@ impl TransferCancellation {
     fn publish<T>(&self, publish: impl FnOnce() -> Result<T>) -> Result<T> {
         let mut published = self.publication.lock().expect("transfer publication lock poisoned");
         anyhow::ensure!(!self.is_cancelled(), "transfer cancelled");
-        let result = publish()?;
-        *published = true;
-        Ok(result)
+        let result = publish();
+        if result.is_ok() || result.as_ref().err().is_some_and(|error|
+            error.downcast_ref::<crate::drives::NonReplayableWrite>().is_some()) {
+            // A lost publication acknowledgement cannot be undone by cancellation.
+            // Keep an uncertain write failed and prevent automatic replay.
+            *published = true;
+            self.cancelled.store(false, Ordering::Release);
+        }
+        result
     }
 
     /// A synchronous provider returning success has already committed its
@@ -474,7 +480,9 @@ impl TransferQueue {
 
     /// Stream into a private file beside the destination, verify its size,
     /// and publish only a completed transfer. Each retry starts with a fresh
-    /// private stage; failure/cancellation preserves any previous destination.
+    /// private stage; failures before publication and cancellation before commit
+    /// preserve the previous destination. A publication error may already have
+    /// replaced it, so it stays failed and is never automatically retried.
     pub fn submit_drive_download_to_file(
         &self,
         drive_id: String,

@@ -16,6 +16,7 @@ pub mod sync_paths_production;
 #[path = "../../src-tauri/src/sync/inventory.rs"]
 pub mod sync_inventory_production;
 pub mod sync {
+    pub use crate::transfer_queue;
     pub use crate::sync_paths_production as paths;
     pub use crate::sync_inventory_production as inventory;
     pub use crate::sync_conflict_production as conflict;
