@@ -85,3 +85,45 @@ control, not GUI behavior, device testing, corpus accuracy, signing, publication
 readiness, or a reconstructed original compiled-source/dependency attestation.
 The original packages lack a completed original release receipt; source binding
 remains their original build/draft association and exact immutable package pins.
+
+## Offline review of retained successful CLI outputs
+
+The original `cmd_doctor` JSON producer has eight boolean fields **and** a
+`lance_dir` field containing a path string or null. The replay incorrectly
+required exactly eight booleans. Its corrected schema now accepts only the nine
+source-defined fields with their actual types and still requires PDF support.
+The committed sanitized doctor fixture covers the real retained output.
+
+One reviewed replay retained both original missing-model failures, explicit
+permissive model provisioning with verified GGUF hashes, and two successful OCR
+retries with expected hOCR. Its overall observation remained failed because of
+the incorrect doctor check. It also recorded `detach_failed=true`; that cleanup
+failure remains unresolved and must not be discarded when interpreting the CLI
+results.
+
+`reevaluate_macos_retained_validation.py` operates offline on that reviewed
+workflow artifact. A committed evidence lock pins the exact ZIP digest/size and
+all 38 retained file hashes, original tooling source/tree and observed app
+content identity. The verifier checks the original source fixture/lock bytes,
+exact package identities, command sequence/arguments, complete diagnostic flags,
+per-stream hashes, original missing-model rejections, permissive plan/model
+identities and both successful retry outputs under the corrected doctor schema.
+Changing an output and its editable declared hash cannot replace the independent
+committed evidence pins.
+
+After the corrected tooling is committed, use:
+
+```sh
+python scripts/reevaluate_macos_retained_validation.py \
+  --archive /path/to/retained-artifact.zip \
+  --output /path/to/macos-cli.reevaluation.observation.json
+```
+
+The output records corrected tooling identity separately from the original
+workflow tooling and app association. It verifies **retained CLI controls**,
+preserves the original failed observation/error and unresolved DMG detach, and
+cannot satisfy publication gates. It does not rerun package checks, infer
+current draft state, download models, assess signatures, or reconstruct missing
+original compiled-source receipts. The original ZIP and observation remain
+unchanged. This is a review of existing sanitized evidence, not a new successful
+macOS replay, signing result or release receipt.

@@ -594,9 +594,15 @@ def doctor_pass(payload):
     }
     return (
         isinstance(payload, dict)
-        and set(payload) == fields
+        and set(payload) == fields | {"lance_dir"}
         and payload["pdf_extract_compiled_in"] is True
-        and all(type(value) is bool for value in payload.values())
+        and all(type(payload[key]) is bool for key in fields)
+        and (
+            payload["lance_dir"] is None
+            or isinstance(payload["lance_dir"], str)
+            and 0 < len(payload["lance_dir"]) <= 4096
+        )
+        and (payload["lance_dir"] is not None or payload["lance_dir_exists"] is False)
     )
 
 

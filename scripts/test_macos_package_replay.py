@@ -463,6 +463,9 @@ class ReplayTests(unittest.TestCase):
                         ]
                     }
                 )
+                doctor = json.loads(raw["stdout"])
+                doctor["lance_dir"] = "<local-path>/lance"
+                raw["stdout"] = json.dumps(doctor)
             elif label.endswith("-worker"):
                 rec["exit_code"] = 1
                 raw["stderr"] = "OCR worker requires request and response paths"
@@ -537,6 +540,9 @@ class ReplayTests(unittest.TestCase):
                         ]
                     }
                 )
+                doctor = json.loads(raw["stdout"])
+                doctor["lance_dir"] = "<local-path>/lance"
+                raw["stdout"] = json.dumps(doctor)
             elif label.endswith("-worker"):
                 rec["exit_code"] = 1
                 raw["stderr"] = "OCR worker requires request and response paths"

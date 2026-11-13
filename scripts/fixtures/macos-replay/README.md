@@ -7,3 +7,8 @@ numeric vectors alongside JSON operation records.
 
 The fixture is a sanitizer compatibility regression. Replaying these bytes from
 a test subprocess is not native execution or macOS/quality qualification.
+
+`doctor.stdout.json` is actual sanitized doctor stdout retained by the reviewed
+macOS replay. It contains the source-defined eight booleans plus `lance_dir`;
+the isolated-home prefix is already replaced with `<local-path>`. It is schema
+evidence, not an independent execution or package qualification attestation.
