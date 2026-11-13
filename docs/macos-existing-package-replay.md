@@ -53,8 +53,12 @@ name/value arrays or objects are also redacted, as are recognized Bearer
 credentials in free text or JSON string values. Malformed structured output, ambiguous
 credential assignments, excessive nesting and truncated output are omitted and
 make the command evidence fail closed. Ordinary native `[graph]`/`[info]`
-markers, tensor slices and whitespace numeric vectors are recognized as log
-notation; they are not treated as malformed JSON. Credential-bearing markers
+markers, tensor slices, whitespace numeric vectors and bounded numeric model-pull
+counters such as `[1/2]` are recognized as log notation; they are not treated as
+malformed JSON. The committed model installer emits those counters with carriage
+returns. A successful pull previously had only its stderr rejected; the omitted
+raw stderr cannot be recovered, so the counter explanation is source-backed
+rather than a reconstruction of that hosted output. Credential-bearing markers
 and malformed JSON objects/arrays remain rejected. Nonblocking bounded stream collection
 preserves sanitized partial records even when descendants keep pipes open after
 the main process exits; that condition is explicitly recorded as a failure.

@@ -355,10 +355,12 @@ def sanitize_output(text, roots=()):
                 item, end = decoder.raw_decode(value, start)
             except json.JSONDecodeError:
                 # Native runtime diagnostics use [graph]/[info], tensor slices
-                # and whitespace-separated numeric vectors. These bounded
+                # whitespace-separated numeric vectors and model-pull [1/2]
+                # counters. These bounded
                 # bracket forms contain no JSON keys or credential values.
                 marker = re.match(
-                    r"\[(?:[A-Za-z_][A-Za-z0-9_-]*|[0-9eE+.,:\s-]+)\]", value[start:]
+                    r"\[(?:[1-9][0-9]{0,3}/[1-9][0-9]{0,3}|[A-Za-z_][A-Za-z0-9_-]*|[0-9eE+.,:\s-]+)\]",
+                    value[start:],
                 )
                 if marker is None or sensitive_key(marker.group()):
                     raise

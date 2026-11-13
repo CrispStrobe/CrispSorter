@@ -243,6 +243,49 @@ class ReplayTests(unittest.TestCase):
                 self.assertNotIn("SECRET-SENTINEL", public)
                 self.assertIn("<redacted-bearer>", public)
 
+    def test_source_derived_model_pull_progress_counters_preserve_safe_success(self):
+        source = (ROOT / "src-tauri/src/ocr_models.rs").read_text()
+        progress = source.split("fn cli_progress(update: InstallProgress)", 1)[1].split(
+            "/// Before CLI OCR", 1
+        )[0]
+        self.assertIn('"downloading" => eprint!("\\r  [{}/{}]', progress)
+        self.assertIn('"complete" => eprintln!("\\r  [{}/{}]', progress)
+        # Representative formatting derived from the committed producer, not
+        # recovered raw hosted output or an assertion that OCR actually ran.
+        text = (
+            "Downloading 2 model(s), 79.8 MB:\n"
+            "\r  [1/2] dbnet-det 1.0 MB / 12.9 MB        "
+            "\r  [1/2] dbnet-det ready                              \n"
+            "\r  [2/2] trocr-printed 1.0 MB / 67.5 MB        "
+            "\r  [2/2] trocr-printed ready                              \n"
+        )
+        public, rejected = r.sanitize_output(text)
+        self.assertFalse(rejected)
+        self.assertEqual(public, text)
+        env = r.app_env(self.root / "home")
+        code = "import sys;sys.stderr.write(sys.argv[1]);print('{}')"
+        rec, _ = r.command(
+            sys.executable, ["-c", code, text], env, self.root, "pull-progress"
+        )
+        self.assertTrue(r.completed(rec))
+        self.assertEqual(
+            (self.root / "pull-progress.stderr.txt").read_bytes(), text.encode()
+        )
+        for value in [
+            '[1/2] {"password":"SECRET-SENTINEL',
+            '[2/2] [{"Authorization":"SECRET-SENTINEL"}',
+        ]:
+            public, rejected = r.sanitize_output(value)
+            self.assertTrue(rejected)
+            self.assertNotIn("SECRET-SENTINEL", public)
+        for value in [
+            '[1/2] {"headers":[["Authorization","Bearer SECRET-SENTINEL"]]}',
+            "[2/2] Bearer SECRET-SENTINEL",
+        ]:
+            public, rejected = r.sanitize_output(value)
+            self.assertFalse(rejected)
+            self.assertNotIn("SECRET-SENTINEL", public)
+
     def test_real_sanitized_native_stderr_and_tensor_logs_are_not_json_errors(self):
         fixture = ROOT / "scripts/fixtures/macos-replay/native-dbnet-trocr.stderr.txt"
         text = fixture.read_text()
