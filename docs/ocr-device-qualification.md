@@ -485,3 +485,14 @@ symbol table. The result remains failed and the IPA remains unqualified. Inspect
 the retained package with a bounded symbol-verification method that preserves the
 same required native and ONNX identities; do not infer linkage merely from version
 strings or rerun a full build until the existing evidence is exhausted.
+
+The corrected Android OCR draft completed with final provenance at source
+`7a9094ee67b0a87fb204d714ef4532de14639087`. The retained signed APK is
+481,155,903 bytes with SHA-256
+`255cdb647efdf566def9e5ec16a9ab1cd6bdc0e0cf684482155e75e535dedc0d`.
+Independent inspection verified v2/v3 signatures and the recorded certificate,
+manifest, locked source/runtime/ORT receipt chain, three ARM64 native libraries,
+notices and 16 KiB ZIP/ELF alignment. The generated license inventory is a
+recorded source exception; its raw generated file was not separately retained.
+This is a source-bound signed draft, not installation, physical-device execution,
+OCR inference or quality qualification. It was not published or uploaded.
