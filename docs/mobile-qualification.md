@@ -562,3 +562,14 @@ only this known metadata-only reorder must record both original/effective lock
 hashes and the separate workflow-tooling identity; HEAD must not stand in for
 proof of a byte-identical post-build tree. A future source commit containing the
 canonical lock has its own application source identity.
+
+The standard Linux release job built a DEB at the same release source, but its
+live OCR-preset gate stopped before recognition because the Qwen model license
+was not accepted. Its final release receipt therefore was not produced. The
+retained DEB's published digest, package metadata, cold dynamic-library load,
+version/doctor output and OCR-worker error protocol were independently checked.
+A separate bounded one-core offline control ran that exact DEB against the
+retained PDF and hash-verified cached DBNet/TrOCR models: it exited successfully
+and produced the expected hOCR text. It performed no model download or Qwen
+license acceptance. This is package-specific DBNet/TrOCR evidence, not a passed
+Qwen preset gate or a substitute for the missing automated release receipt.
