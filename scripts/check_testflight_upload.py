@@ -12,14 +12,20 @@ from testflight_distribute import Asc, make_token, API
 BUNDLE = 'com.crispstrobe.crispsorter'
 
 
+def check_app(asc, app_id):
+    if not re.fullmatch(r'[0-9]+', app_id):
+        raise ValueError('Invalid App Store Connect app selection')
+    app, status = asc.get(f'/apps/{app_id}?fields[apps]=bundleId')
+    if status != 200 or app.get('data', {}).get('attributes', {}).get('bundleId') != BUNDLE:
+        raise ValueError('Configured App Store Connect app does not match the IPA bundle')
+
+
 def needs_upload(asc, app_id, marketing_version, build_number):
     if (not re.fullmatch(r'[0-9]+', app_id)
             or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', marketing_version)
             or not re.fullmatch(r'[0-9]+(?:\.[0-9]+){0,2}', build_number)):
         raise ValueError('Invalid TestFlight app/version/build selection')
-    app, status = asc.get(f'/apps/{app_id}?fields[apps]=bundleId')
-    if status != 200 or app.get('data', {}).get('attributes', {}).get('bundleId') != BUNDLE:
-        raise ValueError('Configured App Store Connect app does not match the IPA bundle')
+    check_app(asc, app_id)
     query = urlencode({'filter[app]': app_id, 'filter[version]': build_number,
         'filter[preReleaseVersion.platform]': 'IOS', 'include': 'preReleaseVersion',
         'fields[builds]': 'version,preReleaseVersion', 'fields[preReleaseVersions]': 'version,platform', 'limit': '200'})
@@ -56,12 +62,20 @@ def main():
     try:
         token = make_token(os.environ['ASC_KEY_ID'], os.environ['ASC_ISSUER_ID'],
                            base64.b64decode(os.environ['ASC_KEY_P8_BASE64'], validate=True))
-        required = needs_upload(Asc(token), os.environ['ASC_APP_ID'], os.environ['IPA_VERSION'], os.environ['BUILD_NUMBER'])
+        mode = os.environ.get('TESTFLIGHT_SELECTION_MODE', 'upload')
+        if mode not in ('upload', 'resume'):
+            raise ValueError('Invalid TestFlight selection mode')
+        asc = Asc(token)
+        if mode == 'resume':
+            check_app(asc, os.environ['ASC_APP_ID'])
+            required = False
+        else:
+            required = needs_upload(asc, os.environ['ASC_APP_ID'], os.environ['IPA_VERSION'], os.environ['BUILD_NUMBER'])
         with Path(os.environ['GITHUB_ENV']).open('a') as stream:
             stream.write('TESTFLIGHT_UPLOAD_REQUIRED=' + str(required).lower() + '\n')
-            if not required:
+            if mode == 'upload' and not required:
                 stream.write('UPLOADED_AFTER=\n')
-        print('Upload required' if required else 'Build already exists; continue assignment without uploading again')
+        print('Upload required' if required else 'Continue exact build assignment without uploading again')
         return 0
     except Exception:
         print('App Store Connect upload check failed; upload was not attempted', file=sys.stderr)

@@ -165,9 +165,9 @@ jobs:
           echo "BUILD_NUMBER=$BUILD" >> "$GITHUB_ENV"
       - name: Install TestFlight API dependency
         run: python -m pip install 'cryptography==44.0.3'
-      - name: Check whether this exact build is already uploaded
-        if: inputs.platform == 'testflight' || inputs.platform == 'testflight_current'
+      - name: Check App Store Connect app and whether upload is needed
         env:
+          TESTFLIGHT_SELECTION_MODE: ${{ (inputs.platform == 'testflight_resume' || inputs.platform == 'testflight_current_resume') && 'resume' || 'upload' }}
           ASC_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
           ASC_APP_ID: ${{ secrets.APPSTORE_APP_ID }}

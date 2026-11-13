@@ -432,8 +432,9 @@ directory or original upload timestamp. The IPA itself supplies the app bundle,
 marketing version and build number; macOS verifies its actual code signature.
 The selector neither builds the app nor publishes a GitHub release.
 
-Before uploading, a read-only App Store Connect query checks the configured
-app's bundle ID and the exact marketing-version/build pair. If that build is
+Before upload or assignment retry, a read-only App Store Connect query checks
+the configured app's bundle ID. Upload modes also check the exact
+marketing-version/build pair. If that build is
 already present, including PROCESSING or INVALID, upload is skipped and the
 workflow proceeds to the existing internal TestFlight assignment logic. Failed
 API requests or missing version relationships stop the workflow; they never

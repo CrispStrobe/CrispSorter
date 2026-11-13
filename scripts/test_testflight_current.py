@@ -184,6 +184,36 @@ class DuplicateUpload(unittest.TestCase):
         self.pages=[({'data':[],'links':{'next':link}},200)]*2
         with self.assertRaises(ValueError):self.required()
 
+    def test_resume_checks_actual_app_and_preserves_optional_cutoff(self):
+        for cutoff in ['', '2026-11-12T12:00:00Z']:
+            with tempfile.TemporaryDirectory() as temp:
+                path=Path(temp)/'env';path.write_text('UPLOADED_AFTER='+cutoff+'\n')
+                env={'ASC_KEY_ID':'fixture','ASC_ISSUER_ID':'fixture','ASC_KEY_P8_BASE64':'Zml4dHVyZQ==',
+                    'ASC_APP_ID':'123','IPA_VERSION':VERSION,'BUILD_NUMBER':'42','GITHUB_ENV':str(path),
+                    'TESTFLIGHT_SELECTION_MODE':'resume','UPLOADED_AFTER':cutoff}
+                self.calls=[]
+                with patch.dict(upload.os.environ,env),patch.object(upload,'make_token',return_value='fixture'), \
+                        patch.object(upload,'Asc',return_value=self.asc),contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(upload.main(),0)
+                values=dict(line.split('=',1) for line in path.read_text().splitlines())
+                self.assertEqual(values['TESTFLIGHT_UPLOAD_REQUIRED'],'false')
+                self.assertEqual(values['UPLOADED_AFTER'],cutoff)
+                self.assertEqual(len(self.calls),1);self.assertTrue(self.calls[0].startswith('/apps/123?'))
+
+    def test_wrong_app_or_failed_app_lookup_blocks_resume_without_environment_changes(self):
+        for mode in ['upload','resume']:
+            for response in [({'data':{'attributes':{'bundleId':'wrong.app'}}},200),({},401),({},500)]:
+                with tempfile.TemporaryDirectory() as temp:
+                    path=Path(temp)/'env';path.write_text('KEEP=1\n')
+                    env={'ASC_KEY_ID':'fixture','ASC_ISSUER_ID':'fixture','ASC_KEY_P8_BASE64':'Zml4dHVyZQ==',
+                        'ASC_APP_ID':'123','IPA_VERSION':VERSION,'BUILD_NUMBER':'42','GITHUB_ENV':str(path),
+                        'TESTFLIGHT_SELECTION_MODE':mode}
+                    asc=type('ASC',(),{'get':lambda _,p:response})()
+                    with patch.dict(upload.os.environ,env),patch.object(upload,'make_token',return_value='fixture'), \
+                            patch.object(upload,'Asc',return_value=asc),contextlib.redirect_stderr(io.StringIO()):
+                        self.assertEqual(upload.main(),1)
+                    self.assertEqual(path.read_text(),'KEEP=1\n')
+
     def test_cli_lookup_failure_cannot_enable_upload(self):
         with tempfile.TemporaryDirectory() as temp:
             path=Path(temp)/'env';path.write_text('KEEP=1\n')
@@ -200,6 +230,9 @@ class Workflow(unittest.TestCase):
         job=workflow.split('  testflight-existing:',1)[1].split('  release-draft-preflight:',1)[0]
         self.assertLess(job.index('codesign --verify --deep --strict'),job.index('check_testflight_upload.py'))
         self.assertLess(job.index('check_testflight_upload.py'),job.index('xcrun altool --upload-package'))
+        lookup=job.split('      - name: Check App Store Connect app and whether upload is needed',1)[1].split('      - name:',1)[0]
+        self.assertNotIn('        if:',lookup)
+        self.assertIn("inputs.platform == 'testflight_resume' || inputs.platform == 'testflight_current_resume'",lookup)
         upload_step=job.split('      - name: Upload to App Store Connect',1)[1].split('      - name:',1)[0]
         self.assertIn("env.TESTFLIGHT_UPLOAD_REQUIRED == 'true'",upload_step)
         self.assertIn("inputs.platform == 'testflight_current'",upload_step)
