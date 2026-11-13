@@ -32,6 +32,9 @@
 #[path = "webdav_delta_download.rs"]
 mod delta_download;
 
+#[path = "webdav_delta_upload.rs"]
+mod delta_upload;
+
 #[path = "webdav_range.rs"]
 mod range_response;
 
@@ -304,6 +307,13 @@ impl WebDavDrive {
     /// Upload only changed blocks through crispcloud_delta. Returns None when
     /// the optional server app or a remote block map is unavailable, allowing
     /// callers to perform the normal full WebDAV upload.
+    /// Each changed block is staged and verified before its POST, using bounded
+    /// memory and temporary disk space up to one block. Earlier blocks may have
+    /// reached the server if a later step fails. This is not an atomic snapshot
+    /// of the source: concurrent changes to skipped blocks are not detected.
+    /// Bodies above 4 MiB stream and cannot replay 307/308 redirects; an
+    /// unhandled redirect fails before finalization. Smaller bodies retain
+    /// reqwest's replayable-body redirect behavior.
     pub fn delta_upload_file(
         &self,
         local_path: &Path,
@@ -322,10 +332,17 @@ impl WebDavDrive {
         let mut file = File::open(local_path).context("opening local delta upload")?;
 
         for block in &changed {
-            let size = block.size as usize;
-            let mut data = vec![0u8; size];
             file.seek(SeekFrom::Start(block.offset))?;
-            file.read_exact(&mut data)?;
+            let mut staged = delta_upload::stage_block(&mut file, &local.blocks[block.block_index])?;
+            // Keep small bodies replayable for redirects. Larger bodies must
+            // stream; reqwest cannot replay a reader on a 307/308 redirect.
+            let body = if block.size as usize <= delta_upload::REPLAYABLE_BODY_LIMIT {
+                let mut data = Vec::with_capacity(block.size as usize);
+                staged.read_to_end(&mut data)?;
+                reqwest::blocking::Body::from(data)
+            } else {
+                reqwest::blocking::Body::sized(staged, u64::from(block.size))
+            };
             let url = format!(
                 "{}?offset={}&size={}",
                 self.delta_path_url("blocks", remote_path)?,
@@ -339,10 +356,15 @@ impl WebDavDrive {
                 request = request.header("If-Match", format!("\"{etag}\""));
             }
             let response = request
-                .body(data)
+                .body(body)
                 .send()
                 .with_context(|| format!("uploading delta block at {}", block.offset))?;
-            response.error_for_status()?;
+            let response = response.error_for_status()?;
+            anyhow::ensure!(
+                response.status().is_success(),
+                "delta block POST did not complete: HTTP {} (streaming bodies cannot replay redirects)",
+                response.status()
+            );
             transferred_bytes += block.size as u64;
         }
 
@@ -1073,16 +1095,30 @@ mod tests {
 
     #[test]
     fn delta_upload_sends_blockmap_etag_as_if_match() {
+        check_delta_upload_request(123, 200);
+    }
+
+    #[test]
+    fn delta_upload_streams_large_body_and_refuses_unreplayed_redirects() {
+        let size = delta_upload::REPLAYABLE_BODY_LIMIT + 17;
+        check_delta_upload_request(size, 200);
+        for status in [307, 308] {
+            check_delta_upload_request(size, status);
+            check_delta_upload_request(123, status);
+        }
+    }
+
+    fn check_delta_upload_request(file_size: usize, status_code: usize) {
         let mut server = Server::new();
-        let block_size = crate::sync::delta::DEFAULT_BLOCK_SIZE;
-        let old = vec![b'a'; block_size];
+        let block_size = u32::MAX as usize;
+        let old = vec![b'a'; file_size];
         let mut local = old.clone();
         local[0] = b'b';
         let map = crate::sync::delta::compute_blockmap_from_bytes(&old, block_size).unwrap();
         let signature = &map.blocks[0];
         let blockmap = serde_json::json!({
             "filePath": "/file.bin",
-            "totalSize": block_size,
+            "totalSize": file_size,
             "blockSize": block_size,
             "blockCount": 1,
             "signatures": [{
@@ -1109,14 +1145,29 @@ mod tests {
             .with_status(200)
             .with_body(blockmap.to_string())
             .create();
+        let should_finish = status_code == 200 || file_size <= delta_upload::REPLAYABLE_BODY_LIMIT;
+        let redirect_url = format!("{}/redirected-block", server.url());
+        let redirect_mock = server.mock("POST", "/redirected-block")
+            .match_body(local.clone())
+            .match_header("Content-Length", file_size.to_string().as_str())
+            .match_header("If-Match", "\"etag-1\"")
+            .with_status(200)
+            .expect(if status_code != 200 && should_finish { 1 } else { 0 })
+            .create();
         let block_mock = server
             .mock(
                 "POST",
                 "/index.php/apps/crispcloud_delta/api/blocks/file.bin",
             )
-            .match_query(Matcher::Any)
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("offset".into(), "0".into()),
+                Matcher::UrlEncoded("size".into(), file_size.to_string()),
+            ]))
+            .match_header("Content-Length", file_size.to_string().as_str())
+            .match_body(local.clone())
             .match_header("If-Match", "\"etag-1\"")
-            .with_status(200)
+            .with_status(status_code)
+            .with_header("Location", &redirect_url)
             .create();
         let finalize_mock = server
             .mock(
@@ -1126,6 +1177,7 @@ mod tests {
             .match_query(Matcher::Any)
             .match_header("If-Match", "\"etag-1\"")
             .with_status(200)
+            .expect(if should_finish { 1 } else { 0 })
             .create();
         let local_file = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(local_file.path(), &local).unwrap();
@@ -1137,11 +1189,15 @@ mod tests {
             false,
         );
 
-        let result = drive
-            .delta_upload_file(local_file.path(), Path::new("file.bin"))
-            .unwrap()
-            .unwrap();
-        assert_eq!(result.changed_blocks, 1);
+        let result = drive.delta_upload_file(local_file.path(), Path::new("file.bin"));
+        if should_finish {
+            let result = result.unwrap().unwrap();
+            assert_eq!(result.changed_blocks, 1);
+            assert_eq!(result.transferred_bytes, file_size as u64);
+        } else {
+            assert!(result.unwrap_err().to_string().contains("cannot replay redirects"));
+        }
+        redirect_mock.assert();
         status.assert();
         map_mock.assert();
         block_mock.assert();

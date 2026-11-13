@@ -35,7 +35,20 @@ tests exercise matching hashes with malformed offsets, sizes, coverage and extra
 blocks; the extracted upload method sends neither blocks nor finalize on invalid
 input. A valid changed-upload control verifies the fake transport records both.
 
-Follow-up: a valid server-selected giant block size can still cause upload
-hashing and block requests to allocate a whole block. Streaming upload hashing
-and request bodies remain unimplemented. Block-map JSON parsing also remains
-unbounded; this layout validation change does not impose a metadata/body limit.
+Upload hashing uses a fixed 64 KiB scratch buffer even for u32::MAX advertised
+blocks. Each changed block is copied to a private temporary file, checked against
+its local block signature, then sent using an owned body. Local EOF/read errors,
+staging failures and detected changes fail before that block POST. Temporary
+disk space can reach one changed block; cleanup occurs on all return paths.
+Bodies through 4 MiB stay replayable; larger bodies stream with an exact length.
+Unhandled redirects fail before finalization. Earlier successful POSTs remain
+possible on later failures; skipped source blocks are not rechecked, so no atomic
+source snapshot or remote transaction is claimed.
+
+The extracted-method tests use a **stub transport**, not a real HTTP client or
+server. They read the body through bounded buffers, check exact bytes/length,
+and inject 307/308 responses to check failure before finalization. They do not
+verify reqwest redirect replay or real HTTP headers. Real-client mockito tests
+in `src-tauri/src/drives/webdav.rs` cover body/content-length/If-Match and actual
+small-body replay versus large-body refusal; those require the application test
+build. Block-map JSON parsing and metadata storage remain unbounded.
