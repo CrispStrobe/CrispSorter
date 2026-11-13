@@ -478,3 +478,10 @@ signed app and pass the original native/ORT/source checks. If export removes it
 again, retain the unstripped archive and export logs to distinguish the stage;
 do not relax the check or report this failed IPA as qualified. No duplicate
 build, signing operation, upload or rerun was performed for this preparation.
+
+The first symbol-retention follow-up produced and signed an OCR IPA, but its
+final provenance step timed out after 60 seconds while `nm` scanned the retained
+symbol table. The result remains failed and the IPA remains unqualified. Inspect
+the retained package with a bounded symbol-verification method that preserves the
+same required native and ONNX identities; do not infer linkage merely from version
+strings or rerun a full build until the existing evidence is exhausted.
