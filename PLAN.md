@@ -12,11 +12,11 @@ they do not add approval or evidence requirements to normal retries.
 
 ## Current release and provider follow-up — 13 November 2026
 
-- Version 0.15.4 is being built as an unpublished standard release for Linux,
-  Windows, macOS, Android and iOS. Once its signed IPA is available, upload it
-  to the existing internal TestFlight group. Standard mobile packages do not
-  include native OCR. Desktop Windows and macOS packages cannot be signed until
-  the corresponding private signing keys are available.
+- Version 0.15.4 remains an unpublished standard release. The Linux retry and
+  signed Android/iOS builds succeeded, and the iOS build was assigned to internal
+  TestFlight. macOS and Windows retries are in progress. Standard mobile packages
+  do not include native OCR. Windows and macOS desktop packages cannot be signed
+  until the corresponding private signing keys are available.
 - Manual cloud pulls now avoid retrying uncertain writes and use the best known
   file size when a provider listing is stale. Concurrent replacement of an
   ancestor directory remains a security limitation: resolving it requires
@@ -2139,7 +2139,9 @@ configurable rule engine for complex workflows.
   persisted rules. The JSON editor exposes the complete trigger/action
   schema while keeping secrets out of the store. Dedicated form controls
   and DE/EN copy remain a follow-up refinement.
-- [ ] **Example rules shipped as defaults (disabled).**
+- [x] **Example rules shipped as defaults (disabled).** Implemented in
+  `watcher/rules.rs::default_rules`; first-run loading and rule serialization
+  are covered by the existing tests.
   "Invoices to accounting folder": trigger `doctype:invoice` →
   `MoveTo("Invoices/{year}/{month}/")`.
   "Photos to cloud": trigger `ext:jpg,png,heic` + `size > 1MB` →
