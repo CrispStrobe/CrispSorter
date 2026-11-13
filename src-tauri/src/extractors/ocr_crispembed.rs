@@ -2116,6 +2116,7 @@ mod tests {
 
     /// One consent-gated Qwen preset; separate from full preset qualification.
     #[cfg(feature = "crispembed")]
+    #[cfg(feature = "sidecars")]
     #[test]
     #[ignore = "Qwen Research License: explicit internal non-commercial evaluation only"]
     fn qwen_internal_noncommercial_smoke_live() {
@@ -2181,6 +2182,7 @@ mod tests {
     /// workbench path. Kept separate from model-free regressions because it
     /// downloads weights and exercises four model configurations on a CPU.
     #[cfg(feature = "crispembed")]
+    #[cfg(feature = "sidecars")]
     #[test]
     #[ignore = "downloads OCR weights; run on an admitted inference worker"]
     fn ocr_task_presets_live() {
