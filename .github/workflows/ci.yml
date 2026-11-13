@@ -569,7 +569,10 @@ jobs:
           ref: ${{ env.CRISPDOCX_REF }}
           path: repos/crisp-docx
 
+      # ort-sys rc.11 assumes the Cargo layout used before Rust 1.100.
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.1
 
       # `lance-encoding` shells out to protoc from its own build script, so a
       # PROTOC set inside ours does not reach it — it has to be on PATH before
@@ -623,6 +626,11 @@ jobs:
             if (-not (Test-Path $f)) { New-Item -ItemType File -Path $f | Out-Null }
           }
           Get-ChildItem src-tauri/bin | Select-Object -ExpandProperty Name
+
+      - name: Prepare ort-sys debug DLL destinations
+        working-directory: repos/CrispSorter
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path target/debug, target/debug/deps, target/debug/examples | Out-Null
 
       - name: Library tests
         working-directory: repos/CrispSorter
