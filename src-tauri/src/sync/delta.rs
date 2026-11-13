@@ -78,6 +78,10 @@ pub fn validate_block_size(requested: usize) -> Result<usize> {
              refusing rather than silently using a different size from the peer"
         );
     }
+    ensure!(
+        requested <= u32::MAX as usize,
+        "block size exceeds the wire format's u32 limit"
+    );
     Ok(requested)
 }
 
@@ -140,10 +144,13 @@ pub struct DeltaSummary {
 /// Implemented inline to avoid an extra dependency — the algorithm is
 /// only ~10 lines.
 pub fn adler32(data: &[u8]) -> u32 {
-    const MOD_ADLER: u32 = 65521;
-    let mut a: u32 = 1;
-    let mut b: u32 = 0;
+    adler32_update(1, data)
+}
 
+fn adler32_update(checksum: u32, data: &[u8]) -> u32 {
+    const MOD_ADLER: u32 = 65521;
+    let mut a = checksum & 0xffff;
+    let mut b = checksum >> 16;
     for &byte in data {
         a = (a + byte as u32) % MOD_ADLER;
         b = (b + a) % MOD_ADLER;
@@ -162,28 +169,15 @@ pub fn compute_blockmap(path: &Path, block_size: usize) -> Result<Blockmap> {
     let file_size = file.metadata()?.len();
 
     let mut blocks = Vec::new();
-    let mut buf = vec![0u8; block_size];
     let mut offset: u64 = 0;
-
-    loop {
-        let n = read_full(&mut file, &mut buf)?;
-        if n == 0 {
-            break;
-        }
-        let data = &buf[..n];
-
-        let weak_hash = adler32(data);
-        let strong_hash: [u8; 32] = Sha256::digest(data).into();
-
-        blocks.push(Block {
-            offset,
-            size: n as u32,
-            weak_hash,
-            strong_hash,
-        });
-
-        offset += n as u64;
+    while let Some(block) = read_block_signature(&mut file, block_size, offset)? {
+        offset += u64::from(block.size);
+        blocks.push(block);
     }
+    ensure!(
+        offset == file_size,
+        "file size changed while computing delta block map"
+    );
 
     Ok(Blockmap {
         file_size,
@@ -379,17 +373,42 @@ pub fn delta_summary(local: &Blockmap, changed: &[ChangedBlock]) -> DeltaSummary
     }
 }
 
-/// Read exactly `buf.len()` bytes (or less at EOF).  Returns the number
-/// of bytes actually read.
-fn read_full(reader: &mut impl Read, buf: &mut [u8]) -> Result<usize> {
-    let mut total = 0;
-    while total < buf.len() {
-        match reader.read(&mut buf[total..])? {
-            0 => break,
-            n => total += n,
+/// Maximum scratch buffer used for file hashing, independent of protocol size.
+pub(crate) const HASH_BUFFER_SIZE: usize = 64 * 1024;
+
+/// Hash at most one protocol block without allocating that block. Short reads
+/// are accumulated; EOF ends the last block. The caller validates its layout.
+pub(crate) fn read_block_signature(
+    reader: &mut impl Read,
+    block_size: usize,
+    offset: u64,
+) -> Result<Option<Block>> {
+    let mut buf = [0u8; HASH_BUFFER_SIZE];
+    let mut size = 0usize;
+    let mut weak_hash = 1;
+    let mut strong_hash = Sha256::new();
+    while size < block_size {
+        let wanted = buf.len().min(block_size - size);
+        let n = match reader.read(&mut buf[..wanted]) {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
+        if n == 0 {
+            break;
         }
+        weak_hash = adler32_update(weak_hash, &buf[..n]);
+        strong_hash.update(&buf[..n]);
+        size += n;
     }
-    Ok(total)
+    if size == 0 {
+        return Ok(None);
+    }
+    Ok(Some(Block {
+        offset,
+        size: u32::try_from(size).context("delta block exceeds wire size")?,
+        weak_hash,
+        strong_hash: strong_hash.finalize().into(),
+    }))
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
@@ -397,7 +416,56 @@ fn read_full(reader: &mut impl Read, buf: &mut [u8]) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn constructors_reject_sizes_that_cannot_be_recorded_on_the_wire() {
+        let requested = u32::MAX as usize + 1;
+        assert!(validate_block_size(requested).is_err());
+        assert!(compute_blockmap_from_bytes(b"tiny", requested).is_err());
+    }
+
+    #[test]
+    fn giant_advertised_block_on_a_small_file_preserves_hashes_and_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("small");
+        let data = b"tiny file, huge protocol block";
+        std::fs::write(&path, data).unwrap();
+        let remote = compute_blockmap_from_bytes(data, u32::MAX as usize).unwrap();
+        let local = compute_local_blockmap_against(&path, &remote).unwrap();
+        assert_eq!(local.block_size, u32::MAX);
+        assert_eq!(local.blocks, remote.blocks);
+        assert!(diff_blockmaps(&local, &remote).unwrap().is_empty());
+    }
+
+    #[test]
+    fn hashing_caps_reads_and_accumulates_short_reads_across_buffer_boundaries() {
+        struct BoundedReader {
+            inner: std::io::Cursor<Vec<u8>>,
+            max_requested: usize,
+        }
+        impl Read for BoundedReader {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                assert!(buf.len() <= HASH_BUFFER_SIZE);
+                self.max_requested = self.max_requested.max(buf.len());
+                // Odd short reads exercise incremental Adler state, including
+                // boundaries that are not aligned with the scratch buffer.
+                let size = buf.len().min(997);
+                self.inner.read(&mut buf[..size])
+            }
+        }
+        let data: Vec<_> = (0..3 * HASH_BUFFER_SIZE + 13).map(|i| i as u8).collect();
+        let expected = compute_blockmap_from_bytes(&data, u32::MAX as usize).unwrap();
+        let mut reader = BoundedReader {
+            inner: std::io::Cursor::new(data),
+            max_requested: 0,
+        };
+        let block = read_block_signature(&mut reader, u32::MAX as usize, 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(block, expected.blocks[0]);
+        assert_eq!(reader.max_requested, HASH_BUFFER_SIZE);
+    }
 
     #[test]
     fn adler32_known_values() {
