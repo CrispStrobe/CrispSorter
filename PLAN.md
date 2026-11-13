@@ -10,6 +10,24 @@ security. Existing dated entries below describe historical work and constraints;
 they do not add approval or evidence requirements to normal retries.
 
 
+## Current release and provider follow-up — 13 November 2026
+
+- Version 0.15.4 is being built as an unpublished standard release for Linux,
+  Windows, macOS, Android and iOS. Once its signed IPA is available, upload it
+  to the existing internal TestFlight group. Standard mobile packages do not
+  include native OCR. Desktop Windows and macOS packages cannot be signed until
+  the corresponding private signing keys are available.
+- Manual cloud pulls now avoid retrying uncertain writes and use the best known
+  file size when a provider listing is stale. Concurrent replacement of an
+  ancestor directory remains a security limitation: resolving it requires
+  platform-specific handle-based publication, not another pathname check.
+- A real Qwen2.5-VL-3B CPU smoke passed one multilingual fixture. The accepted
+  Qwen Research License covers internal non-commercial evaluation only; this
+  result does not qualify a wider corpus, mobile, GPU or commercial release.
+- No physical Android or iPhone is available for device testing. Continue normal
+  retries and fix failures; the dated entries below are historical and any
+  superseded source, receipt or approval gates do not apply.
+
 ## Bounded retained-IPA ONNX symbol verification — 13 November 2026
 
 The corrected signed iOS draft retains the exact `_OrtGetApiBase`
