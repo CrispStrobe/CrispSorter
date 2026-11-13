@@ -35,16 +35,16 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def snapshot(project):
+def snapshot(project, scope="paddle-live", scope_env="PADDLE_LIVE_SCOPE", inputs=None):
     source = git(project, 'rev-parse', 'HEAD')
     if (os.environ.get('GITHUB_EVENT_NAME') != 'workflow_dispatch'
-            or os.environ.get('PADDLE_LIVE_SCOPE') != 'paddle-live'
+            or os.environ.get(scope_env) != scope
             or not re.fullmatch('[0-9a-f]{40}', os.environ.get('GITHUB_SHA', ''))
             or source != os.environ['GITHUB_SHA']):
         raise ValueError('Explicit scoped dispatch and exact checked-out source required')
     identity = source_tree_identity(project)
     hashes = {}
-    for name in INPUTS:
+    for name in INPUTS if inputs is None else inputs:
         path = project / name
         if path.is_symlink() or path.resolve() != path or not path.is_file():
             raise ValueError('Source input must be a regular committed file')
@@ -73,11 +73,11 @@ class CaptureFailure(Exception):
         super().__init__('Scoped capture stopped')
 
 
-def capture(project, env):
+def capture(project, env, command=None):
     process, selector, failure, code = None, None, None, None
     output = bytearray()
     try:
-        process = subprocess.Popen(COMMAND, cwd=project, env=env, stdout=subprocess.PIPE,
+        process = subprocess.Popen(COMMAND if command is None else command, cwd=project, env=env, stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT, start_new_session=True)
         selector = selectors.DefaultSelector()
         selector.register(process.stdout, selectors.EVENT_READ)

@@ -7,10 +7,14 @@ on:
   workflow_dispatch:
     inputs:
       scope:
-        description: 'Run native Linux checks, platform checks, all CI, or only the source-bound live Paddle fixture on Linux.'
+        description: 'Run native Linux checks, platform checks, all CI, or only a source-bound Paddle/Qwen fixture on Linux.'
         type: choice
-        options: [native-linux, platforms, all, paddle-live]
+        options: [native-linux, platforms, all, paddle-live, qwen-live]
         default: native-linux
+      qwen_noncommercial_evaluation:
+        description: 'Only qwen-live: explicitly accepted Qwen Research License for internal non-commercial evaluation; no commercial/publication approval.'
+        type: boolean
+        default: false
       cloud_live:
         description: 'Explicitly run tests that mutate dedicated cloud test accounts.'
         type: boolean
@@ -221,6 +225,14 @@ jobs:
         with:
           path: repos/CrispSorter
 
+      - name: Require explicit internal non-commercial Qwen evaluation
+        if: github.event_name == 'workflow_dispatch' && inputs.scope == 'qwen-live'
+        working-directory: repos/CrispSorter
+        env:
+          QWEN_LIVE_SCOPE: ${{ inputs.scope }}
+          QWEN_NONCOMMERCIAL_EVALUATION: ${{ inputs.qwen_noncommercial_evaluation }}
+        run: python3 scripts/run_qwen_live_fixture.py --preflight
+
       - name: Check out sibling CrispEmbed (cargo path dep)
         uses: actions/checkout@v4
         with:
@@ -325,7 +337,7 @@ jobs:
         run: mkdir -p src-tauri/bin && touch src-tauri/bin/.gitkeep
 
       - name: Library tests
-        if: github.event_name != 'workflow_dispatch' || inputs.scope != 'paddle-live'
+        if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'paddle-live' && inputs.scope != 'qwen-live')
         working-directory: repos/CrispSorter
         # `pdf-zpdf` is included so the feature-gated code compiles here too;
         # a `#[cfg(feature = …)]` block that nobody builds is a block nobody
@@ -360,7 +372,7 @@ jobs:
       # Its pinned models now come from the OCR model manager (~20 MB),
       # never from usls' own hub.
       - name: Live PaddleOCR recognition (installs pinned models through the manager)
-        if: github.event_name != 'workflow_dispatch' || inputs.scope != 'paddle-live'
+        if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'paddle-live' && inputs.scope != 'qwen-live')
         working-directory: repos/CrispSorter
         run: cargo test -p crispsorter --lib --features desktop,sidecars,audio-glint,aitoolkit,cloud-backup,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,ocr-reviewed-pdf,crispembed-license-api,ocr-photo-tools,crispasr,translate-align,translate-nmt,pdf-render,anydoc,fuse,paddle-ocr -- --ignored live_paddle_recognises_the_fixture_sentence
 
@@ -380,22 +392,39 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Run only the consented internal Qwen smoke
+        if: github.event_name == 'workflow_dispatch' && inputs.scope == 'qwen-live'
+        working-directory: repos/CrispSorter
+        env:
+          QWEN_LIVE_SCOPE: ${{ inputs.scope }}
+          QWEN_NONCOMMERCIAL_EVALUATION: ${{ inputs.qwen_noncommercial_evaluation }}
+        run: python3 scripts/run_qwen_live_fixture.py --output "$RUNNER_TEMP/qwen-internal-smoke"
+
+      - name: Retain internal Qwen evaluation evidence only
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.scope == 'qwen-live'
+        uses: actions/upload-artifact@v4
+        with:
+          name: qwen-internal-evaluation-source-receipt
+          path: ${{ runner.temp }}/qwen-internal-smoke
+          if-no-files-found: error
+          retention-days: 14
+
       # The OCR model manager against the real network: installs tesseract-eng
       # + dbnet-det into a temporary cache, resumes a deliberately truncated
       # `.part`, checks the SHA-256 pins and recognises the fixture. Run on its
       # own: the test pins the process-wide model cache.
       - name: Live OCR model manager (download, resume, verify, recognise)
-        if: github.event_name != 'workflow_dispatch' || inputs.scope != 'paddle-live'
+        if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'paddle-live' && inputs.scope != 'qwen-live')
         working-directory: repos/CrispSorter
         run: cargo test -p crispsorter --lib --features desktop,sidecars,audio-glint,aitoolkit,cloud-backup,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,ocr-reviewed-pdf,crispembed-license-api,ocr-photo-tools,crispasr,translate-align,translate-nmt,pdf-render,anydoc,fuse,paddle-ocr -- --ignored live_model_manager_installs_resumes_and_recognises
 
       - name: Live ocrs recognition (installs pinned ONNX models through the manager)
-        if: github.event_name != 'workflow_dispatch' || inputs.scope != 'paddle-live'
+        if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'paddle-live' && inputs.scope != 'qwen-live')
         working-directory: repos/CrispSorter
         run: cargo test -p crispsorter --lib --features desktop,sidecars,audio-glint,aitoolkit,cloud-backup,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,ocr-reviewed-pdf,crispembed-license-api,ocr-photo-tools,crispasr,translate-align,translate-nmt,pdf-render,anydoc,fuse,paddle-ocr -- --ignored live_ocrs_installs_and_recognises_the_fixture_sentence
 
       - name: Batch sorting script tests
-        if: github.event_name != 'workflow_dispatch' || inputs.scope != 'paddle-live'
+        if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'paddle-live' && inputs.scope != 'qwen-live')
         working-directory: repos/CrispSorter
         shell: bash
         run: |
@@ -406,7 +435,7 @@ jobs:
           "$output"
 
       - name: Build the CLI binary
-        if: github.event_name != 'workflow_dispatch' || inputs.scope != 'paddle-live'
+        if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'paddle-live' && inputs.scope != 'qwen-live')
         working-directory: repos/CrispSorter
         # With `pdf-zpdf`, so the harness's decrypt-with-a-user-password and
         # linearize section runs instead of skipping. That section is the
@@ -416,7 +445,7 @@ jobs:
         run: cargo build --bin crispsorter -p crispsorter --features desktop,sidecars,audio-glint,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,ocr-reviewed-pdf,crispembed-license-api,ocr-photo-tools,crispasr,translate-align,translate-nmt,pdf-render,fuse,paddle-ocr
 
       - name: Install the independent checkers
-        if: github.event_name != 'workflow_dispatch' || inputs.scope != 'paddle-live'
+        if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'paddle-live' && inputs.scope != 'qwen-live')
         # None of these share code with what they are checking: MuPDF
         # (pymupdf), pypdf, pikepdf and python-docx are separate
         # implementations, and they also author the fixtures.
@@ -424,12 +453,12 @@ jobs:
              pymupdf pypdf pikepdf python-docx
 
       - name: Verify CLI results and operation diagnostics remain separate
-        if: github.event_name != 'workflow_dispatch' || inputs.scope != 'paddle-live'
+        if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'paddle-live' && inputs.scope != 'qwen-live')
         working-directory: repos/CrispSorter
         run: python3 scripts/verify_cli_operations.py --cli target/debug/crispsorter
 
       - name: CLI OCR model manager smoke (offline refusal, pull, offline recognition)
-        if: github.event_name != 'workflow_dispatch' || inputs.scope != 'paddle-live'
+        if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'paddle-live' && inputs.scope != 'qwen-live')
         working-directory: repos/CrispSorter
         shell: bash
         run: |
@@ -457,14 +486,14 @@ jobs:
           PY
 
       - name: Compile the generated OCR qualification tools against the pinned runtime
-        if: github.event_name != 'workflow_dispatch' || inputs.scope != 'paddle-live'
+        if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'paddle-live' && inputs.scope != 'qwen-live')
         working-directory: repos/CrispSorter
         run: |
           python3 tools/quality/isolated_ocr.py --app . --embed ../CrispEmbed --destination ocr-qualification --panel --worker
           cargo check --manifest-path ocr-qualification/Cargo.toml --all-targets --target-dir target
 
       - name: Verify the PDF surface against qpdf / poppler / MuPDF / pypdf / pikepdf
-        if: github.event_name != 'workflow_dispatch' || inputs.scope != 'paddle-live'
+        if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'paddle-live' && inputs.scope != 'qwen-live')
         working-directory: repos/CrispSorter
         run: |
           CRISP_CLI="$PWD/target/debug/crispsorter" \
@@ -472,7 +501,7 @@ jobs:
             python3 scripts/verify_pdf_independent.py
 
       - name: Verify the DOCX surface against python-docx
-        if: github.event_name != 'workflow_dispatch' || inputs.scope != 'paddle-live'
+        if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'paddle-live' && inputs.scope != 'qwen-live')
         working-directory: repos/CrispSorter
         run: |
           CRISP_CLI="$PWD/target/debug/crispsorter" \
@@ -480,7 +509,7 @@ jobs:
             python3 scripts/verify_docx_independent.py
 
       - name: Upload the CLI binary
-        if: github.event_name != 'workflow_dispatch' || inputs.scope != 'paddle-live'
+        if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'paddle-live' && inputs.scope != 'qwen-live')
         # So a full local disk is never the reason a verified binary is
         # unavailable.
         uses: actions/upload-artifact@v4
@@ -520,7 +549,7 @@ jobs:
     concurrency:
       group: ci-windows-${{ github.ref }}${{ github.ref == 'refs/heads/main' && format('-{0}', github.sha) || '' }}
       cancel-in-progress: false
-    if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'native-linux' && inputs.scope != 'paddle-live')
+    if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'native-linux' && (inputs.scope != 'paddle-live' && inputs.scope != 'qwen-live'))
     name: Windows lib tests + CLI smoke
     runs-on: windows-2025
     timeout-minutes: 120
@@ -719,7 +748,7 @@ jobs:
     concurrency:
       group: ci-macos-${{ github.ref }}${{ github.ref == 'refs/heads/main' && format('-{0}', github.sha) || '' }}
       cancel-in-progress: false
-    if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'native-linux' && inputs.scope != 'paddle-live')
+    if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'native-linux' && (inputs.scope != 'paddle-live' && inputs.scope != 'qwen-live'))
     name: macOS lib tests + secret-store smoke
     runs-on: macos-15
     timeout-minutes: 120
@@ -1047,7 +1076,7 @@ jobs:
       group: ci-cloud-live-${{ github.ref }}${{ github.ref == 'refs/heads/main' && format('-{0}', github.sha) || '' }}
       cancel-in-progress: false
     name: Gated cloud live matrix
-    if: github.event_name == 'workflow_dispatch' && inputs.cloud_live && inputs.scope != 'paddle-live'
+    if: github.event_name == 'workflow_dispatch' && inputs.cloud_live && (inputs.scope != 'paddle-live' && inputs.scope != 'qwen-live')
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:

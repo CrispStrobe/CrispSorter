@@ -4702,3 +4702,9 @@ here if it is taken, so the next person does not re-derive the same plan.
   conservatively withhold credential-shaped/ambiguous diagnostic bodies with an
   explicit receipt status. Twenty-eight model-free tests and actionlint pass;
   original test, lock/manifests and concurrency blocks remain unchanged.
+- 2026-11-13: User accepted Qwen Research License for the exact Qwen2.5-VL-3B
+  internal non-commercial evaluation. Prepared a separate single-Linux-job
+  `qwen-live` scope: one real multilingual preset, child-only model-specific
+  consent, exact production runtime/model/fixture pins, bounded private evidence.
+  Existing four-preset/release qualification remains unchanged. No weights,
+  inference, GPU comparison or dispatch yet; see docs/qwen-internal-evaluation-smoke.md.

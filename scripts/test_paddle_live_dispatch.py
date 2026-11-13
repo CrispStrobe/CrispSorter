@@ -86,7 +86,7 @@ class WorkflowScope(unittest.TestCase):
         self.assertEqual(re.search(r'--features ([^\s]+)',step)[1],runner.FEATURES)
         self.assertEqual(runner.COMMAND[-5:],['--ignored','--exact',runner.TEST,'--nocapture','--test-threads=1'])
         self.assertIn('--locked',runner.COMMAND)
-        self.assertIn('options: [native-linux, platforms, all, paddle-live]',WORKFLOW.read_text())
+        self.assertIn('options: [native-linux, platforms, all, paddle-live, qwen-live]',WORKFLOW.read_text())
 
     def test_concurrency_blocks_unchanged(self):
         lines=WORKFLOW.read_text().splitlines(keepends=True);blocks=[]

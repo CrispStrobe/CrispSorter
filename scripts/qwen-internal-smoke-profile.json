@@ -1,0 +1,21 @@
+{
+  "schema": "crispsorter-qwen-internal-smoke-profile-v1",
+  "native_source": "c364feb974b91e14cbf328c6949f3df36e89ce81",
+  "preset": "multilingual",
+  "model": {
+    "registry_name": "qwen2vl-3b",
+    "filename": "qwen2.5-vl-3b-q4_k.gguf",
+    "bytes": 2742343200,
+    "sha256": "4cc16e226005a2d7ecce7749d5a876704a499ca301428167f5ceb3b75b967312",
+    "companion_count": 0,
+    "native_license": "qwen-research"
+  },
+  "fixture": {
+    "filename": "ocr-task.png",
+    "sha256": "25f0e5ee8d518403fc97a94435f88d525526649adbc08c2b937c3469ff4fb4ef"
+  },
+  "expected_words": ["cobalt", "warranty", "november", "2031"],
+  "license": "Qwen Research License",
+  "use_scope": "Internal non-commercial evaluation only",
+  "satisfies_publication_gate": false
+}
