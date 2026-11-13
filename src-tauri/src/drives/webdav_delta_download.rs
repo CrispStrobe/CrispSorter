@@ -1,7 +1,7 @@
 //! Stage and verify all WebDAV delta bytes before writing the open destination.
 //! This is not atomic: local commit failures and concurrent writers can still
 //! leave partial changes. No pathname replacement or metadata copying occurs.
-use crate::sync::delta::{Block, Blockmap, MIN_BLOCK_SIZE};
+use crate::sync::delta::{validate_blockmap, Block, Blockmap};
 use anyhow::{anyhow, ensure, Context, Result};
 use sha2::{Digest, Sha256};
 use std::{
@@ -12,30 +12,6 @@ use std::{
 
 const BUFFER: usize = 64 * 1024;
 const RANGE_CHUNK: u64 = 4 * 1024 * 1024;
-
-fn validate_map(map: &Blockmap) -> Result<()> {
-    ensure!(
-        map.block_size as usize >= MIN_BLOCK_SIZE,
-        "invalid delta block size"
-    );
-    let mut offset = 0u64;
-    for block in &map.blocks {
-        ensure!(
-            block.offset == offset && offset < map.file_size,
-            "invalid delta block offset"
-        );
-        let expected = u64::from(map.block_size).min(map.file_size - offset);
-        ensure!(
-            u64::from(block.size) == expected && block.size > 0,
-            "invalid delta block length"
-        );
-        offset = offset
-            .checked_add(u64::from(block.size))
-            .ok_or_else(|| anyhow!("delta offset overflow"))?;
-    }
-    ensure!(offset == map.file_size, "incomplete delta block map");
-    Ok(())
-}
 
 fn hashes(reader: &mut impl Read, limit: u64) -> Result<(u64, [u8; 32], u32)> {
     hashes_observe(reader, limit, |_| {})
@@ -96,7 +72,7 @@ pub(super) fn download(
     remote: &Blockmap,
     mut fetch: impl FnMut(u64, u64) -> Result<Vec<u8>>,
 ) -> Result<Option<(usize, u64)>> {
-    validate_map(remote)?;
+    validate_blockmap(remote)?;
     match fs::metadata(path) {
         Ok(_) => {
             regular(path)?;

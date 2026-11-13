@@ -19,7 +19,7 @@
 //! only tail blocks change.  Tantivy segments are immutable once written;
 //! only `meta.json` + new segments need uploading.
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::Read;
@@ -268,11 +268,41 @@ pub fn compute_local_blockmap_from_bytes_against(
     compute_blockmap_from_bytes(data, negotiated_block_size(remote)?)
 }
 
+/// Verify that blocks describe the entire file in order at the advertised size.
+/// Hashes can only be compared by index once this layout is known to be valid.
+pub fn validate_blockmap(map: &Blockmap) -> Result<()> {
+    ensure!(
+        map.block_size as usize >= MIN_BLOCK_SIZE,
+        "invalid delta block size"
+    );
+    let mut offset = 0u64;
+    for block in &map.blocks {
+        ensure!(
+            block.offset == offset && offset < map.file_size,
+            "invalid delta block offset"
+        );
+        let expected = u64::from(map.block_size).min(map.file_size - offset);
+        ensure!(
+            u64::from(block.size) == expected && block.size > 0,
+            "invalid delta block length"
+        );
+        offset = offset
+            .checked_add(u64::from(block.size))
+            .ok_or_else(|| anyhow!("delta offset overflow"))?;
+    }
+    ensure!(offset == map.file_size, "incomplete delta block map");
+    Ok(())
+}
+
 // ── Diff ─────────────────────────────────────────────────────────────────
 
 /// Compare local and remote blockmaps and return the list of blocks that
 /// differ.  Blocks that exist in the local map but not in the remote
 /// (i.e. the file grew) are also included.
+///
+/// Both maps must cover their files contiguously with full-sized blocks and
+/// at most one shorter final block. Malformed layouts are refused before any
+/// changed-block decisions.
 ///
 /// # Block sizes must match
 ///
@@ -299,6 +329,8 @@ pub fn diff_blockmaps(local: &Blockmap, remote: &Blockmap) -> Result<Vec<Changed
             remote.block_size
         );
     }
+    validate_blockmap(local).context("invalid local delta block map")?;
+    validate_blockmap(remote).context("invalid remote delta block map")?;
     let mut changed = Vec::new();
 
     for (i, local_block) in local.blocks.iter().enumerate() {
@@ -529,6 +561,42 @@ mod tests {
         assert_ne!(local.block_size, remote.block_size);
         let err = diff_blockmaps(&local, &remote).unwrap_err().to_string();
         assert!(err.contains("block size mismatch"), "{err}");
+    }
+
+    #[test]
+    fn diff_rejects_malformed_layouts_even_when_every_hash_matches() {
+        let local = compute_blockmap_from_bytes(&vec![b'a'; 2048], 1024).unwrap();
+        // Each of these maps used to look unchanged to the index/hash diff.
+        // An upload would skip its block requests and proceed to finalize.
+        for case in 0..8 {
+            let mut remote = local.clone();
+            match case {
+                0 => remote.blocks[0].offset = u64::MAX,
+                1 => remote.blocks[0].size = 0,
+                2 => remote.blocks[0].size = 1023,
+                3 => remote.blocks[1].offset = 0,
+                4 => remote.file_size = u64::MAX,
+                5 => remote.file_size = 1024,
+                6 => remote.blocks.push(remote.blocks[1].clone()),
+                _ => remote.blocks[1].size = 1025,
+            }
+            assert!(
+                diff_blockmaps(&local, &remote).is_err(),
+                "accepted malformed remote layout case {case}"
+            );
+            assert!(
+                diff_blockmaps(&remote, &local).is_err(),
+                "accepted malformed local layout case {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn diff_rejects_missing_remote_tail_even_when_remaining_hashes_match() {
+        let local = compute_blockmap_from_bytes(&vec![b'a'; 2048], 1024).unwrap();
+        let mut remote = local.clone();
+        remote.blocks.pop();
+        assert!(diff_blockmaps(&local, &remote).is_err());
     }
 
     #[test]
