@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Verify final signed draft provenance without distributing or qualifying it."""
-import argparse
 import hashlib
 import json
 import os
@@ -9,11 +8,13 @@ from pathlib import Path
 import shutil
 import stat
 import subprocess
+import sys
 import zipfile
 
 import ios_draft_retention_schema as retention_schema
 from retain_ios_ocr_draft_inputs import ORT_FILES
 from check_desktop_release_assets import sha
+from mobile_draft_safe_cli import SafeArgumentParser, run as safe_run
 from check_mobile_release_profile import profile
 from ocr_mobile_build_receipt import record
 from prepare_signed_mobile_ocr_draft import RUNTIME_LOCK
@@ -110,11 +111,15 @@ def validate_inner(project, staging, target, artifact, preparation, description,
     return final
 
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description=__doc__)
+def main():
+    parser = SafeArgumentParser(description=__doc__)
     parser.add_argument('--project', type=Path, default=Path.cwd())
     parser.add_argument('--staging', type=Path, required=True)
     parser.add_argument('--target', choices=['android-arm64', 'ios-arm64'], required=True)
     parser.add_argument('--artifact', type=Path, required=True)
     args = parser.parse_args()
     print(json.dumps(record_draft(args.project, args.staging, args.target, args.artifact), indent=2))
+
+
+if __name__ == '__main__':
+    sys.exit(safe_run(main))

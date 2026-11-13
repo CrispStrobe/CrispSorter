@@ -640,3 +640,11 @@ The pinned official iOS ORT ZIP was independently rechecked for retention on
 device framework/header/plist/notice paths match the explicit allowlist, with
 no additional device framework files omitted. This inspection was read-only
 and did not build or qualify an application.
+
+Both retention and signed-draft recorder CLI entry points suppress raw parser
+and exception diagnostics. Failures print one fixed bounded category
+(`invalid-input`, `invalid-record`, `invalid-arguments`, `input-output-error`,
+`external-command-failed`, `external-timeout`, or `internal-error`) without a
+traceback or input values. Malformed license URL/timestamp checks also use
+constant parser errors. Subprocess regressions cover both secret-bearing input
+examples through both CLIs; their incomplete/failure evidence remains explicit.

@@ -41,6 +41,7 @@ class Retention(unittest.TestCase):
             self.write(self.project / name, '{}')
         self.write(self.project / 'static/licenses.json', {'generatedAt': '2026-11-13T00:00:00Z',
             'counts': {'frontend': 0, 'backend': 0, 'total': 0}, 'licenses': []})
+        self.write(self.project / 'src-tauri/tauri.conf.json', {'version': '0.15.1'})
         self.write(self.project / '.gitignore', '.cargo/\n')
         for args in [('init', '-q'), ('add', '.'), ('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture')]:
             subprocess.run(['git', '-C', str(self.project), *args], check=True, capture_output=True)
@@ -288,6 +289,78 @@ class Retention(unittest.TestCase):
             with self.assertRaises(ValueError):
                 schema.native(value, lock)
             del nested['debug_secret']
+
+    def cli(self, script, extra=()):
+        repo = Path(__file__).resolve().parents[2]
+        return subprocess.run([sys.executable, str(repo / 'scripts' / script), '--project', str(self.project),
+            '--staging', str(self.stage), *extra], capture_output=True, text=True, timeout=30)
+
+    def test_retention_cli_malformed_license_url_never_echoes_value(self):
+        value = json.loads((self.project / 'static/licenses.json').read_text())
+        value['licenses'] = [{'name': 'fixture', 'version': '1.0', 'license': 'MIT', 'author': 'Fixture',
+            'source': 'Backend', 'link': 'https://[SECRET-SENTINEL]/license'}]
+        value['counts'] = {'frontend': 0, 'backend': 1, 'total': 1}
+        self.write(self.project / 'static/licenses.json', value)
+        result = self.cli('retain_ios_ocr_draft_inputs.py')
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stderr, 'Mobile draft command failed [invalid-input]\n')
+        self.assertNotIn('SECRET-SENTINEL', result.stdout + result.stderr)
+        manifest = json.loads((self.stage / 'replay-inputs/replay-inputs.json').read_text())
+        self.assertEqual(manifest['input_retention_status'], 'incomplete')
+
+    def test_retention_cli_bad_generated_at_never_echoes_value(self):
+        path = self.project / 'static/licenses.json'
+        value = json.loads(path.read_text())
+        value['generatedAt'] = 'SECRET-SENTINEL'
+        self.write(path, value)
+        result = self.cli('retain_ios_ocr_draft_inputs.py')
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stderr, 'Mobile draft command failed [invalid-input]\n')
+        self.assertNotIn('SECRET-SENTINEL', result.stdout + result.stderr)
+
+    def test_recorder_cli_malformed_url_and_generated_at_never_echo_values(self):
+        import shutil
+        shutil.rmtree(self.stage / 'artifact')
+        original = self.project / 'static/licenses.json'
+        saved = original.read_bytes()
+        signed = self.stage / 'signed.ipa'
+        signed.write_bytes(b'unsigned local test fixture; validation must fail before signature checks')
+        for field in ['link', 'generatedAt']:
+            with self.subTest(field=field):
+                value = json.loads(saved)
+                if field == 'link':
+                    value['licenses'] = [{'name': 'fixture', 'version': '1.0', 'license': 'MIT', 'author': 'Fixture',
+                        'source': 'Backend', 'link': 'https://[SECRET-SENTINEL]/license'}]
+                    value['counts'] = {'frontend': 0, 'backend': 1, 'total': 1}
+                else:
+                    value['generatedAt'] = 'SECRET-SENTINEL'
+                self.write(original, value)
+                result = self.cli('record_signed_mobile_ocr_draft.py',
+                    ('--target', 'ios-arm64', '--artifact', str(signed)))
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stderr, 'Mobile draft command failed [invalid-input]\n')
+                self.assertNotIn('SECRET-SENTINEL', result.stdout + result.stderr)
+                failure = self.stage / 'artifact/failure.json'
+                self.assertEqual(json.loads(failure.read_text())['validation_status'], 'failed')
+                self.assertNotIn('SECRET-SENTINEL', failure.read_text())
+                shutil.rmtree(self.stage / 'artifact')
+
+    def test_recorder_cli_parser_exception_never_echoes_json_input(self):
+        # Invalid JSON's decode error can include raw malformed data in custom parsers;
+        # the CLI boundary must suppress every exception traceback consistently.
+        self.write(self.stage / 'preparation.json', '{"SECRET-SENTINEL":')
+        result = self.cli('record_signed_mobile_ocr_draft.py',
+            ('--target', 'ios-arm64', '--artifact', str(self.stage / 'signed.ipa')))
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stderr, 'Mobile draft command failed [invalid-record]\n')
+        self.assertNotIn('SECRET-SENTINEL', result.stdout + result.stderr)
+
+    def test_both_cli_argument_errors_never_echo_raw_values(self):
+        for script in ['retain_ios_ocr_draft_inputs.py', 'record_signed_mobile_ocr_draft.py']:
+            result = self.cli(script, ('--SECRET-SENTINEL',))
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(result.stderr, 'Mobile draft command failed [invalid-arguments]\n')
+            self.assertNotIn('SECRET-SENTINEL', result.stdout + result.stderr)
 
     def test_workflow_failure_retention_and_no_concurrency_changes(self):
         repo = Path(__file__).resolve().parents[2]

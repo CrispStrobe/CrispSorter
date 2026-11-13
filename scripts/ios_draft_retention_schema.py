@@ -33,7 +33,11 @@ def count(value):
 
 def date(value):
     text(value, r'\d{4}-\d\d-\d\dT[0-9:.]+(?:Z|\+00:00)')
-    if datetime.fromisoformat(value.replace('Z', '+00:00')).tzinfo is None:
+    try:
+        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    except ValueError:
+        raise ValueError('Invalid retained timestamp') from None
+    if parsed.tzinfo is None:
         raise ValueError('Missing retained timestamp timezone')
 
 
@@ -176,7 +180,10 @@ def licenses(value):
             text(string, r'[^\x00-\x1f]{0,4096}' if field == 'author' else r'[^\x00-\x1f]{1,4096}')
         if item['source'] not in ('Frontend', 'Backend', 'Native'):
             raise ValueError('Unexpected retained license source')
-        link = urlsplit(item['link'])
+        try:
+            link = urlsplit(item['link'])
+        except ValueError:
+            raise ValueError('Malformed retained public license URL') from None
         if link.username or link.password or link.query or link.scheme not in ('http', 'https'):
             raise ValueError('Retained public license URL cannot contain credentials/query')
 
@@ -222,6 +229,7 @@ def validated_ios_metadata(project, staging, description, files):
             raise ValueError('Unsafe retained iOS metadata record')
         raw[name] = path.read_bytes()
         parsed[name] = decode(raw[name])
+    licenses(decode((project / 'static/licenses.json').read_bytes()))
     preparation(parsed['preparation.json'], description)
     layout(parsed['layout.json'])
     native(parsed['runtime-build.json'], decode((project / 'scripts/ocr-mobile-runtime-lock.json').read_bytes()))

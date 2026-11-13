@@ -4670,3 +4670,7 @@ here if it is taken, so the next person does not re-derive the same plan.
   with a typed binding summary plus original snapshot/graph hashes. Signed-app
   provenance replay remains scoped to its existing verifier; full license-graph
   replay is unavailable without the intentionally omitted original graph.
+- 2026-11-13: Retention and signed-draft recorder CLI failures now use fixed
+  bounded error categories, suppressing raw record/parser exception values and
+  tracebacks. Subprocess tests verify malformed URL and generatedAt data never
+  appears in either CLI output or retained failure artifacts.

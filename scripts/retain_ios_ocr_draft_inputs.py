@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Retain only original same-run iOS draft inputs; never attest app validation."""
-import argparse
 import hashlib
 import json
 import os
@@ -8,9 +7,11 @@ import re
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tomllib
 
 import ios_draft_retention_schema as schema
+from mobile_draft_safe_cli import SafeArgumentParser, run as safe_run
 from check_mobile_release_profile import profile
 from mobile_native_provenance import BASE_NOTICES, SHEEN_NOTICES
 from ocr_mobile_build_receipt import source_tree_identity
@@ -215,10 +216,14 @@ def collect(project, staging):
         (output / 'replay-inputs.json').write_text(json.dumps(manifest, indent=2) + '\n')
 
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description=__doc__)
+def main():
+    parser = SafeArgumentParser(description=__doc__)
     parser.add_argument('--project', type=Path, default=Path.cwd())
     parser.add_argument('--staging', type=Path, required=True)
     args = parser.parse_args()
     result = collect(args.project, args.staging)
     print('Retained original draft inputs (not app qualification):', result['total_bytes'], 'bytes')
+
+
+if __name__ == '__main__':
+    sys.exit(safe_run(main))
