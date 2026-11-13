@@ -1,57 +1,53 @@
-//! Manual pull destinations retain opened directory objects through queue waits.
-//! Moves follow the original directory object. This protects ancestry, not
-//! hostile same-user edits inside held directories. Windows needs its own
-//! handle-relative backend; no pathname fallback is implemented here.
-use anyhow::{ensure, Context, Result};
-use cap_fs_ext::DirExt;
-use cap_std::{
-    ambient_authority,
-    fs::{Dir, DirBuilder, OpenOptions, Permissions},
-};
+//! A manual pull captures its selected directory object once, then retains it
+//! across queue waits, retries and later entries. Moves follow that same object;
+//! replacing its former pathname never redirects a destination. No journals or
+//! persistent object identities are involved.
+use anyhow::{Context, Result};
 use std::{
-    fs::File,
+    ffi::OsStr,
+    fs::Permissions,
     io::{self, Write},
     path::Path,
     sync::Arc,
 };
+#[cfg(unix)]
+#[path = "pull_destination_unix.rs"]
+mod backend;
+#[cfg(windows)]
+#[path = "pull_destination_windows.rs"]
+mod backend;
+use backend::{Directory, StageFile};
 
 struct HeldDir {
-    dir: Dir,
+    dir: Directory,
 }
 impl HeldDir {
-    fn child(&self, name: &str, create: bool) -> Result<Arc<Self>> {
-        let dir = match self.dir.open_dir_nofollow(name) {
+    fn child(&self, name: &str) -> Result<Arc<Self>> {
+        let name = OsStr::new(name);
+        let dir = match self.dir.open_child(name) {
             Ok(dir) => dir,
-            Err(error) if create && error.kind() == io::ErrorKind::NotFound => {
-                self.create_dir(name, false)?;
-                self.dir.open_dir_nofollow(name)?
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                match self.dir.create_child(name) {
+                    Ok(dir) => dir,
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                        self.dir.open_child(name)?
+                    }
+                    Err(error) => return Err(error).context("create pull directory"),
+                }
             }
             Err(error) => return Err(error).context("open pull directory without following links"),
         };
         Ok(Arc::new(Self { dir }))
     }
-    fn create_dir(&self, name: &str, private: bool) -> Result<()> {
-        use cap_std::fs::DirBuilderExt;
-        let mut builder = DirBuilder::new();
-        builder.mode(if private { 0o700 } else { 0o777 });
-        match self.dir.create_dir_with(name, &builder) {
-            Ok(()) => Ok(()),
-            Err(error) if !private && error.kind() == io::ErrorKind::AlreadyExists => Ok(()),
-            Err(error) => Err(error).context("create pull directory"),
-        }
-    }
 }
 
-/// Capture once for the entire pull, before an asynchronous queue wait.
+/// Capture once before asynchronous provider/queue waits, for the whole pull.
 pub(crate) struct PullRoot {
     ancestry: Vec<Arc<HeldDir>>,
 }
 impl PullRoot {
     pub(crate) fn capture(path: &Path) -> Result<Arc<Self>> {
-        // Resolve the explicitly configured root (including an intended alias)
-        // once. Every later operation uses this directory object, not its path.
-        let dir =
-            Dir::open_ambient_dir(path, ambient_authority()).context("open selected pull root")?;
+        let dir = Directory::open_root(path).context("open selected pull root")?;
         Ok(Arc::new(Self {
             ancestry: vec![Arc::new(HeldDir { dir })],
         }))
@@ -63,7 +59,7 @@ impl PullRoot {
         }
         let mut ancestry = self.ancestry.clone();
         for part in &parts[..parts.len() - 1] {
-            ancestry.push(ancestry.last().unwrap().child(part, true)?);
+            ancestry.push(ancestry.last().unwrap().child(part)?);
         }
         let target = Arc::new(PullDestination {
             ancestry,
@@ -83,29 +79,21 @@ impl PullDestination {
         self.ancestry.last().unwrap()
     }
     fn permissions(&self) -> Result<Option<Permissions>> {
-        match self.parent().dir.symlink_metadata(&self.leaf) {
-            Ok(metadata) => {
-                ensure!(
-                    metadata.is_file() && !metadata.file_type().is_symlink(),
-                    "pull destination is not a regular file"
-                );
-                ensure!(
-                    !metadata.permissions().readonly(),
-                    "pull destination is read-only"
-                );
-                Ok(Some(metadata.permissions()))
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error).context("inspect held pull destination"),
-        }
+        self.parent()
+            .dir
+            .permissions(OsStr::new(&self.leaf))
+            .context("inspect held pull destination")
     }
     pub(crate) fn stage(
         self: &Arc<Self>,
         size: Option<u64>,
         write: impl FnOnce(&mut dyn Write) -> Result<u64>,
     ) -> Result<PullStage> {
-        let name = format!(".crispsorter-pull-{}", uuid::Uuid::new_v4());
-        self.stage_named(name, size, write)
+        self.stage_named(
+            format!(".crispsorter-pull-{}", uuid::Uuid::new_v4()),
+            size,
+            write,
+        )
     }
     fn stage_named(
         self: &Arc<Self>,
@@ -114,38 +102,23 @@ impl PullDestination {
         write: impl FnOnce(&mut dyn Write) -> Result<u64>,
     ) -> Result<PullStage> {
         let permissions = self.permissions()?;
-        let mut options = OpenOptions::new();
-        options.read(true).write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use cap_std::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        // Own the entry only after exclusive creation succeeds. A name collision
-        // must never arm cleanup for somebody else's existing file.
-        let file = self.parent().dir.open_with(&name, &options)?.into_std();
-        let mut stage = PullStage {
-            target: self.clone(),
-            name,
-            file: Some(file),
-            bytes: 0,
-            cleanup: true,
-        };
-        let file = stage.file.as_mut().unwrap();
-        stage.bytes = crate::drives::materialize::write_stage(file, size, write)?;
+        let mut file = self.parent().dir.create_file(OsStr::new(&name))?;
+        let bytes = crate::drives::materialize::write_stage(file.as_file_mut(), size, write)?;
         if let Some(permissions) = permissions {
-            file.set_permissions(permissions.into_std(file)?)?;
+            file.as_file().set_permissions(permissions)?;
         }
-        Ok(stage)
+        Ok(PullStage {
+            target: self.clone(),
+            file,
+            bytes,
+        })
     }
 }
 
 pub(crate) struct PullStage {
     target: Arc<PullDestination>,
-    name: String,
-    file: Option<File>,
+    file: StageFile,
     bytes: u64,
-    cleanup: bool,
 }
 impl PullStage {
     pub(crate) fn bytes(&self) -> u64 {
@@ -159,17 +132,11 @@ impl PullStage {
                 hook();
             }
         });
-        // Source and destination use the held parent. This is an exclusive
-        // 0600 stage, as in ordinary downloads, not protection against a writer
-        // with permission to replace entries inside that same directory.
-        let result = self.target.parent().dir.rename(
-            &self.name,
-            &self.target.parent().dir,
-            &self.target.leaf,
-        );
-        if result.is_ok() {
-            self.cleanup = false;
-        }
+        let result = self
+            .target
+            .parent()
+            .dir
+            .rename_file(&mut self.file, OsStr::new(&self.target.leaf));
         #[cfg(test)]
         let result = PUBLISH_RESULT.with(|hook| match hook.borrow_mut().take() {
             Some(hook) => hook(result),
@@ -183,20 +150,47 @@ impl PullStage {
         Ok(self.bytes)
     }
 }
-impl Drop for PullStage {
-    fn drop(&mut self) {
-        drop(self.file.take());
-        if self.cleanup {
-            let _ = self.target.parent().dir.remove_file(&self.name);
-        }
+
+/// The same loop used by the pair command. The caller captures root once; this
+/// routine derives every later destination from that handle, never the old path.
+pub(crate) async fn download_entries(
+    queue: &crate::sync::transfer_queue::TransferQueue,
+    drive_id: &str,
+    drive: Arc<dyn crate::drives::CloudDrive>,
+    remote_root: &str,
+    entries: &[crate::sync::pairs::SyncRemoteEntry],
+    root: Arc<PullRoot>,
+) -> Result<usize> {
+    let mut downloaded = 0;
+    for entry in entries {
+        let target = root.destination(&entry.relative_path)?;
+        let path = std::path::PathBuf::from(format!(
+            "{}/{}",
+            remote_root.trim_end_matches('/'),
+            entry.relative_path
+        ));
+        let reader = drive.clone();
+        let job = queue.submit_pull_download(
+            drive_id.to_owned(),
+            path,
+            target,
+            Some(entry.size),
+            move |path, writer| reader.read_file_to_writer(path, writer),
+        );
+        job.handle.await.context("sync transfer task failed")??;
+        downloaded += 1;
     }
+    Ok(downloaded)
 }
+
 #[cfg(test)]
 thread_local! {
     static BEFORE_PUBLISH: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
     static PUBLISH_RESULT: std::cell::RefCell<Option<Box<dyn FnOnce(io::Result<()>) -> io::Result<()>>>> = const { std::cell::RefCell::new(None) };
 }
-
 #[cfg(test)]
+#[path = "pull_destination_common_tests.rs"]
+mod common_tests;
+#[cfg(all(test, unix))]
 #[path = "pull_destination_tests.rs"]
 mod tests;

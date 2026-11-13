@@ -15,11 +15,11 @@ pub mod sync_conflict_production;
 pub mod sync_paths_production;
 #[path = "../../src-tauri/src/sync/inventory.rs"]
 pub mod sync_inventory_production;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[path = "../../src-tauri/src/sync/pull_destination.rs"]
 pub mod pull_destination;
 pub mod sync {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub use crate::pull_destination;
     pub use crate::transfer_queue;
     pub use crate::sync_paths_production as paths;

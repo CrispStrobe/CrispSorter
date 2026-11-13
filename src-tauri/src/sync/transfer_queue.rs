@@ -540,9 +540,9 @@ impl TransferQueue {
         TransferHandle { job_id, progress_rx: rx, handle, cancellation }
     }
 
-    /// Held-directory manual-pull candidate. Existing pathname downloads are
-    /// unchanged; shipping pair commands are not switched until Windows works.
-    #[cfg(unix)]
+    /// Manual pull adapter retaining the captured destination directory object.
+    /// Ordinary pathname-based download APIs keep their existing behavior.
+    #[cfg(any(unix, windows))]
     pub(crate) fn submit_pull_download(
         &self,
         drive_id: String,

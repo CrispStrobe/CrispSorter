@@ -427,16 +427,23 @@ This does not promise that the completed file remains reachable at the original
 pathname. Existing symlink leaves are rejected; a leaf replaced after the final
 check is replaced as an entry without following its referent.
 
-Stages are random, exclusive 0600 files in the held destination directory, so
-existing file-creation permissions remain sufficient. Ancestor-swap protection
+Stages are random, exclusive files in the held destination directory (0600 on
+Unix), so existing file-creation permissions remain sufficient. Ancestor-swap protection
 does not protect against another writer replacing entries inside that same
 directory. Source failures/cancellation clean owned stages through the held
 parent, and uncertain final rename errors remain non-replayable. A successful
 rename disarms cleanup of the former stage name.
 
-The Unix candidate has a real queue adapter and focused swap/relocation/retry/
-cancellation/uncertain-rename controls, but shipping pair commands still use the
-existing path. Windows needs its separate native handle-relative create, rename
-and disposition implementation and native UNC/reparse tests. There is no new
-Windows pathname fallback and no change to supported-platform shipping pulls.
-No journals, admission, source identity or ACK bookkeeping are added.
+The integrated candidate routes the manual pair pull through one captured root
+before provider inventory waits, the real transfer queue, and a shared production
+pull loop. Generic pathname download APIs are unchanged. Windows uses native
+rooted opens, rename and owned-handle disposition; it does not reconstruct paths
+for mutation. Windows cleanup is disarmed before a rename attempt because an
+uncertain error may already have published the file; an orphan stage can remain.
+
+The storage-contract harness includes the shared queue/production-loop tests and
+Windows native backend tests. Linux tests and cross-compilation are not Windows
+runtime evidence: native Windows reparse/relocation and UNC coverage must run
+before this isolated candidate is merged. The explicit UNC fixture remains
+unrun without an accessible configured share. No journals, admission, source
+identity or ACK bookkeeping are added.

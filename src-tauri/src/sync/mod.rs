@@ -33,7 +33,7 @@ pub mod offline_queue;
 pub mod offline_replay;
 pub mod pairs;
 pub(crate) mod paths;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) mod pull_destination;
 pub(crate) mod inventory;
 pub mod partition;

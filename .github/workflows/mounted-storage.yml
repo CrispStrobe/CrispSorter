@@ -10,6 +10,7 @@ on:
       - 'src-tauri/src/drives/read_cache.rs'
       - 'src-tauri/src/drives/fuse_mount/**'
       - 'src-tauri/src/sync/transfer_queue.rs'
+      - 'src-tauri/src/sync/pull_destination*.rs'
       - 'src-tauri/src/sync/tauri_commands.rs'
       - 'src-tauri/src/index/tauri_commands.rs'
       - 'src-tauri/src/cli/mod.rs'
@@ -27,6 +28,7 @@ on:
       - 'src-tauri/src/drives/read_cache.rs'
       - 'src-tauri/src/drives/fuse_mount/**'
       - 'src-tauri/src/sync/transfer_queue.rs'
+      - 'src-tauri/src/sync/pull_destination*.rs'
       - 'src-tauri/src/sync/tauri_commands.rs'
       - 'src-tauri/src/index/tauri_commands.rs'
       - 'src-tauri/src/cli/mod.rs'
@@ -61,6 +63,23 @@ jobs:
           set -o pipefail
           mkdir -p test-results/storage
           cargo test --locked --manifest-path tests/storage-contract/Cargo.toml -- --test-threads=2 2>&1 | tee test-results/storage/native-contract.log
+      - name: Test native UNC handles when the runner administrative share is available
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tempPath = [System.IO.Path]::GetFullPath($env:RUNNER_TEMP)
+          if ($tempPath -notmatch '^([A-Za-z]):\\(.*)$') {
+            Write-Host 'UNC UNRUN: runner temp has no drive-letter spelling.'
+            exit 0
+          }
+          $uncRoot = '\\localhost\' + $Matches[1] + '$\' + $Matches[2]
+          if (-not (Test-Path -LiteralPath $uncRoot -PathType Container -ErrorAction SilentlyContinue)) {
+            Write-Host 'UNC UNRUN: loopback administrative share is inaccessible; no share or credentials were created.'
+            exit 0
+          }
+          $env:CRISPSORTER_TEST_MOUNT_ROOT = $uncRoot
+          cargo test --locked --manifest-path tests/storage-contract/Cargo.toml -- --ignored unc_or_verbatim_root --test-threads=1 2>&1 | Tee-Object -FilePath test-results/storage/unc-contract.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Retain tested dependency graph and execution evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -69,3 +88,4 @@ jobs:
           path: |
             tests/storage-contract/Cargo.lock
             test-results/storage/native-contract.log
+            test-results/storage/unc-contract.log

@@ -1,8 +1,9 @@
 # Isolated Windows pull-handle prototype
 
-This crate compiles the Windows backend directly without compiling the app. It
-is not wired into shipping pulls and is not runtime qualification. It depends
-only on `windows-sys`; the application manifest and lockfile are unchanged.
+This crate compiles the Windows backend directly without compiling the app. The integrated candidate imports these same backend tests into the existing
+`tests/storage-contract` harness, which is the native CI suite; this standalone
+crate remains a small optional API check and is not an additional required suite.
+Native execution is still required before merging the candidate.
 
 The backend retains directory objects and uses one-component `NtCreateFile`
 operations, native `FileRenameInformation` with the destination root handle,

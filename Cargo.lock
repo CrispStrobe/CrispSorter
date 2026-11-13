@@ -2433,6 +2433,7 @@ dependencies = [
  "uuid 1.23.3",
  "walkdir",
  "webpki-root-certs",
+ "windows-sys 0.61.2",
  "zeroize",
  "zip 7.2.0",
  "zpdf",
