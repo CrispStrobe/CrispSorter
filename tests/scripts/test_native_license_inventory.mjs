@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { backendEntries, loadBackendMetadata, snapshot, verifyInventory } from '../../scripts/native_license_inventory.mjs';
 
@@ -110,4 +111,61 @@ test('generated native builds reject empty, incomplete, or changed backend licen
     altered.licenses[0].license = 'changed';
     assert.throws(() => verifyInventory(altered, entries));
   } finally { f.clean(); }
+});
+
+// Real Cargo resolver, self-authored local packages only: no compilation,
+// target installation, external dependency resolution or provider calls.
+test('committed app dependency order survives actual Cargo metadata and rejects the historical normalization drift', () => {
+  const root = mkdtempSync(path.join(process.env.NATIVE_LICENSE_TEST_TMP || os.tmpdir(), 'native-license-cargo-'));
+  const project = path.join(root, 'project');
+  const names = ['crispembed', 'crispembed-sys', 'ort', 'rten', 'rusqlite', 'rustls', 'rustls-native-certs'];
+  const sourceLock = readFileSync(new URL('../../Cargo.lock', import.meta.url), 'utf8');
+  const packageBlock = value => value.match(/\[\[package\]\]\nname = "crispsorter"\n[\s\S]*?(?=\n\[\[package\]\]|$)/)?.[0];
+  const dependencyBlock = value => packageBlock(value)?.match(/dependencies = \[([\s\S]*?)\]/)?.[0];
+  const sourceOrder = dependencyBlock(sourceLock).split('\n').slice(1, -1)
+    .map(line => JSON.parse(line.trim().replace(/,$/, ''))).filter(name => names.includes(name));
+  assert.equal(sourceOrder.length, names.length);
+  const replaceOrder = (value, order) => value.replace(packageBlock(value), packageBlock(value)
+    .replace(dependencyBlock(value), 'dependencies = [\n' + order.map(name => ' ' + JSON.stringify(name) + ',').join('\n') + '\n]'));
+  const cargo = argv => execFileSync('cargo', argv, { cwd: project, encoding: 'utf8', timeout: 60_000, stdio: ['ignore', 'pipe', 'pipe'] });
+  const git = argv => execFileSync('git', ['-C', project, ...argv], { stdio: 'pipe' });
+  try {
+    mkdirSync(path.join(project, 'src-tauri/src'), { recursive: true });
+    writeFileSync(path.join(project, 'Cargo.toml'), '[workspace]\nmembers = ["src-tauri"]\nresolver = "2"\n');
+    writeFileSync(path.join(project, 'src-tauri/src/lib.rs'), '// Metadata-only fixture; never compiled.\n');
+    writeFileSync(path.join(project, 'src-tauri/Cargo.toml'), '[package]\nname = "crispsorter"\nversion = "0.0.0"\nedition = "2021"\nlicense = "MIT"\n[features]\nocr-mobile = []\n[dependencies]\n'
+      + names.map(name => name + ' = { path = "../fixtures/' + name + '" }').join('\n') + '\n');
+    for (const name of [...names, 'ort-sys']) {
+      const folder = path.join(project, 'fixtures', name);
+      mkdirSync(path.join(folder, 'src'), { recursive: true });
+      writeFileSync(path.join(folder, 'src/lib.rs'), '// Metadata-only fixture; never compiled.\n');
+      writeFileSync(path.join(folder, 'Cargo.toml'), '[package]\nname = ' + JSON.stringify(name) + '\nversion = "1.0.0"\nedition = "2021"\nlicense = "MIT"\n'
+        + (name === 'ort' ? '[dependencies]\nort-sys = { path = "../ort-sys" }\n' : ''));
+    }
+    cargo(['generate-lockfile', '--offline']);
+    const lockPath = path.join(project, 'Cargo.lock');
+    writeFileSync(lockPath, replaceOrder(readFileSync(lockPath, 'utf8'), sourceOrder));
+    git(['init', '-q']); git(['add', '.']); git(['-c', 'user.name=License control', '-c', 'user.email=control@example.invalid', 'commit', '-qm', 'fixture']);
+    const metadataPath = path.join(root, 'native-metadata.json');
+    execFileSync(process.execPath, [fileURLToPath(new URL('../../scripts/native_license_inventory.mjs', import.meta.url)),
+      'prepare', '--project', project, '--target', 'aarch64-linux-android', '--features', 'ocr-mobile', '--output', metadataPath],
+      { cwd: project, timeout: 60_000, stdio: 'pipe', env: { ...process.env, CARGO_NET_OFFLINE: 'true' } });
+    const before = readFileSync(lockPath);
+    const args = ['metadata', '--offline', '--format-version', '1', '--manifest-path', 'src-tauri/Cargo.toml',
+      '--filter-platform', 'aarch64-linux-android', '--no-default-features', '--features', 'ocr-mobile'];
+    cargo(args);
+    assert.deepEqual(readFileSync(lockPath), before, 'Committed application dependency order must not normalize during native builds.');
+    const receipt = loadBackendMetadata(metadataPath, project, 'aarch64-linux-android', 'ocr-mobile').receipt;
+    // Exactly the historical insertion error: rustls entries ahead of rten/rusqlite.
+    const badOrder = [...sourceOrder.filter(name => !['rten', 'rusqlite', 'rustls', 'rustls-native-certs'].includes(name)),
+      'rustls', 'rustls-native-certs', 'rten', 'rusqlite'];
+    writeFileSync(lockPath, replaceOrder(readFileSync(lockPath, 'utf8'), badOrder));
+    writeFileSync(metadataPath, JSON.stringify(snapshot(receipt.metadata, project, 'aarch64-linux-android', 'ocr-mobile', 'cargo-fixture')));
+    const badBytes = readFileSync(lockPath);
+    cargo([...args.slice(0, 1), '--locked', ...args.slice(1)]);
+    assert.deepEqual(readFileSync(lockPath), badBytes, 'Locked metadata alone did not expose the historical ordering defect.');
+    cargo(args);
+    assert.notDeepEqual(readFileSync(lockPath), badBytes);
+    assert.throws(() => loadBackendMetadata(metadataPath, project, 'aarch64-linux-android', 'ocr-mobile'), /dependency lock changed/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

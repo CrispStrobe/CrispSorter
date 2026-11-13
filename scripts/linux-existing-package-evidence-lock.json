@@ -1,0 +1,20 @@
+{
+  "schema": "crispsorter-reviewed-linux-package-evidence-v1",
+  "original_app_source": "b739a3c0b70f39d3ae19e1bfcb412f3b44f77794",
+  "package": {
+    "filename": "CrispSorter_0.15.1_amd64.deb",
+    "bytes": 229393246,
+    "sha256": "b1cc6d018bc1651c5a1604227b43cdc5b73019bad4ab627d94355f8e21cacd55"
+  },
+  "evidence_sha256": {
+    "partial-verification.json": "aac515c3faa3c8bfe97548c2668a37dcccbc1b8a3d9062adf3db8150aa56ba4f",
+    "version.json": "eff39bff518f6829ceacd5cb1a9e678b492fbf8d14efadc04d64e6927d320073",
+    "doctor.json": "b651c05977a3752bbb146e438286ccc2e6f0b87df100d80fac7e27042424721b",
+    "worker-protocol.json": "8fa41c9d5190164b4922c374bde9b3f6d7cf38dec7dc90d16c0c3e6df48f2ce2",
+    "offline-control.json": "c2ee9d768b463b67a510fa454a7ba52f2d4bfc40774dcc5e4297edd98dd40ac2",
+    "offline-control.stdout.hocr": "5c9e8993e059fd2423d935bb464a882ebf001364304b15cc846f736154c26ed0",
+    "offline-control.stderr.txt": "d13831f491d5b780d77d53c2d2c8e1dd835384a99924b5aa0f7b0f2fc9b58d10",
+    "ocr-task.pdf": "538f504756f35ace8af3ff2b970b9f35794aba5a186036596580a4676de922bb"
+  },
+  "scope": "Committed pins of reviewed sanitized local observations; not a third-party build attestation or original release receipt."
+}

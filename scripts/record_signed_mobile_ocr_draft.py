@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Verify final signed draft provenance without distributing or qualifying it."""
-import argparse
 import hashlib
 import json
 import os
@@ -9,9 +8,13 @@ from pathlib import Path
 import shutil
 import stat
 import subprocess
+import sys
 import zipfile
 
+import ios_draft_retention_schema as retention_schema
+from retain_ios_ocr_draft_inputs import ORT_FILES
 from check_desktop_release_assets import sha
+from mobile_draft_safe_cli import SafeArgumentParser, run as safe_run
 from check_mobile_release_profile import profile
 from ocr_mobile_build_receipt import record
 from prepare_signed_mobile_ocr_draft import RUNTIME_LOCK
@@ -48,11 +51,14 @@ def validate(project, staging, target, artifact, preparation, description, resul
     except Exception as error:
         (result / 'failure.json').write_text(json.dumps({
             'schema': 'crispsorter-signed-ocr-draft-failure-v1', 'validation_status': 'failed',
-            'qualification': 'Not established', 'error_type': type(error).__name__, 'error': str(error)}, indent=2) + '\n')
+            'qualification': 'Not established', 'error_type': type(error).__name__,
+            'error': 'Final draft validation failed; consult the original workflow step diagnostics'}, indent=2) + '\n')
         raise
 
 
 def validate_inner(project, staging, target, artifact, preparation, description, result, version, retained):
+    ios_metadata = (retention_schema.validated_ios_metadata(project, staging, description, ORT_FILES)
+                    if target == 'ios-arm64' else None)
     if target == 'android-arm64':
         signing = json.loads(artifact.with_suffix('.signing.json').read_text())
         if (signing.get('signing') != 'provided production certificate' or signing.get('sha256') != sha(artifact)
@@ -85,6 +91,8 @@ def validate_inner(project, staging, target, artifact, preparation, description,
     build = record(project, platform, app, staging / 'runtime/runtime-build.json', staging / 'ort/ort-runtime.json', RUNTIME_LOCK)
     if build['sorter_commit'] != preparation['app_source'] or build['crispembed_commit'] != preparation['production_source']:
         raise ValueError('Final signed application differs from prepared source/runtime identity')
+    if ios_metadata is not None and retention_schema.validated_ios_metadata(project, staging, description, ORT_FILES) != ios_metadata:
+        raise ValueError('Original iOS metadata changed during final provenance validation')
     build_path = result / 'build-receipt.json'
     build_path.write_text(json.dumps(build, indent=2) + '\n')
     final = {'schema': 'crispsorter-signed-ocr-draft-v1', 'app_source': build['sorter_commit'],
@@ -95,16 +103,23 @@ def validate_inner(project, staging, target, artifact, preparation, description,
     # Keep only explicit build metadata, never keychains, certificates or signing secrets.
     for name, source in [('preparation.json', staging / 'preparation.json'), ('layout.json', staging / 'layout.json'),
                          ('runtime-build.json', staging / 'runtime/runtime-build.json'), ('ort-runtime.json', staging / 'ort/ort-runtime.json')]:
-        shutil.copy2(source, result / name)
+        if ios_metadata is not None:
+            (result / name).write_bytes(ios_metadata[name])
+        else:
+            shutil.copy2(source, result / name)
     (result / 'signed-draft.json').write_text(json.dumps(final, indent=2) + '\n')
     return final
 
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description=__doc__)
+def main():
+    parser = SafeArgumentParser(description=__doc__)
     parser.add_argument('--project', type=Path, default=Path.cwd())
     parser.add_argument('--staging', type=Path, required=True)
     parser.add_argument('--target', choices=['android-arm64', 'ios-arm64'], required=True)
     parser.add_argument('--artifact', type=Path, required=True)
     args = parser.parse_args()
     print(json.dumps(record_draft(args.project, args.staging, args.target, args.artifact), indent=2))
+
+
+if __name__ == '__main__':
+    sys.exit(safe_run(main))

@@ -16,7 +16,7 @@ SETTINGS = (MARKER +
             '        "CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]": NO\n')
 
 
-def prepare(project, ort_framework=None):
+def prepare(project, ort_framework=None, retain_native_symbols=False):
     settings = SETTINGS
     if ort_framework is not None:
         if not ort_framework.is_absolute() or not ort_framework.is_file() or ort_framework.name != 'onnxruntime':
@@ -26,7 +26,18 @@ def prepare(project, ort_framework=None):
         flags = '$(inherited) -lc++ -framework CoreML ' + json.dumps(str(ort_framework.resolve()))
         settings = settings.replace('        OTHER_LDFLAGS: "$(inherited) -lc++"\n',
                                     '        OTHER_LDFLAGS: ' + json.dumps(flags) + '\n')
+    if retain_native_symbols:
+        if ort_framework is None:
+            raise ValueError('Symbol retention requires the exact qualified ONNX Runtime framework')
+        # Keep already-linked C API names visible to the unchanged final IPA
+        # provenance check. This changes post-link symbol stripping only: do
+        # not force-load ORT, disable dead-code stripping, or change exports.
+        settings += ('        # Signed OCR draft C API provenance\n'
+                     '        STRIP_STYLE: debugging\n')
     source = project.read_text()
+    if retain_native_symbols and MARKER not in source and any(
+            line.strip().startswith('STRIP_STYLE:') for line in source.splitlines()):
+        raise ValueError('Generated iOS template already defines strip style; review symbol retention explicitly')
     if MARKER not in source:
         if source.count(ANCHOR) != 1:
             raise ValueError('Unexpected generated iOS template; review native link settings before building')
@@ -49,5 +60,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('project', type=Path)
     parser.add_argument('--ort-framework', type=Path)
+    parser.add_argument('--retain-native-symbols', action='store_true',
+                        help='Draft-only post-link retention of C API names; final provenance remains mandatory')
     args = parser.parse_args()
-    prepare(args.project, args.ort_framework)
+    prepare(args.project, args.ort_framework, args.retain_native_symbols)

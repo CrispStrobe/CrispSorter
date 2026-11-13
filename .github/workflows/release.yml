@@ -1076,23 +1076,6 @@ jobs:
             fi
           done
 
-      - name: Released-model OCR smoke through app bindings (Linux)
-        if: runner.os == 'Linux'
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_BUILD_ARGS: ${{ matrix.tauri_args }}
-          CRISPSORTER_OCR_RECEIPT: ${{ github.workspace }}/CrispSorter_linux-x86_64.ocr.json
-          QWEN2VL_OCR_FORCE_CPU: '1'
-          MATH_OCR_FORCE_CPU: '1'
-          RUST_MIN_STACK: '16777216'
-        run: |
-          set -euo pipefail
-          FEATURES=$(python -c 'import os,shlex; args=shlex.split(os.environ["TAURI_BUILD_ARGS"]); print(args[args.index("--features")+1])')
-          cargo test -p crispsorter --release --lib --features "$FEATURES" ocr_task_presets_live -- --ignored --nocapture --test-threads=1
-          VERSION=$(python -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')
-          gh release upload "v$VERSION" CrispSorter_linux-x86_64.ocr.json --clobber
-
       - name: Verify final packages and attach source/checksum receipts
         shell: bash
         env:
@@ -1106,6 +1089,30 @@ jobs:
               --receipt "CrispSorter_${VERSION}_windows-x86_64.receipt.json"
           fi
           gh release upload "v$VERSION" "CrispSorter_${VERSION}_${{ matrix.qualification_platform }}.receipt.json" "CrispSorter_${VERSION}_${{ matrix.qualification_platform }}.sha256" --clobber
+
+      # Package verification uses permissive DBNet/TrOCR only. Licensed presets
+      # remain a separate mandatory gate for tag/publication-intended builds.
+      # No workflow step grants consent; without it, publication still fails.
+      - name: Qualify licensed OCR presets before publication (Linux)
+        if: runner.os == 'Linux' && (github.event_name != 'workflow_dispatch' || inputs.publish)
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_BUILD_ARGS: ${{ matrix.tauri_args }}
+          CRISPSORTER_OCR_RECEIPT: ${{ runner.temp }}/linux-native-ocr-smoke.json
+          QWEN2VL_OCR_FORCE_CPU: '1'
+          MATH_OCR_FORCE_CPU: '1'
+          RUST_MIN_STACK: '16777216'
+        run: |
+          set -euo pipefail
+          rm -f "$CRISPSORTER_OCR_RECEIPT"
+          VERSION=$(python -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')
+          export CRISPSORTER_OCR_PACKAGE_RECEIPT="$GITHUB_WORKSPACE/CrispSorter_${VERSION}_linux-x86_64.receipt.json"
+          FEATURES=$(python -c 'import os,shlex; args=shlex.split(os.environ["TAURI_BUILD_ARGS"]); print(args[args.index("--features")+1])')
+          cargo test -p crispsorter --release --lib --features "$FEATURES" ocr_task_presets_live -- --ignored --nocapture --test-threads=1
+          python scripts/release_ocr_qualification.py --receipt "CrispSorter_${VERSION}_linux-x86_64.receipt.json" \
+            --native-smoke "$CRISPSORTER_OCR_RECEIPT" --output "CrispSorter_${VERSION}_linux-x86_64.ocr.json"
+          gh release upload "v$VERSION" "CrispSorter_${VERSION}_linux-x86_64.ocr.json" --clobber
 
       - name: Remove temporary desktop signing credentials
         if: always() && (runner.os == 'macOS' || runner.os == 'Windows')
@@ -1385,7 +1392,7 @@ jobs:
           done
           export PATH="$NDK_BIN:$PATH"
           if [[ "$CRISPSORTER_MOBILE_RELEASE_PROFILE" == ocr-draft ]]; then
-            npx tauri android build --target aarch64 --features ocr-mobile --apk --ci --config src-tauri/tauri.ocr-mobile.conf.json
+            npx tauri android build --target aarch64 --features ocr-mobile --apk --ci --config src-tauri/tauri.ocr-mobile.conf.json -- --locked
             node scripts/native_license_inventory.mjs verify
           else
             npx tauri android build --target aarch64
@@ -1638,7 +1645,7 @@ jobs:
           if [[ "$CRISPSORTER_MOBILE_RELEASE_PROFILE" == ocr-draft ]]; then
             npx tauri ios init --ci --config src-tauri/tauri.ocr-mobile.conf.json
             python3 scripts/prepare_ocr_ios_project.py src-tauri/gen/apple/project.yml \
-              --ort-framework "$OCR_ORT_ROOT/onnxruntime.xcframework/ios-arm64/onnxruntime.framework/onnxruntime"
+              --ort-framework "$OCR_ORT_ROOT/onnxruntime.xcframework/ios-arm64/onnxruntime.framework/onnxruntime" --retain-native-symbols
           else
             npx tauri ios init
           fi
@@ -1961,12 +1968,19 @@ jobs:
         run: |
           python3 scripts/record_signed_mobile_ocr_draft.py --target ios-arm64 \
             --staging "$OCR_DRAFT_ROOT" --artifact "$IPA"
+      - name: Retain original same-run iOS OCR provenance inputs
+        if: always() && env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
+        run: |
+          python3 scripts/retain_ios_ocr_draft_inputs.py \
+            --staging "$RUNNER_TEMP/signed-mobile-ocr-draft"
       - name: Retain signed OCR draft as explicitly unqualified build evidence
         if: always() && env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
         uses: actions/upload-artifact@v4
         with:
           name: signed-ocr-draft-ios-arm64-unqualified
-          path: ${{ runner.temp }}/signed-mobile-ocr-draft/artifact
+          path: |
+            ${{ runner.temp }}/signed-mobile-ocr-draft/artifact
+            ${{ runner.temp }}/signed-mobile-ocr-draft/replay-inputs
           if-no-files-found: warn
           retention-days: 14
 

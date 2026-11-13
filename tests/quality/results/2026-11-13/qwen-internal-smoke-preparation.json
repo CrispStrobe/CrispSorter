@@ -1,0 +1,23 @@
+{
+  "schema": "crispsorter-qwen-internal-smoke-preparation-v1",
+  "status": "prepared_not_executed",
+  "base_app_source": "9530b37f4187247fd9a985e132c1c19959cb035f",
+  "consent": "User explicitly accepted Qwen Research License for Qwen2.5-VL-3B internal non-commercial evaluation only",
+  "model_specific_app_key": "qwen2vl-3b",
+  "preset": "multilingual",
+  "model_bytes": 2742343200,
+  "model_sha256": "4cc16e226005a2d7ecce7749d5a876704a499ca301428167f5ceb3b75b967312",
+  "model_pin_cross_check": "Pinned production native registry and read-only model HEAD agree; no weights downloaded",
+  "fixture_sha256": "25f0e5ee8d518403fc97a94435f88d525526649adbc08c2b937c3469ff4fb4ef",
+  "execution": "Not run; waiting for reviewed scoped route at intended PR source",
+  "qualification": "One planned synthetic preset smoke only; existing four-preset qualification remains separate",
+  "satisfies_publication_gate": false,
+  "constraints": "No local model/app build, GPU comparison, Kaggle run, full CI, push or dispatch",
+  "local_validation": {
+    "qwen_model_free_tests": 17,
+    "shared_paddle_source_capture_privacy_tests": 28,
+    "actionlint": "passed",
+    "rust_syntax_parse": "passed",
+    "whole_app_typecheck_or_inference": "not run"
+  }
+}

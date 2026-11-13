@@ -2114,6 +2114,69 @@ mod tests {
         println!("pipeline full_text len: {}", doc.full_text.len());
     }
 
+    /// One consent-gated Qwen preset; separate from full preset qualification.
+    #[cfg(feature = "crispembed")]
+    #[test]
+    #[ignore = "Qwen Research License: explicit internal non-commercial evaluation only"]
+    fn qwen_internal_noncommercial_smoke_live() {
+        use sha2::{Digest, Sha256};
+        use std::io::Read;
+        assert_eq!(std::env::var("QWEN_INTERNAL_EVALUATION").as_deref(), Ok("true"));
+        assert_eq!(std::env::var("CRISPSORTER_ACCEPT_MODEL_LICENSE").as_deref(), Ok("qwen2vl-3b"));
+        assert_eq!(std::env::var("CRISPEMBED_ACCEPT_QWEN_RESEARCH_LICENSE").as_deref(), Ok("1"));
+        assert_eq!(std::env::var("QWEN2VL_OCR_FORCE_CPU").as_deref(), Ok("1"));
+        let project = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let profile: serde_json::Value = serde_json::from_slice(&std::fs::read(
+            project.join("scripts/qwen-internal-smoke-profile.json")).unwrap()).unwrap();
+        let info = crispembed::CrispEmbed::model_download_info("qwen2vl-3b")
+            .expect("read production registry").expect("Qwen must be registered");
+        assert_eq!(info.name, "qwen2vl-3b");
+        assert_eq!(info.license, "qwen-research");
+        assert!(info.requires_license_acceptance);
+        assert!(info.companions.is_empty(), "this reviewed GGUF contains vision and decoder");
+        assert_eq!(info.primary.filename, profile["model"]["filename"].as_str().unwrap());
+        assert_eq!(info.primary.sha256.as_deref(), profile["model"]["sha256"].as_str());
+        let model = crate::model_provisioning::resolve_model("qwen2vl-3b", Some(true))
+            .expect("resolve consented pinned Qwen through the production model manager");
+        let mut file = std::fs::File::open(&model).unwrap();
+        let bytes = file.metadata().unwrap().len();
+        let mut digest = Sha256::new();
+        let mut block = [0u8; 65536];
+        loop {
+            let count = file.read(&mut block).unwrap();
+            if count == 0 { break; }
+            digest.update(&block[..count]);
+        }
+        let model_sha256 = format!("{:x}", digest.finalize());
+        assert_eq!(bytes, profile["model"]["bytes"].as_u64().unwrap());
+        assert_eq!(model_sha256, profile["model"]["sha256"].as_str().unwrap());
+        let image = project.join("tests/quality/ocr-task.png");
+        let fixture_sha256 = format!("{:x}", Sha256::digest(std::fs::read(&image).unwrap()));
+        assert_eq!(fixture_sha256, profile["fixture"]["sha256"].as_str().unwrap());
+        let source = std::process::Command::new("git").arg("-C").arg(project)
+            .args(["rev-parse", "HEAD"]).output().expect("resolve source");
+        assert!(source.status.success());
+        let app_source = String::from_utf8(source.stdout).unwrap().trim().to_owned();
+        let config = super::super::ocr_presets::apply(&Default::default(), "multilingual").unwrap();
+        assert_eq!(config.stages[0].engine, "qwen2vl");
+        assert_eq!(config.stages[0].det_model.as_deref(), Some("qwen2vl-3b"));
+        assert_eq!(config.stages[0].vlm_max_tokens, 4096);
+        let started = std::time::Instant::now();
+        let regions = ocr_regions_detailed(&image, &config).expect("real Qwen multilingual preset runs");
+        let text = regions.iter().map(|r| r.text.as_str()).collect::<Vec<_>>().join(" ");
+        let normalized = text.to_lowercase();
+        let matched = profile["expected_words"].as_array().unwrap().iter()
+            .all(|word| normalized.contains(word.as_str().unwrap()));
+        let receipt = serde_json::json!({"schema":"crispsorter-internal-qwen-smoke-v1",
+            "app_source":app_source,"fixture":profile["fixture"],"preset":"multilingual",
+            "model":profile["model"],"license":profile["license"],"use_scope":profile["use_scope"],
+            "satisfies_publication_gate":false,"config":config,"text":text,"matched":matched,
+            "elapsed_seconds":started.elapsed().as_secs_f64()});
+        let output = std::env::var("CRISPSORTER_QWEN_SMOKE_RECEIPT").expect("explicit smoke output required");
+        std::fs::write(output, serde_json::to_vec_pretty(&receipt).unwrap()).unwrap();
+        assert!(matched, "Qwen smoke did not retain the known fixture words");
+    }
+
     /// Actual released-model inference through the application's production
     /// workbench path. Kept separate from model-free regressions because it
     /// downloads weights and exercises four model configurations on a CPU.
@@ -2124,7 +2187,27 @@ mod tests {
         let image = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/quality/ocr-task.png");
         let reference: serde_json::Value = serde_json::from_slice(&std::fs::read(image.with_extension("json")).unwrap()).unwrap();
         use sha2::{Digest, Sha256};
-        assert_eq!(format!("{:x}", Sha256::digest(std::fs::read(&image).unwrap())), reference["sha256"].as_str().unwrap());
+        let fixture_sha256 = format!("{:x}", Sha256::digest(std::fs::read(&image).unwrap()));
+        assert_eq!(fixture_sha256, reference["sha256"].as_str().unwrap());
+        let project = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let git = std::process::Command::new("git").arg("-C").arg(project)
+            .args(["rev-parse", "HEAD"]).output().expect("native smoke source must resolve");
+        assert!(git.status.success(), "native smoke source must resolve");
+        let app_source = String::from_utf8(git.stdout).unwrap().trim().to_owned();
+        // Capture the already-verified package receipt before inference. A raw
+        // report from another source/fixture/package cannot later be relabeled
+        // by the sealer. Standalone native tests need not have a package receipt.
+        let package_receipt = std::env::var("CRISPSORTER_OCR_PACKAGE_RECEIPT").ok().map(|path| {
+            let bytes = std::fs::read(path).expect("package receipt must be readable");
+            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(value["app_source"].as_str(), Some(app_source.as_str()));
+            assert_eq!(value["version"].as_str(), Some(env!("CARGO_PKG_VERSION")));
+            assert_eq!(value["platform"].as_str(), Some("linux-x86_64"));
+            let artifacts = value["artifacts"].as_array().unwrap();
+            assert_eq!(artifacts.len(), 1);
+            serde_json::json!({"sha256":format!("{:x}", Sha256::digest(&bytes)),
+                "package":{"filename":artifacts[0]["filename"],"bytes":artifacts[0]["bytes"],"sha256":artifacts[0]["sha256"]}})
+        });
         let mut models = Vec::new();
         for name in ["dbnet-det", "trocr-printed", "qwen2vl-3b"] {
             use std::io::Read;
@@ -2150,7 +2233,10 @@ mod tests {
             let matched = ["cobalt", "warranty", "2031"].iter().all(|word| normalized.contains(word));
             cases.push(serde_json::json!({"preset":preset,"text":text,"matched":matched,"elapsed_seconds":started.elapsed().as_secs_f64(),"config":config}));
         }
-        let receipt = serde_json::json!({"scope":"Synthetic native app wiring smoke, not a corpus accuracy claim; timings exclude initial downloads", "models":models,"cases":cases});
+        let receipt = serde_json::json!({"schema":"crispsorter-native-ocr-presets-v1",
+            "app_source":app_source,"fixture":{"filename":"ocr-task.png","sha256":fixture_sha256},
+            "package_receipt":package_receipt,
+            "scope":"Synthetic native app wiring smoke, not a corpus accuracy claim; timings exclude initial downloads", "models":models,"cases":cases});
         println!("{receipt}");
         if let Ok(path) = std::env::var("CRISPSORTER_OCR_RECEIPT") {
             std::fs::write(path, serde_json::to_vec_pretty(&receipt).unwrap()).unwrap();

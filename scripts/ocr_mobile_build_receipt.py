@@ -23,6 +23,7 @@ import tomllib
 import zipfile
 
 from mobile_native_provenance import verify_packaged as verify_native_provenance
+from android_apk_alignment import check_alignment as check_apk_zip_alignment
 
 PACKAGE = 'com.crispstrobe.crispsorter'
 MAX_LIBRARY_BYTES = 256 * 1024 * 1024
@@ -205,6 +206,7 @@ def android_identity(artifact, runtime_directory, runtime):
         native_identity = elf_allocated_identity(stream)
     with zipfile.ZipFile(artifact) as archive:
         names = apk_inventory(archive)
+        zip_alignment = check_apk_zip_alignment(artifact)
         if archive.testzip() is not None:
             raise ValueError('APK contains duplicate members or failed archive integrity')
         libraries = [name for name in names if re.fullmatch(r'lib/[^/]+/[^/]+\.so', name)]
@@ -225,6 +227,7 @@ def android_identity(artifact, runtime_directory, runtime):
     return {'kind': 'apk', 'sha256': digest(artifact), 'bytes': artifact.stat().st_size,
             'abis': abis, 'native_libraries': hashes, 'native_elf': native_elf,
             'native_library_bytes': sizes,
+            'native_zip_alignment': zip_alignment,
             'inspection_budget': {'member_bytes': MAX_PACKAGED_LIBRARY_BYTES,
                                   'paired_runtime_bytes': MAX_LIBRARY_BYTES,
                                   'aggregate_uncompressed_bytes': MAX_APK_UNCOMPRESSED_BYTES,
@@ -365,15 +368,15 @@ def ort_identity(source, platform, artifact, runtime_path, expected_target):
         executable = info.get('CFBundleExecutable', '')
         if not executable or Path(executable).name != executable:
             raise ValueError('iOS application executable identity is invalid')
-        symbols = subprocess.run(['xcrun', 'nm', '-m', str(artifact / executable)], capture_output=True, text=True, check=True, timeout=60).stdout
-        if not any('_OrtGetApiBase' in line and '(undefined)' not in line for line in symbols.splitlines()):
-            raise ValueError('Built iOS app does not define the ONNX Runtime C API symbol')
+        from macho_symbol_proof import defined_code_symbol
+        symbol_proof = defined_code_symbol(artifact / executable)
         for basename, notice in notices.items():
             candidates = [item for item in artifact.rglob(basename) if item.is_file() and not item.is_symlink()]
             if len(candidates) != 1 or candidates[0].stat().st_size != notice['bytes'] or digest(candidates[0]) != notice['sha256']:
                 raise ValueError('App does not contain the qualified ONNX Runtime notice: ' + basename)
             packaged_notices[basename] = {'path': candidates[0].relative_to(artifact).as_posix(), 'sha256': notice['sha256']}
         linkage = {'linked_c_api_symbol': 'OrtGetApiBase', 'qualified_static_framework_sha256': digest(binary),
+                   'defined_app_symbol_proof': symbol_proof,
                    'interpretation': 'Qualified archive/config and defined app symbol; static linking transforms the archive, so this is not byte equality with the executable.'}
     return {'receipt_sha256': digest(runtime_path), 'runtime': runtime, 'linkage': linkage, 'packaged_notices': packaged_notices}
 

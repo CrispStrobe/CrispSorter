@@ -35,6 +35,58 @@ class IosProjectTests(unittest.TestCase):
             self.assertEqual(run.call_count, 2)
             self.assertTrue((root / 'application.xcodeproj/project.xcworkspace/contents.xcworkspacedata').is_file())
 
+    def test_draft_retains_existing_native_names_without_changing_linking_or_signing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / 'project.yml'
+            original = '# preserved\nsettings:\n' + MODULE.ANCHOR
+            project.write_text(original)
+            (root / 'application.xcodeproj').mkdir()
+            framework = root / 'onnxruntime'
+            framework.write_bytes(b'configuration fixture, never linked')
+            with patch.object(MODULE.subprocess, 'run'):
+                MODULE.prepare(project, framework)
+            standard = project.read_text()
+            project.write_text(original)
+            with patch.object(MODULE.subprocess, 'run'):
+                MODULE.prepare(project, framework, retain_native_symbols=True)
+                draft = project.read_text()
+                MODULE.prepare(project, framework, retain_native_symbols=True)
+            self.assertEqual(project.read_text(), draft)
+            self.assertEqual(draft.replace('        # Signed OCR draft C API provenance\n        STRIP_STYLE: debugging\n', ''), standard)
+            self.assertNotIn('force_load', draft)
+            self.assertNotIn('exported_symbol', draft)
+            self.assertNotIn('DEAD_CODE_STRIPPING', draft)
+            self.assertNotIn('STRIP_STYLE', standard)
+
+    def test_retention_rejects_missing_framework_or_existing_strip_override(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / 'project.yml'
+            project.write_text(MODULE.ANCHOR)
+            with self.assertRaisesRegex(ValueError, 'exact qualified'):
+                MODULE.prepare(project, retain_native_symbols=True)
+            framework = root / 'onnxruntime'
+            framework.write_bytes(b'fixture')
+            original = MODULE.ANCHOR + '        STRIP_STYLE: all\n'
+            project.write_text(original)
+            with self.assertRaisesRegex(ValueError, 'already defines strip style'):
+                MODULE.prepare(project, framework, retain_native_symbols=True)
+            self.assertEqual(project.read_text(), original)
+
+    def test_only_signed_ocr_draft_requests_retention(self):
+        root = Path(__file__).resolve().parents[2]
+        workflow = (root / '.github/workflows/release.yml').read_text()
+        self.assertEqual(workflow.count('--retain-native-symbols'), 1)
+        init = workflow.split('      - name: Init iOS project', 1)[1].split('      - name:', 1)[0]
+        draft, standard = init.split('          else', 1)
+        self.assertIn('ocr-draft', draft)
+        self.assertIn('--retain-native-symbols', draft)
+        self.assertNotIn('--retain-native-symbols', standard)
+        verifier = (root / 'scripts/ocr_mobile_build_receipt.py').read_text()
+        self.assertIn("symbol_proof = defined_code_symbol(artifact / executable)", verifier)
+        self.assertIn("'defined_app_symbol_proof': symbol_proof", verifier)
+
     def test_conflicting_generated_settings_are_not_silently_replaced(self):
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory) / 'project.yml'

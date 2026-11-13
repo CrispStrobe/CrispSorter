@@ -8,6 +8,8 @@ import re
 import subprocess
 import tempfile
 
+from release_ocr_qualification import fixture_sha256, package_entry, validate as validate_ocr_qualification
+
 
 def gh(*args):
     return subprocess.check_output(['gh', *args], text=True)
@@ -35,6 +37,26 @@ def main():
     required = set()
     with tempfile.TemporaryDirectory(prefix='crispsorter-release-check-') as work:
         work = Path(work)
+        # A green draft package build is not licensed-preset qualification.
+        # Keep publication fail-closed even if job scheduling changes later.
+        linux_receipt = f'CrispSorter_{args.version}_linux-x86_64.receipt.json'
+        linux_ocr = f'CrispSorter_{args.version}_linux-x86_64.ocr.json'
+        for name in [linux_receipt, linux_ocr]:
+            if name not in names:
+                raise ValueError('Missing Linux package/licensed OCR qualification: ' + name)
+            gh('release', 'download', args.tag, '--repo', args.repo, '--pattern', name, '--dir', str(work))
+        receipt = json.loads((work / linux_receipt).read_text())
+        artifact = package_entry(receipt, args.source, args.version)
+        report = json.loads((work / linux_ocr).read_text())
+        validate_ocr_qualification(report, receipt, sha(work / linux_receipt), args.source, args.version,
+                                   fixture_sha256(args.source, Path.cwd()))
+        name = artifact['filename']
+        if name not in names:
+            raise ValueError('Missing qualified Linux package: ' + name)
+        gh('release', 'download', args.tag, '--repo', args.repo, '--pattern', name, '--dir', str(work))
+        if sha(work / name) != artifact['sha256'] or (work / name).stat().st_size != artifact['bytes']:
+            raise ValueError('Linux package does not match qualified receipt')
+        required.add(name)
         for platform in ['macos-arm64', 'windows-x86_64']:
             receipt_name = f'CrispSorter_{args.version}_{platform}.receipt.json'
             if receipt_name not in names:
@@ -61,7 +83,7 @@ def main():
         win_zip = {n for n in required if n.endswith('windows-portable.zip')}
         if len(mac_dmg) != 1 or len(mac_tar) != 1 or len(win_zip) != 1:
             raise ValueError('Missing verified macOS DMG/app archive or Windows portable ZIP')
-        desktop_downloads = {n for n in names if n.endswith(('.dmg', '.exe', '.msi'))
+        desktop_downloads = {n for n in names if n.endswith(('.deb', '.dmg', '.exe', '.msi'))
                              or (n.endswith('.app.tar.gz') and 'ios' not in n.lower())
                              or ('windows-portable' in n and n.endswith('.zip'))}
         if desktop_downloads != required:

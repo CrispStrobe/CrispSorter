@@ -424,6 +424,18 @@ or signing result. No new upload or device execution is established. In particul
 signed iOS OCR-device app is not yet verified; required native symbol/provenance
 checks fail rather than being bypassed if export strips needed evidence.
 
+The Android signing helper and final APK provenance inspector also require every
+stored `.so` member's actual local ZIP data offset to be divisible by 16,384.
+Four-byte ZIP alignment and ELF load alignment alone do not establish direct
+mapping on a 16 KiB Android device. Misaligned packages fail before signing or
+before final native inspection; the helpers never rewrite an APK. Correct the
+upstream Gradle packaging/alignment and rebuild rather than modifying signed
+bytes. Compressed native libraries retain their existing extraction behavior
+and do not need aligned compressed ZIP offsets; their extracted ELF load
+segments still pass the independent 16 KiB check. The signing helper retains
+its four-byte alignment requirement for other stored members. A passing archive
+check remains packaging evidence, not device execution or OCR qualification.
+
 Next, inspect the iOS-only run and execute the Android selector on the exact
 committed source when the existing Android candidate run has finished. Inspect the retained build/provenance result and original
 failure logs before running application cases. The iOS artifact is not in
@@ -434,3 +446,96 @@ physical camera/provider behavior and signed iOS application execution retain
 the separate qualification requirements above. This draft implementation does
 not move runtime pins, turn on experimental crop behavior or remove the public
 OCR profile refusal.
+
+## Retained iOS draft: C API symbol retention
+
+The signed OCR draft
+built/exported the provisioned device IPA at application source `80b7a6ab`, then
+failed the unchanged final ORT check: `Built iOS app does not define the ONNX
+Runtime C API symbol`. Its retained artifact contains only the explicitly
+unqualified IPA and `failure.json`; there is no success marker, app-build receipt
+or unstripped archive. The [bounded package observation](../tests/quality/results/2026-11-12/ios-ocr-draft-symbol-retention.json)
+records the full source, package hash, identity and inspected symbol counts.
+
+The retained executable has no local code symbols and no ORT/CrispEmbed names in
+its symbol table or export trie. ONNX Runtime/version strings are present, but
+strings do not prove that `_OrtGetApiBase` is linked or used. The observations
+support stripping as a cause without resolving it conclusively; dead stripping
+or missing linkage remains a real failure if the next final symbol check fails.
+
+The generated-project helper has an explicit draft-only
+`--retain-native-symbols` option. It changes only `STRIP_STYLE` to `debugging`;
+[Apple documents that this mode retains local/global symbols while removing debug symbols](https://help.apple.com/xcode/mac/current/en.lproj/itcaec37c2a6.html).
+Framework paths, link flags, dead-code stripping, exports, signing settings,
+source/runtime pins and all provenance checks stay unchanged. It does not force
+an unused ORT function into the app or infer success from strings. Only the
+signed OCR draft preparation requests it; standard and simulator defaults retain
+their prior settings. Conflicting generated strip settings fail explicitly.
+
+This is a local, tested project-configuration preparation, not a verified native
+fix. A later authorized draft build must retain `_OrtGetApiBase` in its final
+signed app and pass the original native/ORT/source checks. If export removes it
+again, retain the unstripped archive and export logs to distinguish the stage;
+do not relax the check or report this failed IPA as qualified. No duplicate
+build, signing operation, upload or rerun was performed for this preparation.
+
+The first symbol-retention follow-up produced and signed an OCR IPA, but its
+final provenance step timed out after 60 seconds while `nm` scanned the retained
+symbol table. The result remains failed and the IPA remains unqualified. The bounded symbol
+inspection described below establishes the specific linkage observation; full
+provenance still requires the original preparation inputs.
+
+The corrected Android OCR draft completed with final provenance at source
+`7a9094ee67b0a87fb204d714ef4532de14639087`. The retained signed APK is
+481,155,903 bytes with SHA-256
+`255cdb647efdf566def9e5ec16a9ab1cd6bdc0e0cf684482155e75e535dedc0d`.
+Independent inspection verified v2/v3 signatures and the recorded certificate,
+manifest, locked source/runtime/ORT receipt chain, three ARM64 native libraries,
+notices and 16 KiB ZIP/ELF alignment. The generated license inventory is a
+recorded source exception; its raw generated file was not separately retained.
+This is a source-bound signed draft, not installation, physical-device execution,
+OCR inference or quality qualification. It was not published or uploaded.
+
+## Bounded iOS C API symbol proof on the retained IPA
+
+The corrected signed draft
+at source `7a9094ee` retained native symbols, then timed out while `xcrun nm -m`
+attempted to format/capture the entire large symbol table. Its artifact still
+contains only the unqualified IPA and `failure.json`. This is not a missing
+symbol result and is not a completed provenance pass.
+
+The [actual retained-package observation](../tests/quality/results/2026-11-13/ios-ocr-indexed-symbol-proof.json)
+records the IPA/executable hashes and exact linkage evidence: `_OrtGetApiBase`
+is external defined nlist entry 590343, in `__TEXT,__text` at `0x100b77dc0`.
+The executable has 621,151 symbol records and an 80,706,664-byte string table.
+The bounded verifier reads their index directly and verifies the exact name,
+non-debug section definition and aligned address inside file-backed executable
+instructions. It hashes the executable for binding; it never executes it or
+accepts string presence, imports, debug/absolute/indirect records, another symbol
+name or ambiguous duplicate definitions as linkage proof.
+
+`macho_symbol_proof.py` replaces only the full `nm` capture in the final-app ORT
+check. It accepts the explicitly supported thin ARM64 Mach-O executable format,
+limits file/load-command/symbol/string/name-match sizes, maps data read-only,
+streams hashing in 4 MiB chunks and enforces a 30-second inspection budget.
+No large symbol-name dump is generated. Existing qualified framework/header/
+archive/config/notice hashes, source/runtime identity, signature verification
+and final qualification requirements remain unchanged. The original stripped
+IPA still fails this exact proof; the corrected retained IPA passes in under
+two seconds on the inspection host, without rebuilding or changing either IPA.
+
+Full original provenance cannot be replayed from the currently retained artifact.
+The signed package does preserve the same-run `ocr-mobile-runtime.json`, including
+the hash of its original `libcrispembed.a`; it does **not** preserve those archive
+bytes. Original ORT preparation records/framework, forced Cargo configuration and
+generated license/build inputs are also absent from the artifact. Native/ORT staging was outside the cached Cargo target, and the artifact
+contains neither those original inputs nor the configuration/generated source
+records. No separate retained input artifact is listed. Recreating or substituting another build's archive
+would not establish the original receipt and is not done. This change emits no
+full success receipt for the retained IPA.
+
+A future replay-capable run must retain the exact original preparation inputs
+and generated build records before final verification can fail. Until those
+same-run inputs are available, the offline result is explicitly a recovered
+**linkage check only**. No new signed build, dispatch, upload, model inference or
+runtime-source promotion was performed to obtain it.

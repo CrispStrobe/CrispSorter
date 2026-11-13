@@ -1,0 +1,40 @@
+{
+  "schema": "crispsorter-ios-ocr-draft-symbol-observation-v1",
+  "artifact_name": "signed-ocr-draft-ios-arm64-unqualified",
+  "app_source": "80b7a6ab6fd04fb7053769e28aeb024c33a028ea",
+  "runtime_source_from_committed_lock": "c364feb974b91e14cbf328c6949f3df36e89ce81",
+  "ipa_sha256": "e6c19817378ee15ec7ff01b651e3a924d8fb83d24d27312cdae77ba2fd2fec05",
+  "bundle_id": "com.crispstrobe.crispsorter",
+  "version": "0.15.1",
+  "build_number": "0.15.1",
+  "platform": "iphoneos",
+  "embedded_profile_present": true,
+  "retained_files": [
+    "failure.json",
+    "CrispSorter_0.15.1_ios-arm64-ocr-draft-unqualified.ipa"
+  ],
+  "validation_status": "failed",
+  "failure": "Built iOS app does not define the ONNX Runtime C API symbol",
+  "success_marker_present": false,
+  "app_build_receipt_present": false,
+  "unstripped_archive_retained": false,
+  "executable_bytes": 224886960,
+  "macho_symbols": {
+    "total": 1525,
+    "defined_external": 61,
+    "undefined": 1463,
+    "other": 1,
+    "local_code": 0,
+    "exported_names": 61,
+    "ort_get_api_base_defined": false,
+    "ort_get_api_base_exported": false,
+    "ort_or_crispembed_named_symbols": 0
+  },
+  "strings_present": [
+    "ONNX Runtime",
+    "onnxruntime",
+    "1.23.0"
+  ],
+  "interpretation": "The absence of all local code symbols supports stripping as a cause. Strings alone do not establish that the ORT C API is linked or used; no unstripped archive was retained for comparison.",
+  "inspection_scope": "Downloaded archive identity/metadata and Mach-O symbols/exports inspected on Linux. No new native build, signature validation, upload or device inference was performed."
+}

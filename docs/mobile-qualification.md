@@ -477,3 +477,311 @@ ordinary current-source upload selector instead. The existing legacy
 `testflight_resume` refusal remains unchanged. No new manual approval is added.
 The new route is source/test preparation, not evidence that a particular upload
 or internal group assignment has completed.
+
+## Current release execution
+
+The standard v0.15.1 draft build
+was dispatched from main commit `b739a3c0b70f39d3ae19e1bfcb412f3b44f77794`
+with publication and App Store upload disabled. Android and iOS artifacts and
+receipts completed; desktop jobs require their own results. Standard mobile
+packages omit native OCR. The current-source TestFlight run
+uploaded marketing version 0.15.1, build 0.15.1 and assigned the valid build to
+internal testers. Use `testflight_current_resume` with the original logged UTC
+cutoff if distribution recovery is needed; do not upload the same build again.
+
+The independent signed OCR draft runs for iOS and Android used their own
+recorded source commits and failed their final qualification gates as described
+below. The iOS run retained an unqualified IPA; the Android run retained no APK.
+Neither published or uploaded a package, and neither establishes physical-device
+or OCR quality behavior.
+
+The standard release's Windows leg failed before packaging: the locked
+`ort-sys` build script assumed Cargo's older output-directory layout and could
+not stage a native dependency under the runner's newer toolchain. The Linux,
+macOS, Android and iOS legs continued independently. A Windows-only workflow
+fix is being prepared; do not relabel another revision's binary as this draft's
+source. Preserve the draft's exact target and record any separate workflow-tooling
+revision if a narrow retry builds the original application commit.
+
+The iOS OCR draft built and exported a signed IPA but failed final provenance:
+the final executable did not expose the ONNX Runtime C API symbol required by
+its validator. The retained package is explicitly unqualified and was not
+uploaded. The executable contains ONNX Runtime version strings but those alone
+cannot establish that the required code was linked. A draft-only symbol-retention
+change is prepared for validation; keep the existing native/ORT provenance gate.
+
+
+The Android OCR draft run checked out `336c584b21ba1a6a155e60e5b4c650b41693c572`.
+Both Rust release compilations and the unsigned universal APK completed, then the
+native license check correctly rejected changed Cargo.lock bytes. Signing and
+final provenance never ran, and the artifact listing is empty: the retention step
+reported no files. This run provides no signed or qualified Android artifact.
+
+The mutation is reproduced exactly by **metadata resolution only**, with pinned
+sibling manifests and no compilation. Initial/committed lock SHA-256 was
+`cc0a1af878bec8ee7cbe6ea29a0a2981cf878fa1dc89a330cbe98092eb9c00b4`;
+Cargo's normalized lock is
+`2059e4df62369fb4e56db8ad6b539361d02d9f17f635ccc41da2607dbc813210`.
+The only change moves `rustls` and `rustls-native-certs` after `rten` and
+`rusqlite` in the application dependency array. Their insertion in the earlier
+opt-in transport change did not follow Cargo's canonical order. Parsed packages,
+versions, sources, checksums and dependency edges are identical; actual full
+locked/unlocked metadata is identical and selects the same 865 backend licenses.
+The logs bound mutation to after successful frontend license generation; they
+cannot identify which of the subsequent Cargo invocations first rewrote it.
+
+The local follow-up commits the canonical ordering and forwards `--locked` to
+Cargo via the Android OCR draft's Tauri runner arguments. The strict post-build
+license identity check remains in place. Regression controls run real offline
+Cargo metadata on local-only packages using the committed dependency order, and
+reproduce rejection of the historical drift. They do not compile or sign an APK.
+No build was rerun, concurrency changed or publication attempted. The active
+standard release source `b739a3c0b70f39d3ae19e1bfcb412f3b44f77794` remains unchanged;
+a future build using this fix has its own source identity.
+
+
+`b739a3c0` contains the same initial noncanonical lock bytes. A separate offline
+metadata-only reproduction using the standard Android target **without native
+OCR features** produces the identical `cc0a1af8…00b4` → `2059e4df…3210`
+normalization. The standard build commands are also unlocked, so they can incur
+this ordering rewrite. This establishes a reproducible possibility, not the
+actual post-build lock bytes of the standard release: those bytes were not
+retained or checked by this investigation.
+
+The current standard `crispsorter-release-receipt-v1` records checkout HEAD,
+package hashes, versions, runtime pins, sibling commits and applicable signature
+checks. The earlier source-layout check records the clean starting tree/lock.
+Neither receipt proves that Cargo.lock stayed byte-identical after compilation;
+there is no final dependency-lock digest or post-build clean-lock assertion in
+that standard receipt. Package hashes/signatures still identify their recorded
+bytes, but HEAD alone does not prove the final lock bytes or dependency graph of
+those packages. Our exact metadata-only reproduction found no dependency upgrade;
+it does not establish every dependency used by an already built standard asset.
+Keep this source-binding limitation explicit. A retry from b739 that permits
+only this known metadata-only reorder must record both original/effective lock
+hashes and the separate workflow-tooling identity; HEAD must not stand in for
+proof of a byte-identical post-build tree. A future source commit containing the
+canonical lock has its own application source identity.
+
+The standard Linux release job built a DEB at the same release source, but its
+live OCR-preset gate stopped before recognition because the Qwen model license
+was not accepted. Its final release receipt therefore was not produced. The
+retained DEB's published digest, package metadata, cold dynamic-library load,
+version/doctor output and OCR-worker error protocol were independently checked.
+A separate bounded one-core offline control ran that exact DEB against the
+retained PDF and hash-verified cached DBNet/TrOCR models: it exited successfully
+and produced the expected hOCR text. It performed no model download or Qwen
+license acceptance. This is package-specific DBNet/TrOCR evidence, not a passed
+Qwen preset gate or a substitute for the missing automated release receipt.
+
+### Same-run signed iOS draft input retention (2026-11-13)
+
+The signed iOS OCR draft now attempts allowlisted input retention after final
+validation, including when that validation fails. `replay-inputs/` is uploaded
+beside the recorder's `artifact/` directory for 14 days. It contains the original
+`libcrispembed.a`, native receipt/notices, exact device ONNX framework and headers,
+ORT receipt/notices, preparation/layout records, minimized Cargo binding summary,
+and generated Cargo config/license inventory. The original Cargo metadata graph
+is deliberately omitted; the summary records its original snapshot hash and
+validated graph hash. The collector never walks the
+native build directory, runner home, signing directories, or arbitrary paths
+named by receipts. No separately built input may replace a missing original.
+
+`replay-inputs.json` binds every retained file's bytes and SHA-256 to the source
+commit/tree, production runtime/ORT lock hashes, run ID/attempt, and retained
+unqualified IPA hash. `input_retention_status: complete` means these inputs were
+copied, **not** that the signed app passed provenance, device execution, OCR
+quality, or publication qualification. Failed/partial retention writes an
+`incomplete` manifest and fails its step; the subsequent always-run artifact
+upload can still preserve diagnostic inputs. It never writes a successful
+`signed-draft.json` or bypasses the existing final verifier.
+
+The explicit ORT file list must be reviewed if the pinned package changes. Each
+file is regular, source-contained, size-bounded and checked against its original
+receipt where applicable; receipts cannot add files to the copy list. Total
+retained inputs are capped at 768 MiB (native archive at 512 MiB, graph at 64 MiB;
+the current pinned ORT device binary is 38,398,152 bytes). Actual next-run size
+will be recorded by the manifest; it has not been measured by another build.
+The IPA is already retained separately and is hashed without duplicating it.
+Staging uses hosted runner temporary storage, not local root storage.
+
+Privacy: retained metadata includes original runner paths, dependency package
+metadata, source identities and public license text. The Cargo config must match
+exactly the generated three forced-path template; unrelated config, comments or
+values are rejected. Every raw copied JSON record has an explicit recursive
+field/type schema, including nested notices, components and license entries;
+unknown or duplicate JSON fields fail before copying. The original recorder
+applies these checks to its successful iOS metadata copies too, and uploaded
+failure records omit raw exception text. Arbitrary Cargo workspace/package
+metadata is never copied; only typed source/target/version/count/hash binding
+fields enter the minimized summary. Existing public license text, author and
+repository fields remain public package metadata; schema checks do not prove
+that arbitrary text placed inside an otherwise allowed public field is secret
+free. No environment dump, API key, certificate, keychain,
+standalone provisioning profile, signing export directory, build log, or whole
+checkout is copied. The separately retained signed IPA naturally contains its
+embedded public provisioning/signature material.
+
+Signed-app provenance replay still requires the exact app checkout and sibling
+source commits, the original paths referenced by the retained Cargo
+configuration (or a
+separately reviewed mapping that never rewrites historical evidence), macOS
+signature tools and the complete original signed IPA. Run the unchanged full
+verifier; retention is no replacement for its source, native, ORT, notice,
+signature, and app linkage checks. Full license-graph replay remains unavailable:
+the original arbitrary Cargo metadata graph is intentionally not retained, and
+the binding summary cannot substitute for it. The prior draft did not retain these
+original inputs; its recovered symbol proof remains partial evidence and cannot
+be upgraded by substituting another run's archive/framework. This change does
+not rerun that build or enable TestFlight/public OCR distribution.
+
+The pinned official iOS ORT ZIP was independently rechecked for retention on
+2026-11-13: its committed 49,207,123-byte SHA-256 matched, and all 27 staged
+device framework/header/plist/notice paths match the explicit allowlist, with
+no additional device framework files omitted. This inspection was read-only
+and did not build or qualify an application.
+
+Both retention and signed-draft recorder CLI entry points suppress raw parser
+and exception diagnostics. Failures print one fixed bounded category
+(`invalid-input`, `invalid-record`, `invalid-arguments`, `input-output-error`,
+`external-command-failed`, `external-timeout`, or `internal-error`) without a
+traceback or input values. Malformed license URL/timestamp checks also use
+constant parser errors. Subprocess regressions cover both secret-bearing input
+examples through both CLIs; their incomplete/failure evidence remains explicit.
+
+The successful draft exposed an upload transport gap: GitHub's default hidden-file
+exclusion omitted the original `.cargo/config.toml` despite its inclusion in the
+local manifest. The collector now stores these exact validated bytes at the
+non-hidden `source/cargo-config.toml`, with `original_source_path` set explicitly
+to `.cargo/config.toml` and the unchanged original content hash. Replay must
+restore that precise original source location. No blanket hidden-file upload
+is enabled. The earlier run's retention manifest therefore overstates actual
+transport completeness; its missing config must not be silently substituted.
+
+### Successful signed iOS OCR draft: independent artifact observation
+
+The signed OCR draft from exact app source
+`b5a42295848a1768a67f9936004a46d6ead9e19b` completed its final provenance
+checks. Independent inspection verified the retained IPA SHA-256
+`55b8bfaac04acaa09d1208265c56024e2b5639071cc5919021bfb49c79652232`
+(111,932,948 bytes), matching source/tree/build receipt, original native/ORT
+inputs and packaged notices, and the defined app `_OrtGetApiBase` symbol.
+The existing production runtime source pin remains unchanged.
+
+All 44 transported replay inputs matched their recorded hashes. The original
+transport remains **incomplete**: its declared hidden Cargo config was omitted.
+A separate reconstruction now provides exactly the original 387 config bytes:
+SHA-256 `d0af5f9979e9d57844d1de2257197a7cc6fecb07bd89af1fe47422d00c7ac285`
+matches both the historical retention manifest and final build receipt.
+Reconstruction used the source-pinned template and same-run path evidence,
+accepted only on the full original length/hash. The original artifact and
+receipts were preserved unchanged; no later build inputs were substituted.
+This makes the exact config bytes available for reviewed provenance replay
+preparation; a full verifier replay was not performed locally. Full
+license-graph replay remains unavailable because the arbitrary original Cargo
+metadata graph was deliberately omitted.
+
+Offline checks verified 76,586 signed executable pages, 21 resource hashes,
+app/profile CMS mathematical signatures, matching app/profile entitlements,
+and the app signer certificate's inclusion in its provisioning profile. Linux
+lacks Apple's `codesign`/`security` tooling here: these checks do not establish
+Apple trust-chain or code-signing requirements acceptance. The runner's signed
+provenance success does not establish physical device execution or OCR quality.
+No distribution, candidate promotion, or new build was performed for this
+observation. Sanitized details are in
+`tests/quality/results/2026-11-13/signed-ios-ocr-draft-independent-verification.json`.
+
+### Paddle recognition preprocessing boundary correction
+
+The live Paddle control from source `3ceb2838` failed during SVTR preprocessing,
+after detector region cropping succeeded. The SHA-verified pinned
+`usls 0.2.0-alpha.3` height-fit implementation computes a line width beyond the
+fixed recognition canvas and passes that width to `CroppedImageMut`, which
+rejects it. This is a recognizer resize boundary, not an out-of-page detector
+box. The app now pre-resizes only over-wide regions to the recognizer's actual
+model dimensions, keeping the complete region and leaving narrow-line
+preprocessing unchanged. This follows Paddle's own recognition width-clamping
+policy in its [recognizer preprocessing](https://github.com/PaddlePaddle/PaddleOCR/blob/main/tools/infer/predict_rec.py).
+
+Four standalone geometry tests and one CPU-only pinned resize-backend regression
+pass. The latter reproduces the exact original error, then checks that bounded
+resizing succeeds and retains both image endpoints. No usls/model/ORT/GPU build,
+whole-app build, live recognition rerun, or quality qualification was performed.
+The existing live Paddle fixture/cache/table test still needs to validate the
+full integration. Reproduction commands are in `tests/paddle-resize/README.md`;
+sanitized findings are in
+`tests/quality/results/2026-11-13/paddle-svtr-canvas-boundary.json`.
+
+### Single Linux job for the existing live Paddle fixture
+
+The existing CI workflow now accepts manual `scope: paddle-live`. It admits
+only its current Linux Rust job. The original fixture test body and ordinary
+Paddle command are unchanged. All other jobs and unrelated Linux test/CLI
+steps are excluded, including the cloud live matrix even if `cloud_live=true`.
+This is a manual preparation route; it has not been dispatched for this change.
+
+The Linux job retains its existing sibling checkout layout, system/toolchain
+setup, verified production native bundle, dependency cache, `npm ci`, frontend
+build and resource placeholder. The separate frontend *check* job is skipped;
+frontend assets needed by `tauri-build` still exist. The runner builds the same
+feature-rich library test binary and executes exactly
+`extractors::ocr_paddle::tests::live_paddle_recognises_the_fixture_sentence`
+with `--locked --ignored --exact --nocapture --test-threads=1`. A cold cache can
+still require a substantial application test-binary compilation; this narrows
+execution, not the compilation dependency graph. No dependency manifest or
+application lock was changed to make the route work.
+
+The source guard requires the actual checked-out HEAD to equal the dispatch
+SHA, checks committed production inputs and dependency pins, and rechecks
+source/build identity after the test. The known generated license inventory is
+recorded using the existing source guard's explicit exception; other tracked
+source/lock changes fail closed. Zero matching tests, nonzero test exit, changed
+inputs or capture failure cannot produce a passed receipt. The one existing
+test installs its pinned Apache-2.0 detection/English/table models (20,172,994
+bytes including vocabularies), checks the known fixture words, a cached second
+recognition, and the table session. It is not a GPU comparison.
+
+The unchanged job deadline is 120 minutes. The scoped command has a 90-minute
+limit, two Cargo build jobs, one test thread, CPU-only device visibility and an
+8 MiB diagnostic capture cap. A capture limit/deadline kills its process group;
+partial diagnostics and a failed receipt remain explicit. A 30-second heartbeat
+reports progress without dumping raw diagnostics. The always-run artifact step
+retains `receipt.json` and bounded diagnostics for 14 days. Runner paths,
+operation UUIDs and credential-shaped diagnostic lines are redacted. These
+receipts do not establish release, GUI/device or corpus qualification.
+
+Seventeen model-free selector/source/evidence tests pass, including exclusion
+of every unrelated job and step, contradictory cloud-live inputs, preserved
+frontend setup, exact single-test matching, source mutation, partial capture,
+and unchanged concurrency bytes. YAML/actionlint checks also pass. The live
+fixture and full application build remain unrun locally. For a future authorized
+run, select the reviewed immutable PR revision and `scope=paddle-live`; this
+record is not an execution receipt.
+
+Scoped-runner review follow-up: Linux native archives now live in runner
+temporary storage for download/verified extraction; the generic clean-source
+guard still rejects either archive if it appears untracked in the checkout.
+Capture failures at every phase, including read/wait/cleanup failures after
+partial output, retain the bounded buffer under a generic failure code.
+
+Diagnostic retention conservatively withholds the entire captured diagnostic
+when quoted/nested/escaped credential keys, header name/value pairs, URI
+userinfo/query/fragment data, standalone bearer credentials, private-key
+material or ambiguous encoding is detected. `diagnostics_status` explicitly
+states withholding; raw sensitive text is never copied to the receipt or
+artifact. Normal native markers, tensor vectors and model progress remain
+readable. Withholding is a privacy decision and does not alter the separate raw
+test exit/count or source checks; it does not fabricate a model result.
+Twenty-eight model-free selector/source/capture/privacy tests and actionlint
+pass after these fixes. No live fixture execution is implied.
+
+### Subsequent source-bound Paddle fixture result
+
+The single Linux Paddle fixture was subsequently run on the reviewed source and
+passed once. The retained receipt binds the test, source, lock and native inputs;
+an independent audit checked those bindings and the test's word, cache-reuse and
+table assertions. The diagnostic filter withheld the raw output, so the decoded
+OCR text and raw test summary cannot be independently reconstructed from the
+artifact. This result supersedes the earlier statement that the integration
+fixture had not been run, but does not qualify general recognition quality,
+other languages, mobile devices or the release license inventory.

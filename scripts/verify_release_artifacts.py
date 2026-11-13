@@ -106,6 +106,40 @@ def check_ocr_worker(command, destination, env):
             'exit_codes': [missing.returncode, invalid.returncode]}
 
 
+def prepare_permissive_ocr_models(command, destination, env):
+    """Provision only the packaged control's explicit permissive model pair."""
+    expected = {'dbnet-det': 'apache-2.0', 'trocr-printed': 'mit'}
+
+    def inspect(plan, complete=False):
+        models = plan.get('models')
+        if (plan.get('engine') != 'dbnet_trocr' or not isinstance(models, list) or len(models) != 2
+                or any(not isinstance(row, dict) or not isinstance(row.get('name'), str) for row in models)
+                or {row['name'] for row in models} != set(expected)
+                or any(row.get('requires_consent') is not False
+                       or row.get('license', '').lower() != expected[row['name']] for row in models)
+                or not isinstance(plan.get('missing'), list)):
+            raise ValueError('Packaged OCR control must use only the explicit permissive model pair')
+        if complete and (plan['missing'] or any(row.get('installed') is not True for row in models)):
+            raise ValueError('Packaged permissive OCR models remain unavailable')
+        return [{'name': row['name'], 'license': row['license'], 'installed': row['installed'],
+                 'requires_consent': False} for row in models]
+
+    arguments = ['--format', 'json', 'models', 'plan', 'dbnet_trocr']
+    result = subprocess.run([*command, *arguments], cwd=destination, env=env,
+                            text=True, capture_output=True, timeout=30, check=True)
+    plan = json.loads(result.stdout)
+    inspect(plan)
+    if plan['missing']:
+        # This explicit request still uses the app's normal licensing and
+        # hash-verifying model manager. No accept-license flag/env is added.
+        arguments = ['--format', 'json', 'models', 'pull', 'dbnet_trocr']
+        result = subprocess.run([*command, *arguments], cwd=destination, env=env,
+                                text=True, capture_output=True, timeout=600, check=True)
+        plan = json.loads(result.stdout)
+    return {'arguments': arguments, 'result': 'permissive OCR model pair available',
+            'models': inspect(plan, complete=True)}
+
+
 def inspect_package(platform, artifact, destination):
     mac_cdhash = None
     if artifact.suffix == '.deb':
@@ -177,6 +211,8 @@ def inspect_package(platform, artifact, destination):
     # The worker launches current_exe(), so test the packaged executable
     # directly rather than the Linux interpreter wrapper used for CLI smokes.
     checks.append(check_ocr_worker([str(executable)], destination, env))
+    if platform == 'linux-x86_64':
+        checks.append(prepare_permissive_ocr_models([str(executable)], destination, env))
     # Use the real executable for the OCR probe: invoking ld.so explicitly
     # changes current_exe(), which would invalidate resource-dir discovery.
     fixture = Path(__file__).resolve().parents[1] / 'tests/quality/ocr-task.pdf'
@@ -269,6 +305,9 @@ def main():
             raise ValueError('DMG and archive contain different signed applications')
     if not any('checks' in a for a in receipt['artifacts']) and args.platform in ['linux-x86_64', 'windows-x86_64', 'macos-arm64']:
         raise RuntimeError('Desktop package was not executed')
+    if args.platform == 'linux-x86_64':
+        from release_ocr_qualification import package_control
+        receipt['ocr_qualification'] = package_control()
     name = 'CrispSorter_' + receipt['version'] + '_' + args.platform
     (root / (name + '.receipt.json')).write_text(json.dumps(receipt, indent=2) + '\n')
     (root / (name + '.sha256')).write_text(''.join(a['sha256'] + '  ' + a['filename'] + '\n' for a in receipt['artifacts']))

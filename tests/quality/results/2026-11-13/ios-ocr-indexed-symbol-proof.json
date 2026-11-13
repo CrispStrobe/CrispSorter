@@ -1,0 +1,42 @@
+{
+  "schema": "crispsorter-ios-indexed-symbol-observation-v1",
+  "app_source": "7a9094ee67b0a87fb204d714ef4532de14639087",
+  "original_job_status": "failed",
+  "original_failure": "xcrun nm -m exceeded its 60-second timeout",
+  "ipa_sha256": "cbbed419fb86803950a4b3922c28b8ae9261b81fad516f532e4cac9937c63702",
+  "ipa_bytes": 111933586,
+  "linkage_proof": {
+    "schema": "crispsorter-macho-defined-code-symbol-v1",
+    "symbol": "_OrtGetApiBase",
+    "defined": true,
+    "symbol_index": 590343,
+    "type": "0xf",
+    "section": "__TEXT,__text",
+    "address": "0x100b77dc0",
+    "executable_sha256": "a6360fb0d43c911abb349174fa48d31707bf1922f1c92b56392381151c7db6bc",
+    "executable_bytes": 316165232,
+    "symbol_table_entries": 621151,
+    "string_table_bytes": 80706664,
+    "verification": "Exact nlist_64 name/definition and instruction-section address; no nm dump or string-only fallback"
+  },
+  "verifier_script_sha256": "f3ac044841cdf2483f3833382d1a1dc6a0e5f3db51c30c598c534af1e580dc06",
+  "observed_verification_seconds": 1.467,
+  "native_runtime_metadata_recovered_from_ipa": true,
+  "embedded_runtime_receipt_sha256": "4ff458381d0518161706a69aef0c91f37d2d7e6cd495b638520d2aa30fd36cfd",
+  "runtime_source": "c364feb974b91e14cbf328c6949f3df36e89ce81",
+  "ggml_source": "3a27b6c665b191cb230be367db5c52d81dd3e2ac",
+  "original_native_archive_sha256": "fc77db6b99530e954148fb828bdbf0b5264b378fe9d753e624e358c0dd862437",
+  "retained_original_files": [
+    "Unqualified signed IPA",
+    "failure.json"
+  ],
+  "missing_original_inputs": [
+    "libcrispembed.a bytes matching the same-run receipt",
+    "ORT runtime receipt and qualified static framework",
+    "Forced Cargo configuration",
+    "Generated license/build inputs"
+  ],
+  "full_no_rebuild_replay_supported_by_retained_artifact": false,
+  "qualification": "Only the exact final-app C API symbol check has been recovered without rebuilding. No complete provenance or application/OCR quality pass is asserted.",
+  "separately_built_inputs_substituted": false
+}

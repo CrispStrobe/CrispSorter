@@ -1,0 +1,96 @@
+{
+  "schema": "crispsorter-sanitized-ios-ocr-draft-observation-v1",
+  "observed_at_utc": "2026-11-13",
+  "app_source": "b5a42295848a1768a67f9936004a46d6ead9e19b",
+  "workflow_result": "success; draft artifact only",
+  "ipa": {
+    "bytes": 111932948,
+    "sha256": "55b8bfaac04acaa09d1208265c56024e2b5639071cc5919021bfb49c79652232",
+    "bundle": {
+      "id": "com.crispstrobe.crispsorter",
+      "version": "0.15.1",
+      "build": "0.15.1",
+      "platform": "iphoneos"
+    }
+  },
+  "build_receipt_sha256": "08321d59a9ae55c90eac7294af0e3aaa7825ac40609d4ab28ef764451d5d7a67",
+  "runtime": {
+    "production_source": "c364feb974b91e14cbf328c6949f3df36e89ce81",
+    "ggml_source": "3a27b6c665b191cb230be367db5c52d81dd3e2ac",
+    "native_archive_bytes": 18572312,
+    "native_archive_sha256": "86471cb6738eace0460a6bba52dfdffe4c6f255e9f5610a80c45b65e797a18a0",
+    "ort_device_framework_bytes": 38398152,
+    "ort_device_framework_sha256": "780df6a7b7355a1fbc78e560ccb0dac9d349cd463adfe9d4ec9e773a165b9477",
+    "original_receipts_notices_and_packaged_copies_match": true,
+    "source_lock_binding_verified": true
+  },
+  "retention": {
+    "declared_status": "complete",
+    "observed_original_transport_status": "incomplete",
+    "verified_transported_files": 44,
+    "missing_original_transport_path": "source/.cargo/config.toml",
+    "declared_bytes": 59110055,
+    "observed_bytes": 59109668,
+    "strict_metadata_schemas_passed": true,
+    "fixed_allowlist_and_private_key_marker_checks_passed": true,
+    "privacy_scope": "No credential files/private-key markers detected in checked replay inputs; this is not proof arbitrary public package text or binaries contain no secrets",
+    "full_license_graph_replay": "unavailable; arbitrary original Cargo metadata intentionally not retained"
+  },
+  "config_reconstruction": {
+    "separate_from_original_artifact": true,
+    "original_transport_still_incomplete": true,
+    "bytes": 387,
+    "sha256": "d0af5f9979e9d57844d1de2257197a7cc6fecb07bd89af1fe47422d00c7ac285",
+    "matches_original_manifest_and_final_build_receipt": true,
+    "method": "Source-pinned generated template and same-run path evidence, accepted only on exact original length and SHA-256; no historical evidence rewritten",
+    "scope": "Exact reconstructed original bytes available for reviewed provenance replay preparation; no replay or qualification implied"
+  },
+  "defined_ort_symbol": {
+    "schema": "crispsorter-macho-defined-code-symbol-v1",
+    "symbol": "_OrtGetApiBase",
+    "defined": true,
+    "symbol_index": 590343,
+    "type": "0xf",
+    "section": "__TEXT,__text",
+    "address": "0x100b77dc0",
+    "executable_sha256": "e41b619ad95e2079346f7fe7d4f8577735333b2009cb6dfc47707e4398591ab0",
+    "executable_bytes": 316165232,
+    "symbol_table_entries": 621151,
+    "string_table_bytes": 80706664,
+    "verification": "Exact nlist_64 name/definition and instruction-section address; no nm dump or string-only fallback"
+  },
+  "offline_signature": {
+    "code_directories": [
+      {
+        "slot": 0,
+        "pages": 76586,
+        "page_bytes": 4096,
+        "special_slots": [
+          1,
+          2,
+          3,
+          5,
+          7
+        ],
+        "cdhash": "4b7d7e719892335a640531032bd66abdba744d70"
+      }
+    ],
+    "code_resources_sha256_entries": 21,
+    "app_detached_cms_mathematical_signature": true,
+    "profile_cms_mathematical_signature": true,
+    "app_signer_certificate_in_profile": true,
+    "profile_app_id_matches_bundle": true,
+    "profile_get_task_allow": false,
+    "signed_app_entitlements_match_profile": true,
+    "nested_code_entries": 0,
+    "profile_expiration": "2027-07-12T18:31:49",
+    "apple_trust_chain_or_requirements_evaluation": false
+  },
+  "scope": "Signed source-bound OCR build provenance observed; no physical device execution or OCR quality qualification",
+  "limitations": [
+    "Linux offline CodeDirectory/resource/CMS checks do not establish Apple trust-chain or code-signing requirements acceptance; Apple codesign/security tooling unavailable",
+    "No full final verifier replay performed here; original config bytes were reconstructed and hash-proved separately",
+    "Full license-graph replay unavailable because original arbitrary Cargo metadata graph intentionally omitted",
+    "No TestFlight upload, public release, runtime promotion, native rebuild or workflow rerun performed"
+  ]
+}

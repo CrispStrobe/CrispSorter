@@ -12,10 +12,11 @@ import json
 import os
 from pathlib import Path
 import shutil
-import struct
 import subprocess
 import tempfile
 import zipfile
+
+from android_apk_alignment import check_alignment as check_zip_alignment
 
 
 def sha(path):
@@ -39,23 +40,10 @@ def signer_path(explicit):
 def check_alignment(path):
     # Signing must follow alignment. Check the already-aligned Gradle output;
     # avoid rewriting the APK or its native-library offsets after signing.
-    native = []
-    with path.open('rb') as stream, zipfile.ZipFile(path) as archive:
+    with zipfile.ZipFile(path) as archive:
         if archive.testzip() is not None:
             raise ValueError('APK ZIP integrity failed')
-        for entry in archive.infolist():
-            if entry.compress_type != zipfile.ZIP_STORED or entry.is_dir():
-                continue
-            stream.seek(entry.header_offset)
-            header = stream.read(30)
-            name, extra = struct.unpack_from('<HH', header, 26)
-            offset = entry.header_offset + 30 + name + extra
-            if offset % 4:
-                raise ValueError('Run zipalign before signing: ' + entry.filename)
-            if entry.filename.endswith('.so'):
-                native.append({'name': entry.filename, 'offset': offset,
-                               'zip_page_alignment_16k': offset % 16384 == 0})
-    return native
+    return check_zip_alignment(path, require_four_byte=True)
 
 
 def main():

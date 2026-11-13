@@ -1,5 +1,26 @@
 # CrispSorter — Development Plan
 
+## Bounded retained-IPA ONNX symbol verification — 13 November 2026
+
+The corrected signed iOS draft retains the exact `_OrtGetApiBase`
+definition, but full `nm -m` output timed out. A bounded read-only Mach-O index
+verifier now proves that definition and executable hash directly; it passes on
+the retained corrected IPA and still rejects the original stripped one. Other
+source/runtime/framework/config/notice/signature checks remain intact. The
+artifact lacks original native archive/ORT/config/build inputs, so no full
+no-rebuild provenance pass is fabricated and no separately built inputs are
+substituted. See the [exact evidence and replay limits](docs/ocr-device-qualification.md#bounded-ios-c-api-symbol-proof-on-the-retained-ipa).
+
+## Signed iOS OCR draft symbol evidence — 12 November 2026
+
+The signed OCR draft produced a provisioned device IPA at source 80b7a6ab but failed
+final ORT C API symbol proof. The retained package has no local code symbols;
+ORT strings alone cannot prove linkage/use, and no unstripped archive was saved.
+A draft-only generated-project option now preserves local/global names during
+post-link stripping without changing linking, exports, signing or the exact
+provenance checks. The setting is locally tested and unexecuted on Xcode; the
+failed IPA remains unqualified. See the [artifact evidence and remaining gate](docs/ocr-device-qualification.md#retained-ios-draft-c-api-symbol-retention).
+
 ## Exact current-source TestFlight resume — 12 November 2026
 
 The `testflight_current_resume` selector recovers processing/group assignment
@@ -4634,3 +4655,56 @@ bookmarks make the sort workflow materially worse than the `.dmg`, the correct
 answer is to ship iOS, keep macOS on Developer ID, and stop — not to degrade
 the desktop product into something that fits a container. Record that decision
 here if it is taken, so the next person does not re-derive the same plan.
+
+- 2026-11-13: Signed iOS OCR draft workflow now retains a bounded explicit set of
+  original same-run native/ORT/config/license inputs after final validation,
+  including failed validation, with source/run/file-hash manifest and incomplete
+  failure status. Retention never qualifies an app or enables distribution.
+  See `docs/mobile-qualification.md` for privacy, size limits and full replay
+  prerequisites; the prior draft remains unreplayable in full because its
+  original native archive/ORT inputs were not retained.
+
+- 2026-11-13 retention review: reject unknown/duplicate fields recursively in
+  copied iOS JSON records and the recorder's successful metadata copies; omit
+  raw exception text from failure artifacts. Replace arbitrary Cargo metadata
+  with a typed binding summary plus original snapshot/graph hashes. Signed-app
+  provenance replay remains scoped to its existing verifier; full license-graph
+  replay is unavailable without the intentionally omitted original graph.
+- 2026-11-13: Retention and signed-draft recorder CLI failures now use fixed
+  bounded error categories, suppressing raw record/parser exception values and
+  tracebacks. Subprocess tests verify malformed URL and generatedAt data never
+  appears in either CLI output or retained failure artifacts.
+
+- 2026-11-13: The successful signed iOS OCR draft produced signed
+  provenance, but artifact transport excluded the hidden Cargo config. Store
+  its exact validated bytes under non-hidden `source/cargo-config.toml` with an
+  explicit original-path/hash binding; preserve default hidden-file exclusion.
+- 2026-11-13: Independently verified the successful signed iOS OCR draft from
+  exact source `b5a42295848a1768a67f9936004a46d6ead9e19b`: retained IPA/native/ORT
+  bindings, final app symbol and offline signature hashes/CMS passed. Original
+  config transport remains incomplete; separately reconstructed bytes match
+  both historical digests exactly. No full local verifier/device/quality replay
+  or distribution implied; full license-graph replay remains unavailable.
+- 2026-11-13: Prepared a narrow Paddle SVTR preprocessing fix: resize only
+  over-wide detected regions into the actual model canvas before usls's
+  height-fit step. The pinned resize backend reproduces the original boundary
+  error and verifies full-region endpoint preservation after the fix. Four
+  geometry checks plus one image regression pass; full live recognition remains
+  unrerun. Application Cargo pins/lock and workflows are unchanged.
+- 2026-11-13: Prepared existing CI `scope=paddle-live` for one source-bound Linux
+  Paddle fixture. Other jobs/tests/CLI builds are excluded; existing frontend,
+  native and toolchain preparation remains. Exact source/lock guards and a
+  bounded failure-safe receipt accompany the unchanged live test. Seventeen
+  model-free tests plus actionlint pass; all eight concurrency blocks, source
+  test body, manifests and application lock remain unchanged. No dispatch yet.
+- Scoped Paddle review fixes: move native archives out of the checkout without
+  clean-source exceptions; retain buffered diagnostics for every capture error;
+  conservatively withhold credential-shaped/ambiguous diagnostic bodies with an
+  explicit receipt status. Twenty-eight model-free tests and actionlint pass;
+  original test, lock/manifests and concurrency blocks remain unchanged.
+- 2026-11-13: User accepted Qwen Research License for the exact Qwen2.5-VL-3B
+  internal non-commercial evaluation. Prepared a separate single-Linux-job
+  `qwen-live` scope: one real multilingual preset, child-only model-specific
+  consent, exact production runtime/model/fixture pins, bounded private evidence.
+  Existing four-preset/release qualification remains unchanged. No weights,
+  inference, GPU comparison or dispatch yet; see docs/qwen-internal-evaluation-smoke.md.
