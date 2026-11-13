@@ -1,6 +1,6 @@
 //! Native Windows directory-object operations for manual pull destinations.
 //!
-//! This isolated prototype is not wired into the application. Only the initial
+//! Only the initial
 //! explicitly selected root uses an ambient pathname. All later operations use
 //! a retained directory/file handle plus a single filename. No reconstructed
 //! pathname, current directory, or cap-std rename/cleanup fallback is used.
@@ -56,7 +56,8 @@ fn filename(name: &OsStr) -> io::Result<Vec<u16>> {
 }
 
 /// An owned directory object, not a reusable ambient pathname. Share deletion
-/// permits object relocation; rooted operations must still use this same object.
+/// permits relocation when the filesystem accepts it; an open descendant can
+/// still block an ancestor move. Rooted operations always use this same object.
 pub(crate) struct Directory { file: File }
 impl Directory {
     /// Root aliases are deliberately resolved once at capture, matching the
@@ -279,11 +280,52 @@ mod tests {
         assert_eq!(fs::read(moved_parent.join("result")).unwrap(), b"original parent");
         assert!(!f.root.join("parent/result").exists());
         let moved_root = f.root.with_extension("moved");
-        fs::rename(&f.root, &moved_root).unwrap(); f.relocated = Some(moved_root.clone()); fs::create_dir(&f.root).unwrap();
+        // FILE_SHARE_DELETE permits moves but does not guarantee an ancestor
+        // move while descendant handles remain open. NTFS refused this on the
+        // native runner; other filesystems may accept it. Both outcomes must
+        // preserve object authority, not silently select the former pathname.
+        // https://learn.microsoft.com/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information
+        let active_root = match fs::rename(&f.root, &moved_root) {
+            Ok(()) => {
+                f.relocated = Some(moved_root.clone());
+                fs::create_dir(&f.root).unwrap();
+                fs::write(f.root.join("result"), b"replacement root").unwrap();
+                moved_root.clone()
+            }
+            Err(error) => {
+                assert!(matches!(error.raw_os_error(), Some(5 | 32)), "unexpected move error: {error}");
+                assert!(f.root.is_dir());
+                assert!(!moved_root.exists());
+                f.root.clone()
+            }
+        };
+        assert_eq!(fs::read(active_root.join("moved-parent/result")).unwrap(), b"original parent");
+        let mut stage = root.create_file(OsStr::new("after-move-attempt")).unwrap();
+        write(&mut stage, b"still original root");
+        root.rename_file(&mut stage, OsStr::new("result")).unwrap(); drop(stage);
+        assert_eq!(fs::read(active_root.join("result")).unwrap(), b"still original root");
+        assert_eq!(fs::read(active_root.join("moved-parent/result")).unwrap(), b"original parent");
+        assert!(!active_root.join("parent/result").exists());
+        if active_root != f.root {
+            assert_eq!(fs::read(f.root.join("result")).unwrap(), b"replacement root");
+        }
+        drop(dir);
+        drop(root);
+    }
+
+    #[test]
+    fn held_root_without_open_descendants_follows_relocation_without_touching_replacement() {
+        let mut f = Fixture::new(); let root = parent(&f.root);
+        let moved_root = f.root.with_extension("moved");
+        // Require actual relocation in this independent case, not a skipped
+        // assertion following an OS refusal with a descendant still held.
+        fs::rename(&f.root, &moved_root).unwrap();
+        f.relocated = Some(moved_root.clone()); fs::create_dir(&f.root).unwrap();
+        fs::write(f.root.join("result"), b"replacement root").unwrap();
         let mut stage = root.create_file(OsStr::new("stage")).unwrap(); write(&mut stage, b"original root");
         root.rename_file(&mut stage, OsStr::new("result")).unwrap(); drop(stage);
         assert_eq!(fs::read(moved_root.join("result")).unwrap(), b"original root");
-        assert!(!f.root.join("result").exists());
+        assert_eq!(fs::read(f.root.join("result")).unwrap(), b"replacement root");
     }
 
     fn junction(directory: &Path, target: &Path) -> io::Result<()> {

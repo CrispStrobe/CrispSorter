@@ -438,7 +438,9 @@ The integrated candidate routes the manual pair pull through one captured root
 before provider inventory waits, the real transfer queue, and a shared production
 pull loop. Generic pathname download APIs are unchanged. Windows uses native
 rooted opens, rename and owned-handle disposition; it does not reconstruct paths
-for mutation. Windows cleanup is disarmed before a rename attempt because an
+for mutation. Windows can refuse an ancestor move while a descendant handle is open; that
+refusal leaves the selected object in place and does not redirect the pull.
+Windows cleanup is disarmed before a rename attempt because an
 uncertain error may already have published the file; an orphan stage can remain.
 
 The storage-contract harness includes the shared queue/production-loop tests and
