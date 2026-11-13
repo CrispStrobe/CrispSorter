@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "source": "d204522ad7902eaa6494f92dd740f8c469dc1acc",
+  "tree": "587b71a0590fb426551de0eee1949b953e188e95",
+  "version": "0.15.2",
+  "tag": "v0.15.2",
+  "files": {
+    "Cargo.toml": "92874d840970ae69aa9266d21169db4dde81f8d80ba3772dcbdad426d1375e87",
+    "Cargo.lock": "86f96258be43acf714f01df86a714f58b4f0018870e461d84a7162375bc85219",
+    "src-tauri/Cargo.toml": "0633a02f9283a964fd8cb912070971034288c2d3f100f9a3bb795e9645b47ec2",
+    "src-tauri/tauri.conf.json": "6e7153a152fea76a9e580a26026ff4e8ed058e0751e52c269aa2d8c30119f73f",
+    "package.json": "96723b27b63ad6305f43ed35c5aced8763d9badff4416caadac89cc225d9f1a5",
+    "package-lock.json": "9b13003244fcf1ecb1de66ec5e47f05305cfc17f0aafbba6a9ab163ef2732fc2",
+    "scripts/crispembed-runtime-lock.json": "b3715018bba76b5c7223736e555be78b6d4df5021cd0ff10a1f5208cc1b397e3",
+    "src-tauri/src/extractors/ocr_crispembed.rs": "8e7858c10072c31bdec4a54d62c1f8fdc493dd6ce6a8acc48c9e8faf2c79fe86"
+  },
+  "dependency_sources": {
+    "CrispEmbed": "c364feb974b91e14cbf328c6949f3df36e89ce81",
+    "CrispASR": "0c9a4b6d828feffddc24e13e9140fac89c785214",
+    "crisp-docx": "ddf7830d8d92e6b59b10874d144a59f163a256e1"
+  }
+}

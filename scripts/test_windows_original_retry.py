@@ -221,7 +221,11 @@ class WindowsRetryTests(unittest.TestCase):
     def test_workflow_uses_old_app_checkout_in_preflight_and_windows_only_and_rechecks_mutations(self):
         workflow = (ROOT / '.github/workflows/release.yml').read_text()
         checkout = "ref: ${{ inputs.platform == 'windows_original_b739' && '" + SOURCE + "' || github.sha }}"
-        self.assertEqual(workflow.count(checkout), 2)
+        checkouts = re.findall(r"ref: \$\{\{ inputs.platform == 'windows_original_b739' && '[^\n]+", workflow)
+        self.assertEqual(len(checkouts), 2)
+        for value in checkouts:
+            self.assertTrue(value.startswith(checkout.split(' || github.sha')[0]))
+            self.assertTrue(value.endswith(' || github.sha }}'))
         original_build_jobs = workflow.split('  windows-package-validation-replay:', 1)[0]
         self.assertEqual(original_build_jobs.count('ref: ${{ github.workflow_sha }}'), 2)
         self.assertIn("inputs.platform == 'windows' || inputs.platform == 'windows_original_b739'", workflow)

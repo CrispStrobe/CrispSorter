@@ -4696,7 +4696,9 @@ here if it is taken, so the next person does not re-derive the same plan.
   native and toolchain preparation remains. Exact source/lock guards and a
   bounded failure-safe receipt accompany the unchanged live test. Seventeen
   model-free tests plus actionlint pass; all eight concurrency blocks, source
-  test body, manifests and application lock remain unchanged. No dispatch yet.
+  test body, manifests and application lock remain unchanged at preparation.
+  The subsequent source-bound Paddle fixture passed; raw diagnostics were
+  withheld, so assertions are supported by the inspected source and receipt.
 - Scoped Paddle review fixes: move native archives out of the checkout without
   clean-source exceptions; retain buffered diagnostics for every capture error;
   conservatively withhold credential-shaped/ambiguous diagnostic bodies with an
@@ -4707,4 +4709,16 @@ here if it is taken, so the next person does not re-derive the same plan.
   `qwen-live` scope: one real multilingual preset, child-only model-specific
   consent, exact production runtime/model/fixture pins, bounded private evidence.
   Existing four-preset/release qualification remains unchanged. No weights,
-  inference, GPU comparison or dispatch yet; see docs/qwen-internal-evaluation-smoke.md.
+  inference, GPU comparison or dispatch at preparation; the subsequent authorized
+  source-bound CPU smoke passed. See docs/qwen-internal-evaluation-smoke.md for
+  the evidence and separate publication/quality limitations.
+
+- 2026-11-13: Prepared narrowly selected desktop retries of the original 0.15.2
+  source after all three original desktop jobs failed native compliance tests.
+  The mobile jobs succeeded and remain outside this retry. Tests apply only
+  the two reviewed sidecars attributes temporarily, then restore and verify
+  original OCR bytes before production compilation. Source, tooling, overlay,
+  manifest relocation and package receipts retain separate identities. Uploads
+  require the same unpublished source-bound draft and selected-platform exact
+  filenames, and verify final remote digests while protecting other assets.
+  No retry has been dispatched; signing and licensed publication gates remain.

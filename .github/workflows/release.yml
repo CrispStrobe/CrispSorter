@@ -24,9 +24,9 @@ on:
         options: [standard, ocr]
         default: standard
       platform:
-        description: 'Build all platforms, retry a desktop (windows_original_b739 keeps the original source), upload/resume an IPA, or prepare an OCR draft. Original-source, upload-only and OCR draft selectors require publish=false and mac_appstore=false.'
+        description: 'Build all platforms, retry a desktop (original-source selectors preserve their pinned app source), upload/resume an IPA, or prepare an OCR draft. Original-source, upload-only and OCR draft selectors require publish=false and mac_appstore=false.'
         type: choice
-        options: [all, windows, windows_original_b739, macos, testflight, testflight_resume, testflight_current, testflight_current_resume, certificate_audit, android_ocr_draft, ios_ocr_draft, macos_validate_b739, windows_validate_b739]
+        options: [all, linux_original_d204, windows_original_d204, macos_original_d204, windows, windows_original_b739, macos, testflight, testflight_resume, testflight_current, testflight_current_resume, certificate_audit, android_ocr_draft, ios_ocr_draft, macos_validate_b739, windows_validate_b739]
         default: all
 
 # ── Sibling-repo version pins (single source of truth) ──────────────
@@ -196,16 +196,16 @@ jobs:
           python scripts/testflight_distribute.py --platform IOS --mode internal --version "$BUILD_NUMBER" --uploaded-after "$UPLOADED_AFTER" --marketing-version "$IPA_VERSION" --wait-minutes 35 --notes 'Test library search, cited chat, document review, and mobile navigation.'
 
   release-draft-preflight:
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'android_ocr_draft' || inputs.platform == 'ios_ocr_draft' || inputs.platform == 'windows_original_b739' || (!inputs.mac_appstore && (inputs.platform == 'all' || inputs.platform == 'windows' || inputs.platform == 'macos')) }}
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'android_ocr_draft' || inputs.platform == 'ios_ocr_draft' || inputs.platform == 'windows_original_b739' || contains(fromJSON('["linux_original_d204","windows_original_d204","macos_original_d204"]'), inputs.platform) || (!inputs.mac_appstore && (inputs.platform == 'all' || inputs.platform == 'windows' || inputs.platform == 'macos')) }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.platform == 'windows_original_b739' && 'b739a3c0b70f39d3ae19e1bfcb412f3b44f77794' || github.sha }}
+          ref: ${{ inputs.platform == 'windows_original_b739' && 'b739a3c0b70f39d3ae19e1bfcb412f3b44f77794' || contains(fromJSON('["linux_original_d204","windows_original_d204","macos_original_d204"]'), inputs.platform) && 'd204522ad7902eaa6494f92dd740f8c469dc1acc' || github.sha }}
       - uses: actions/checkout@v4
-        if: inputs.platform == 'windows_original_b739'
+        if: inputs.platform == 'windows_original_b739' || contains(fromJSON('["linux_original_d204","windows_original_d204","macos_original_d204"]'), inputs.platform)
         with:
           ref: ${{ github.workflow_sha }}
           path: _release_tooling
@@ -221,11 +221,17 @@ jobs:
           name: windows-original-retry-preflight
           path: ${{ runner.temp }}/windows-original-retry.json
           retention-days: 14
+      - name: Bind original desktop app source to corrected workflow
+        if: contains(fromJSON('["linux_original_d204","windows_original_d204","macos_original_d204"]'), inputs.platform)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python _release_tooling/scripts/prepare_desktops_original_retry.py --repo "$GITHUB_REPOSITORY" --output "$RUNNER_TEMP/desktops-original-preflight.json"
       - name: Check requested mobile release profile
         if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'android_ocr_draft' || inputs.platform == 'ios_ocr_draft'
         run: python3 scripts/check_mobile_release_profile.py
       - name: Require a draft release before uploading artifacts
-        if: env.CRISPSORTER_MOBILE_RELEASE_PROFILE != 'ocr-draft' && inputs.platform != 'windows_original_b739'
+        if: env.CRISPSORTER_MOBILE_RELEASE_PROFILE != 'ocr-draft' && inputs.platform != 'windows_original_b739' && !contains(fromJSON('["linux_original_d204","windows_original_d204","macos_original_d204"]'), inputs.platform)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -352,9 +358,9 @@ jobs:
         run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.platform == 'windows_original_b739' && 'b739a3c0b70f39d3ae19e1bfcb412f3b44f77794' || github.sha }}
+          ref: ${{ inputs.platform == 'windows_original_b739' && 'b739a3c0b70f39d3ae19e1bfcb412f3b44f77794' || contains(fromJSON('["linux_original_d204","windows_original_d204","macos_original_d204"]'), inputs.platform) && 'd204522ad7902eaa6494f92dd740f8c469dc1acc' || github.sha }}
       - uses: actions/checkout@v4
-        if: inputs.platform == 'windows_original_b739'
+        if: inputs.platform == 'windows_original_b739' || contains(fromJSON('["linux_original_d204","windows_original_d204","macos_original_d204"]'), inputs.platform)
         with:
           ref: ${{ github.workflow_sha }}
           path: _release_tooling
@@ -369,6 +375,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python _release_tooling/scripts/prepare_windows_original_retry.py --repo "$GITHUB_REPOSITORY" --output "$RUNNER_TEMP/windows-original-retry.json"
 
+      - name: Bind original desktop app source to corrected workflow
+        if: contains(fromJSON('["linux_original_d204","windows_original_d204","macos_original_d204"]'), inputs.platform)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python _release_tooling/scripts/prepare_desktops_original_retry.py --repo "$GITHUB_REPOSITORY" --output "$RUNNER_TEMP/desktops-original-preflight.json"
       - name: Check out sibling CrispEmbed
         uses: actions/checkout@v4
         with:
@@ -670,6 +682,7 @@ jobs:
           }
 
       - name: Native regression tests for shipped features
+        if: ${{ !contains(fromJSON('["linux_original_d204","windows_original_d204","macos_original_d204"]'), inputs.platform) }}
         shell: bash
         env:
           TAURI_BUILD_ARGS: ${{ matrix.tauri_args }}
@@ -686,6 +699,35 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then output="$output.exe"; fi
           rustc --edition 2021 --test src-tauri/tests/batch_script.rs -o "$output"
           "$output"
+
+      - name: Original desktop tests with verified temporary overlay
+        if: contains(fromJSON('["linux_original_d204","windows_original_d204","macos_original_d204"]'), inputs.platform)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CRISPEMBED_BUILD_DIR: ${{ github.workspace }}/_sibling/CrispEmbed/build
+          CRISPASR_BUILD_DIR: ${{ github.workspace }}/_sibling/CrispASR/build-flutter-bundle
+          RUST_MIN_STACK: '16777216'
+        run: |
+          set -euo pipefail
+          python _release_tooling/scripts/prepare_desktops_original_retry.py --repo "$GITHUB_REPOSITORY" --phase test --output "$RUNNER_TEMP/desktops-original-tests.json"
+          output="./crisp-batch-script-tests"
+          if [ "$RUNNER_OS" = Windows ]; then output="$output.exe"; fi
+          rustc --edition 2021 --test src-tauri/tests/batch_script.rs -o "$output"
+          "$output"
+      - name: Verify exact restored production bytes before compilation
+        if: contains(fromJSON('["linux_original_d204","windows_original_d204","macos_original_d204"]'), inputs.platform)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python _release_tooling/scripts/prepare_desktops_original_retry.py --repo "$GITHUB_REPOSITORY" --phase check --output "$RUNNER_TEMP/desktops-original-tests.json"
+      - name: Retain separate original-source test proof
+        if: ${{ always() && (contains(fromJSON('["linux_original_d204","windows_original_d204","macos_original_d204"]'), inputs.platform)) }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-original-tests-${{ matrix.qualification_platform }}
+          path: ${{ runner.temp }}/desktops-original-*.json
+          retention-days: 14
 
       # Build only. The action must not upload pre-patch, unsigned assets;
       # the steps below upload the final packages to the preflighted draft.
@@ -998,6 +1040,8 @@ jobs:
           Compress-Archive -Path "$stage/*" -DestinationPath $zip -Force
           Write-Host "Created $zip ($(((Get-Item $zip).Length / 1MB).ToString('F1')) MB)"
 
+          if ('${{ contains(fromJSON('["linux_original_d204","windows_original_d204","macos_original_d204"]'), inputs.platform) }}' -eq 'true') { exit 0 }
+
           # Remove broken installers or older portable assets left by
           # an earlier draft, then upload the final portable ZIP.
           if ('${{ inputs.platform }}' -eq 'windows_original_b739') {
@@ -1020,7 +1064,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Failed to upload Windows artifact' }
 
       - name: Re-upload patched assets over tauri-action's drafts
-        if: matrix.crispasr_lib_asset != ''
+        if: matrix.crispasr_lib_asset != '' && !contains(fromJSON('["linux_original_d204","windows_original_d204","macos_original_d204"]'), inputs.platform)
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1088,6 +1132,10 @@ jobs:
             python _release_tooling/scripts/prepare_windows_original_retry.py --repo "$GITHUB_REPOSITORY" --phase seal \
               --receipt "CrispSorter_${VERSION}_windows-x86_64.receipt.json"
           fi
+          if [ '${{ contains(fromJSON('["linux_original_d204","windows_original_d204","macos_original_d204"]'), inputs.platform) }}' = true ]; then
+            python _release_tooling/scripts/prepare_desktops_original_retry.py --repo "$GITHUB_REPOSITORY" --phase upload --output "$RUNNER_TEMP/desktops-original-tests.json" --receipt "CrispSorter_${VERSION}_${{ matrix.qualification_platform }}.receipt.json"
+            exit 0
+          fi
           gh release upload "v$VERSION" "CrispSorter_${VERSION}_${{ matrix.qualification_platform }}.receipt.json" "CrispSorter_${VERSION}_${{ matrix.qualification_platform }}.sha256" --clobber
 
       # Package verification uses permissive DBNet/TrOCR only. Licensed presets
@@ -1141,6 +1189,19 @@ jobs:
       matrix:
         include:
           - *windows_release
+    runs-on: ${{ matrix.platform }}
+    env: *desktop_release_env
+    steps: *desktop_release_steps
+
+  release-desktop-original-d204:
+    needs: release-draft-preflight
+    if: ${{ github.event_name == 'workflow_dispatch' && !inputs.mac_appstore && (contains(fromJSON('["linux_original_d204","windows_original_d204","macos_original_d204"]'), inputs.platform)) }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.platform == 'linux_original_d204' && '[{"platform":"ubuntu-24.04","qualification_platform":"linux-x86_64","rust_target":"x86_64-unknown-linux-gnu","llama_asset":"llama-b8340-bin-ubuntu-vulkan-x64.tar.gz","sidecar_name":"llama-server-x86_64-unknown-linux-gnu","tauri_args":"--bundles deb --features desktop,sidecars,audio-glint,crispasr-vulkan,crispembed-vulkan,ocr-reviewed-pdf,crispembed-license-api,ocr-photo-tools,translate-align,translate-nmt,pdf-render,pdf-zpdf,drive-filen-native,drive-internxt-native","crispasr_lib_asset":"libcrispasr-linux-x86_64.tar.gz","crispembed_lib_asset":"crispembed-linux-x86_64.tar.gz","pdfium_asset":"pdfium-linux-x64.tgz","pdfium_lib_glob":"lib/libpdfium.so"}]' || inputs.platform == 'windows_original_d204' && '[{"platform":"windows-2025","qualification_platform":"windows-x86_64","rust_target":"x86_64-pc-windows-msvc","llama_asset":"llama-b8340-bin-win-vulkan-x64.zip","sidecar_name":"llama-server-x86_64-pc-windows-msvc.exe","tauri_args":"--features desktop,sidecars,audio-glint,crispasr-vulkan,crispembed-vulkan,ocr-reviewed-pdf,crispembed-license-api,ocr-photo-tools,translate-align,translate-nmt,pdf-render,pdf-zpdf,drive-filen-native,drive-internxt-native","crispasr_lib_asset":"libcrispasr-windows-x86_64-vulkan.tar.gz","crispembed_lib_asset":"crispembed-windows-x86_64.zip","pdfium_asset":"pdfium-win-x64.tgz","pdfium_lib_glob":"bin/pdfium.dll"}]' || '[{"platform":"macos-15","qualification_platform":"macos-arm64","rust_target":"aarch64-apple-darwin","llama_asset":"llama-b8340-bin-macos-arm64.tar.gz","sidecar_name":"llama-server-aarch64-apple-darwin","tauri_args":"--target aarch64-apple-darwin --features desktop,sidecars,audio-glint,crispasr-metal,crispembed-metal,ocr-reviewed-pdf,crispembed-license-api,ocr-photo-tools,translate-align,translate-nmt,pdf-render,pdf-zpdf,drive-filen-native,drive-internxt-native","crispasr_lib_asset":"libcrispasr-macos-arm64.tar.gz","crispembed_lib_asset":"crispembed-macos-arm64.tar.gz","pdfium_asset":"pdfium-mac-arm64.tgz","pdfium_lib_glob":"lib/libpdfium.dylib"}]') }}
     runs-on: ${{ matrix.platform }}
     env: *desktop_release_env
     steps: *desktop_release_steps
@@ -1997,7 +2058,7 @@ jobs:
     # skipped it entirely, so a tagged release produced no App Store build
     # and therefore nothing for the macOS TestFlight step to distribute —
     # silently, since a skipped job is not a failed one.
-    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mac_appstore && inputs.platform != 'testflight_current' && inputs.platform != 'testflight_current_resume' && inputs.platform != 'android_ocr_draft' && inputs.platform != 'ios_ocr_draft' && inputs.platform != 'windows_original_b739' && inputs.platform != 'macos_validate_b739' && inputs.platform != 'windows_validate_b739')
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mac_appstore && inputs.platform != 'testflight_current' && inputs.platform != 'testflight_current_resume' && inputs.platform != 'android_ocr_draft' && inputs.platform != 'ios_ocr_draft' && inputs.platform != 'windows_original_b739' && inputs.platform != 'macos_validate_b739' && inputs.platform != 'windows_validate_b739' && !contains(fromJSON('["linux_original_d204","windows_original_d204","macos_original_d204"]'), inputs.platform))
             || (github.event_name != 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v')) }}
     permissions:
       contents: write

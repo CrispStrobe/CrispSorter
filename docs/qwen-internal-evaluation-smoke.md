@@ -68,15 +68,17 @@ The VPS cache inspection found no exact Qwen file. Loading/downloading this
 model locally would burden its constrained RAM/disk, so no inference or app
 compilation ran there. Existing Kaggle CPU definitions lacked offline model and
 toolchain inputs; that route was excluded under the usage guide. Existing
-Paddle work is unrelated and is not duplicated. Execution is pending review,
-integration of this prepared scope into the intended PR source, and lifting the
-current dispatch hold. The user's model-specific acceptance is already recorded;
-no additional license approval is requested. No inference success is asserted by this document.
+Paddle work is unrelated and is not duplicated. At preparation time, execution
+was pending review,
+integration into the intended PR source, and lifting the dispatch hold.
+The subsequent authorized smoke result is recorded below. The user's
+model-specific acceptance is already recorded; no additional license approval is
+requested. The preparation checks alone do not assert inference success.
 
 Local validation: seventeen Qwen model-free tests and twenty-eight shared
 selector/source/capture/privacy tests pass, plus actionlint and Rust syntax
-parsing. A full application typecheck and live inference have not been run.
-The next run must use the intended reviewed immutable PR revision,
+parsing. At preparation time, a full application typecheck and live inference had not
+been run. Any subsequent run must use the intended reviewed immutable PR revision,
 `scope=qwen-live`, and `qwen_noncommercial_evaluation=true`; no other scope
 receives model acceptance.
 
