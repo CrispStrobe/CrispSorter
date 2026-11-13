@@ -540,6 +540,54 @@ impl TransferQueue {
         TransferHandle { job_id, progress_rx: rx, handle, cancellation }
     }
 
+    /// Manual pull adapter retaining the captured destination directory object.
+    /// Ordinary pathname-based download APIs keep their existing behavior.
+    #[cfg(any(unix, windows))]
+    pub(crate) fn submit_pull_download(
+        &self,
+        drive_id: String,
+        remote_path: PathBuf,
+        target: Arc<super::pull_destination::PullDestination>,
+        size: Option<u64>,
+        read_fn: impl Fn(&Path, &mut dyn Write) -> Result<u64> + Send + Sync + 'static,
+    ) -> TransferHandle<u64> {
+        let job_id = NEXT_JOB_ID.fetch_add(1, Ordering::Relaxed);
+        let initial = TransferProgress {
+            job_id, direction: TransferDirection::Download, drive_id: drive_id.clone(),
+            remote_path: remote_path.to_string_lossy().into_owned(), bytes_done: 0,
+            bytes_total: size, resume_state: None, state: TransferState::Queued,
+        };
+        let (tx, rx) = watch::channel(initial);
+        let sem = self.semaphore.clone();
+        let cancellation = TransferCancellation::default();
+        let task_cancel = cancellation.clone();
+        let write_cancel = cancellation.clone();
+        self.register_job(job_id, rx.clone(), cancellation.clone());
+        let handle = tokio::spawn(async move {
+            let source = remote_path.clone();
+            run_with_retries(job_id, TransferDirection::Download, drive_id, remote_path,
+                size, None, sem, tx, task_cancel, Arc::new(move || {
+                    let log = crate::operation_log::OperationLog::start("storage.materialize",
+                        serde_json::json!({"mode":"stream", "job_id":job_id}));
+                    let result = (|| {
+                        let stage = target.stage(size, |writer| {
+                            let mut writer = CancellableWriter { writer, cancellation: &write_cancel };
+                            read_fn(&source, &mut writer)
+                        })?;
+                        log.step("validated", serde_json::json!({"bytes":stage.bytes()}));
+                        write_cancel.publish(|| stage.publish())
+                    })();
+                    match &result {
+                        Ok(bytes) => log.succeed(serde_json::json!({"bytes":bytes})),
+                        Err(_) if write_cancel.is_cancelled() => log.cancel(),
+                        Err(_) => log.fail("materialization_failed"),
+                    }
+                    result
+                })).await
+        });
+        TransferHandle { job_id, progress_rx: rx, handle, cancellation }
+    }
+
     /// Synchronous file-target adapter for filesystem/FUSE consumers. It uses
     /// the same semaphore, cancellation registry and staged publication path.
     pub fn download_to_file_blocking(
@@ -786,6 +834,67 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
     use std::sync::Mutex;
+
+    #[tokio::test]
+    async fn lost_publication_ack_preserves_later_edit_without_retry_or_cancellation() {
+        use crate::drives::materialize::PUBLISH_RESULT_HOOK;
+        use std::io;
+        use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
+
+        for race_cancel in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let destination = directory.path().join("result.bin");
+            std::fs::write(&destination, b"previous").unwrap();
+            let hook_destination = destination.clone();
+            let calls = Arc::new(AtomicUsize::new(0));
+            let count = calls.clone();
+            let cancel_threads = Arc::new(Mutex::new(Vec::new()));
+            let thread_handles = cancel_threads.clone();
+            let (cancel_tx, cancel_rx) = std::sync::mpsc::channel::<TransferCancellation>();
+            let cancel_rx = Mutex::new(cancel_rx);
+            let job = TransferQueue::with_concurrency(1).submit_download_to_file(
+                "drive".into(), "source".into(), destination.clone(), Some(3),
+                move |_, writer| {
+                    if count.fetch_add(1, Ordering::SeqCst) == 0 {
+                        let cancellation = cancel_rx.lock().unwrap().recv().unwrap();
+                        let destination = hook_destination.clone();
+                        let thread_handles = thread_handles.clone();
+                        PUBLISH_RESULT_HOOK.with(|hook| *hook.borrow_mut() = Some(Box::new(move |result| {
+                            result.unwrap();
+                            assert_eq!(std::fs::read(&destination).unwrap(), b"new");
+                            std::fs::write(&destination, b"later user edit").unwrap();
+                            if race_cancel {
+                                let (attempt_tx, attempt_rx) = std::sync::mpsc::channel();
+                                let thread = std::thread::spawn(move || {
+                                    attempt_tx.send(()).unwrap();
+                                    cancellation.cancel();
+                                });
+                                thread_handles.lock().unwrap().push(thread);
+                                attempt_rx.recv().unwrap();
+                            }
+                            Err(io::Error::new(io::ErrorKind::TimedOut, "lost rename acknowledgement"))
+                        })));
+                    }
+                    writer.write_all(b"new")?;
+                    Ok(3)
+                },
+            );
+            cancel_tx.send(job.cancellation.clone()).unwrap();
+            drop(cancel_tx);
+            let progress = job.progress_rx.clone();
+            let cancellation = job.cancellation.clone();
+            let error = job.handle.await.unwrap().unwrap_err();
+            for thread in cancel_threads.lock().unwrap().drain(..) {
+                thread.join().unwrap();
+            }
+            cancellation.cancel();
+            assert!(error.downcast_ref::<crate::drives::NonReplayableWrite>().is_some());
+            assert!(matches!(progress.borrow().state, TransferState::Failed { .. }));
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert_eq!(std::fs::read(&destination).unwrap(), b"later user edit");
+            assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1, "staging file leaked");
+        }
+    }
 
     #[test]
     fn shared_accessor_reuses_one_job_registry() {

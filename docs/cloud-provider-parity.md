@@ -416,6 +416,37 @@ When continuing this work, fetch and rebase from `origin/main` first. Parallel
 agents land directly on main, so preserve newer commits and keep one focused
 change per handover step.
 
+### Held-directory manual pulls
+
+The directory-handle implementation opens the configured root once for the
+whole pull, including its explicitly selected alias, then opens/creates each
+descendant without following symlinks. Queue waits and retries retain those
+objects. On Unix, a moved directory remains the authorized destination object;
+replacing its old pathname never redirects staging, publication or cleanup.
+This does not promise that the completed file remains reachable at the original
+pathname. Existing symlink leaves are rejected; a leaf replaced after the final
+check is replaced as an entry without following its referent.
+
+Stages are random, exclusive files in the held destination directory (0600 on
+Unix), so existing file-creation permissions remain sufficient. Ancestor-swap protection
+does not protect against another writer replacing entries inside that same
+directory. Source failures/cancellation clean owned stages through the held
+parent, and uncertain final rename errors remain non-replayable. A successful
+rename disarms cleanup of the former stage name.
+
+The implementation routes the manual pair pull through one captured root
+before provider inventory waits, the real transfer queue, and a shared production
+pull loop. Generic pathname download APIs are unchanged. Windows uses native
+rooted opens, rename and owned-handle disposition; it does not reconstruct paths
+for mutation. Windows can refuse an ancestor move while a descendant handle is open; that
+refusal leaves the selected object in place and does not redirect the pull.
+Windows cleanup is disarmed before a rename attempt because an
+uncertain error may already have published the file; an orphan stage can remain.
+
+The storage-contract harness covers the shared queue and production pull loop,
+including native Windows reparse and relocation cases. Run 43414658559 passed
+on Linux, macOS and Windows; the Windows loopback UNC fixture also passed.
+
 ### WebDAV byte-range validation
 
 Single-range reads require a valid Content-Range matching the requested start

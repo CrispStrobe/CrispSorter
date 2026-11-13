@@ -421,6 +421,13 @@ pub async fn sync_pair_pull(
     if matches!(pair.mode, super::pairs::SyncPairMode::ToCloud) {
         return Err("sync pair is configured for local-to-remote direction".into());
     }
+    let dry_run = dry_run.unwrap_or(false);
+    // Capture before provider/configuration waits and reuse for the whole pull.
+    // Dry runs keep their read-only inventory behavior without requiring a root.
+    let pull_root = if dry_run { None } else {
+        Some(super::pull_destination::PullRoot::capture(std::path::Path::new(&pair.local_root))
+            .map_err(|error| error.to_string())?)
+    };
     let registry = crate::drives::DriveRegistry::open(&data_dir).map_err(|e| e.to_string())?;
     let config = registry.drives.iter().find(|drive| drive.id == pair.drive_id)
         .ok_or_else(|| format!("drive '{}' not found", pair.drive_id))?;
@@ -439,7 +446,6 @@ pub async fn sync_pair_pull(
         .map_err(|e| e.to_string())?;
     remote.retain(|entry| entry.mtime_unix.map(|mtime| mtime >= pair.watermark).unwrap_or(true));
     remote.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
-    let dry_run = dry_run.unwrap_or(false);
     let started_at = sync_pair_now_ms();
     if dry_run || remote.is_empty() {
         let _ = store.record_run(&super::pairs::SyncPairRun {
@@ -450,23 +456,12 @@ pub async fn sync_pair_pull(
         });
         return Ok(SyncPairPullResult { pair_id: pair.id, dry_run, planned: remote.len(), downloaded: 0, watermark: pair.watermark });
     }
-    let mut downloaded = 0usize;
-    let mut watermark = pair.watermark;
-    for entry in &remote {
-        let remote_path = std::path::PathBuf::from(format!("{}/{}", pair.remote_root.trim_end_matches('/'), entry.relative_path));
-        let local_path = super::paths::local_pull_destination(std::path::Path::new(&pair.local_root), &entry.relative_path)
-            .map_err(|error| error.to_string())?;
-        let transfer = state.transfer_queue.clone().submit_drive_download_to_file(
-            pair.drive_id.clone(), drive.clone(), remote_path, local_path, Some(entry.size),
-        );
-        match transfer.handle.await {
-            Ok(Ok(_)) => {},
-            Ok(Err(error)) => return Err(error.to_string()),
-            Err(error) => return Err(format!("sync transfer task failed: {error}")),
-        }
-        downloaded += 1;
-        if let Some(mtime) = entry.mtime_unix { watermark = watermark.max(mtime); }
-    }
+    let downloaded = super::pull_destination::download_entries(
+        &state.transfer_queue, &pair.drive_id, drive, &pair.remote_root, &remote,
+        pull_root.expect("non-dry-run pull captured its root"),
+    ).await.map_err(|error| error.to_string())?;
+    let watermark = remote.iter().filter_map(|entry| entry.mtime_unix)
+        .fold(pair.watermark, i64::max);
     pair.watermark = watermark;
     store.upsert(pair).map_err(|e| e.to_string())?;
     let _ = store.record_run(&super::pairs::SyncPairRun {

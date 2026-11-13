@@ -47,3 +47,21 @@ workflow enforces `--locked` and retains both the exact lock and execution log
 on Linux, macOS and Windows. Full app compilation, live mounted
 NAS throughput, FUSE mounting and the separate direct-SMB fixture remain
 additional gates; this contract does not claim to execute those surfaces.
+
+The held-destination pull module and production batch loop are included directly.
+Tests exercise real queue waits, inventory/stream/publication directory swaps,
+relocation, retries, cancellation, uncertain publication and stage ownership.
+On Windows the same harness also runs the native handle backend tests; no
+pathname fallback is used. Run focused controls with:
+
+```sh
+CARGO_BUILD_JOBS=1 cargo test --locked --manifest-path tests/storage-contract/Cargo.toml pull_destination -- --test-threads=1
+```
+
+The Windows workflow tries the existing loopback administrative share and logs
+UNC UNRUN explicitly when it is inaccessible. UNC is also an explicitly ignored
+native fixture that can be run manually. With an accessible real
+UNC directory set in `CRISPSORTER_TEST_MOUNT_ROOT`, run the same command with
+`-- --ignored unc_or_verbatim_root`. An unavailable share means UNC remains
+unrun, not passed. Cross-compilation checks APIs only; native Windows execution
+is required before merging the held-destination candidate.
