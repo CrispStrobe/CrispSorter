@@ -165,10 +165,11 @@ failures and cancellation before publication preserve the previous file. If the
 final rename reports failure, the destination may already have been replaced:
 the transfer stays failed and automatic retry is disabled, including when
 cancellation races with that acknowledgement. This protects later user edits.
-The shared publisher also marks local-upload publication errors non-replayable;
-this change does not alter upload cancellation reporting, which may still report
-cancelled for an uncertain failed upload. It adds no durable operation journal
-or provider identity requirement.
+The shared publisher also marks local-upload publication errors non-replayable.
+Uploads explicitly marked as possibly published also stay failed when
+cancellation races with the provider result; ordinary rejected writes retain
+cancellation behavior. Neither case adds a durable operation journal or provider
+identity requirement.
 
 Native resumable state is provider/session/key/chunk-specific. A resume state
 must validate source/destination identity and metadata before continuing; an
