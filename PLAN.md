@@ -4691,3 +4691,9 @@ here if it is taken, so the next person does not re-derive the same plan.
   error and verifies full-region endpoint preservation after the fix. Four
   geometry checks plus one image regression pass; full live recognition remains
   unrerun. Application Cargo pins/lock and workflows are unchanged.
+- 2026-11-13: Prepared existing CI `scope=paddle-live` for one source-bound Linux
+  Paddle fixture. Other jobs/tests/CLI builds are excluded; existing frontend,
+  native and toolchain preparation remains. Exact source/lock guards and a
+  bounded failure-safe receipt accompany the unchanged live test. Seventeen
+  model-free tests plus actionlint pass; all eight concurrency blocks, source
+  test body, manifests and application lock remain unchanged. No dispatch yet.

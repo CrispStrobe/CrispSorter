@@ -711,3 +711,49 @@ The existing live Paddle fixture/cache/table test still needs to validate the
 full integration. Reproduction commands are in `tests/paddle-resize/README.md`;
 sanitized findings are in
 `tests/quality/results/2026-11-13/paddle-svtr-canvas-boundary.json`.
+
+### Single Linux job for the existing live Paddle fixture
+
+The existing CI workflow now accepts manual `scope: paddle-live`. It admits
+only its current Linux Rust job. The original fixture test body and ordinary
+Paddle command are unchanged. All other jobs and unrelated Linux test/CLI
+steps are excluded, including the cloud live matrix even if `cloud_live=true`.
+This is a manual preparation route; it has not been dispatched for this change.
+
+The Linux job retains its existing sibling checkout layout, system/toolchain
+setup, verified production native bundle, dependency cache, `npm ci`, frontend
+build and resource placeholder. The separate frontend *check* job is skipped;
+frontend assets needed by `tauri-build` still exist. The runner builds the same
+feature-rich library test binary and executes exactly
+`extractors::ocr_paddle::tests::live_paddle_recognises_the_fixture_sentence`
+with `--locked --ignored --exact --nocapture --test-threads=1`. A cold cache can
+still require a substantial application test-binary compilation; this narrows
+execution, not the compilation dependency graph. No dependency manifest or
+application lock was changed to make the route work.
+
+The source guard requires the actual checked-out HEAD to equal the dispatch
+SHA, checks committed production inputs and dependency pins, and rechecks
+source/build identity after the test. The known generated license inventory is
+recorded using the existing source guard's explicit exception; other tracked
+source/lock changes fail closed. Zero matching tests, nonzero test exit, changed
+inputs or capture failure cannot produce a passed receipt. The one existing
+test installs its pinned Apache-2.0 detection/English/table models (20,172,994
+bytes including vocabularies), checks the known fixture words, a cached second
+recognition, and the table session. It is not a GPU comparison.
+
+The unchanged job deadline is 120 minutes. The scoped command has a 90-minute
+limit, two Cargo build jobs, one test thread, CPU-only device visibility and an
+8 MiB diagnostic capture cap. A capture limit/deadline kills its process group;
+partial diagnostics and a failed receipt remain explicit. A 30-second heartbeat
+reports progress without dumping raw diagnostics. The always-run artifact step
+retains `receipt.json` and bounded diagnostics for 14 days. Runner paths,
+operation UUIDs and credential-shaped diagnostic lines are redacted. These
+receipts do not establish release, GUI/device or corpus qualification.
+
+Seventeen model-free selector/source/evidence tests pass, including exclusion
+of every unrelated job and step, contradictory cloud-live inputs, preserved
+frontend setup, exact single-test matching, source mutation, partial capture,
+and unchanged concurrency bytes. YAML/actionlint checks also pass. The live
+fixture and full application build remain unrun locally. For a future authorized
+run, select the reviewed immutable PR revision and `scope=paddle-live`; this
+record is not an execution receipt.
