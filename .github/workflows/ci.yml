@@ -277,12 +277,13 @@ jobs:
           set -euo pipefail
           URL="https://github.com/${{ env.CRISPEMBED_REPO }}/releases/download/${{ env.CRISPEMBED_REF }}/crispembed-linux-x86_64.tar.gz"
           echo "Downloading $URL"
-          curl -fL --retry 8 --retry-all-errors -o crispembed-libs.tar.gz "$URL"
-          python scripts/verify_crispembed_bundle.py crispembed-libs.tar.gz --asset "${URL##*/}" --source ../CrispEmbed
+          ARCHIVE="$RUNNER_TEMP/crispembed-libs.tar.gz"
+          curl -fL --retry 8 --retry-all-errors -o "$ARCHIVE" "$URL"
+          python scripts/verify_crispembed_bundle.py "$ARCHIVE" --asset "${URL##*/}" --source ../CrispEmbed
           # Flat tarball; crispembed-sys's `has_prebuilt` looks for
           # libcrispembed.* directly under <sibling>/build/.
           mkdir -p ../CrispEmbed/build
-          tar -xzf crispembed-libs.tar.gz -C ../CrispEmbed/build
+          tar -xzf "$ARCHIVE" -C ../CrispEmbed/build
           find ../CrispEmbed/build -maxdepth 2 -name "lib*" | head
 
       - name: Download libcrispasr bundle
@@ -292,11 +293,12 @@ jobs:
           set -euo pipefail
           URL="https://github.com/${{ env.CRISPASR_REPO }}/releases/download/${{ env.CRISPASR_REF }}/libcrispasr-linux-x86_64.tar.gz"
           echo "Downloading $URL"
-          curl -fL --retry 8 --retry-all-errors -o crispasr-libs.tar.gz "$URL"
+          ARCHIVE="$RUNNER_TEMP/crispasr-libs.tar.gz"
+          curl -fL --retry 8 --retry-all-errors -o "$ARCHIVE" "$URL"
           # Tarball top-level dir is `libcrispasr-<platform>/`; strip it so the
           # contents land where crispasr-sys's `try_existing_build` looks first.
           mkdir -p ../CrispASR/build-flutter-bundle
-          tar -xzf crispasr-libs.tar.gz -C ../CrispASR/build-flutter-bundle --strip-components=1
+          tar -xzf "$ARCHIVE" -C ../CrispASR/build-flutter-bundle --strip-components=1
           find ../CrispASR/build-flutter-bundle -maxdepth 4 -name "lib*" | head
 
       - name: Rust dependency cache

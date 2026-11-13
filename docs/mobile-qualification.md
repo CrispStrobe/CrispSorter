@@ -757,3 +757,20 @@ and unchanged concurrency bytes. YAML/actionlint checks also pass. The live
 fixture and full application build remain unrun locally. For a future authorized
 run, select the reviewed immutable PR revision and `scope=paddle-live`; this
 record is not an execution receipt.
+
+Scoped-runner review follow-up: Linux native archives now live in runner
+temporary storage for download/verified extraction; the generic clean-source
+guard still rejects either archive if it appears untracked in the checkout.
+Capture failures at every phase, including read/wait/cleanup failures after
+partial output, retain the bounded buffer under a generic failure code.
+
+Diagnostic retention conservatively withholds the entire captured diagnostic
+when quoted/nested/escaped credential keys, header name/value pairs, URI
+userinfo/query/fragment data, standalone bearer credentials, private-key
+material or ambiguous encoding is detected. `diagnostics_status` explicitly
+states withholding; raw sensitive text is never copied to the receipt or
+artifact. Normal native markers, tensor vectors and model progress remain
+readable. Withholding is a privacy decision and does not alter the separate raw
+test exit/count or source checks; it does not fabricate a model result.
+Twenty-eight model-free selector/source/capture/privacy tests and actionlint
+pass after these fixes. No live fixture execution is implied.

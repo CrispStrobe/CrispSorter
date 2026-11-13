@@ -13,6 +13,7 @@ import sys
 import time
 
 from ocr_mobile_build_receipt import source_tree_identity
+from paddle_live_diagnostics import sanitize_output
 
 TEST = 'extractors::ocr_paddle::tests::live_paddle_recognises_the_fixture_sentence'
 FEATURES = 'desktop,sidecars,audio-glint,aitoolkit,cloud-backup,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,ocr-reviewed-pdf,crispembed-license-api,ocr-photo-tools,crispasr,translate-align,translate-nmt,pdf-render,anydoc,fuse,paddle-ocr'
@@ -21,7 +22,7 @@ COMMAND = ['cargo', 'test', '--locked', '-p', 'crispsorter', '--lib', '--feature
 INPUTS = ['Cargo.lock', 'Cargo.toml', 'src-tauri/Cargo.toml', 'src-tauri/src/extractors/ocr_paddle.rs',
           'src-tauri/src/extractors/paddle_resize.rs', 'src-tauri/src/extractors/context_cache.rs',
           'src-tauri/src/ocr_builtin_models.rs', 'src-tauri/src/ocr_models.rs',
-          'tests/quality/ocr-task.png', 'scripts/run_paddle_live_fixture.py']
+          'tests/quality/ocr-task.png', 'scripts/run_paddle_live_fixture.py', 'scripts/paddle_live_diagnostics.py']
 MAX_OUTPUT = 8 * 1024**2
 MAX_SECONDS = 90 * 60
 
@@ -73,21 +74,21 @@ class CaptureFailure(Exception):
 
 
 def capture(project, env):
-    process = subprocess.Popen(COMMAND, cwd=project, env=env, stdout=subprocess.PIPE,
-                               stderr=subprocess.STDOUT, start_new_session=True)
+    process, selector, failure, code = None, None, None, None
     output = bytearray()
-    selector = selectors.DefaultSelector()
-    selector.register(process.stdout, selectors.EVENT_READ)
-    start = time.monotonic()
-    heartbeat = start
     try:
+        process = subprocess.Popen(COMMAND, cwd=project, env=env, stdout=subprocess.PIPE,
+                                   stderr=subprocess.STDOUT, start_new_session=True)
+        selector = selectors.DefaultSelector()
+        selector.register(process.stdout, selectors.EVENT_READ)
+        start = heartbeat = time.monotonic()
         while selector.get_map():
             now = time.monotonic()
             if now - heartbeat >= 30:
                 print(f'Scoped Paddle: {int(now-start)} seconds, {len(output)} diagnostic bytes captured', flush=True)
                 heartbeat = now
             if now - start > MAX_SECONDS:
-                raise CaptureFailure('timeout', bytes(output))
+                raise CaptureFailure('timeout', b'')
             for key, _ in selector.select(timeout=1):
                 chunk = os.read(key.fileobj.fileno(), 65536)
                 if not chunk:
@@ -95,30 +96,42 @@ def capture(project, env):
                     continue
                 if len(output) + len(chunk) > MAX_OUTPUT:
                     output.extend(chunk[:MAX_OUTPUT-len(output)])
-                    raise CaptureFailure('output-limit', bytes(output))
+                    raise CaptureFailure('output-limit', b'')
                 output.extend(chunk)
-        return process.wait(timeout=10), bytes(output)
-    except Exception:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        raise
+        code = process.wait(timeout=10)
+    except Exception as error:
+        failure = error.code if isinstance(error, CaptureFailure) else 'capture-error'
     finally:
-        selector.close()
-        if process.poll() is None:
-            os.killpg(process.pid, signal.SIGKILL)
-            process.wait(timeout=10)
-        process.stdout.close()
+        if process is not None:
+            try:
+                if failure is not None or process.poll() is None:
+                    # A descendant may hold the pipe after its parent exits.
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    process.wait(timeout=10)
+            except Exception:
+                failure = failure or 'capture-error'
+            try:
+                process.stdout.close()
+            except Exception:
+                failure = failure or 'capture-error'
+        if selector is not None:
+            try:
+                selector.close()
+            except Exception:
+                failure = failure or 'capture-error'
+    if failure is not None:
+        raise CaptureFailure(failure, bytes(output))
+    return code, bytes(output)
 
 
-def sanitize(text, project):
-    for value in [str(project), str(project.parent), os.environ.get('RUNNER_TEMP'), os.environ.get('HOME')]:
-        if value:
-            text = text.replace(value, '<runner-path>')
-    text = re.sub(r'\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b', '<operation-id>', text, flags=re.I)
-    return '\n'.join('[redacted sensitive diagnostic]' if re.search(
-        r'BEGIN .*PRIVATE KEY|(?:token|password|authorization)\s*[:=]', line, re.I) else line for line in text.splitlines()) + '\n'
+def retain_diagnostics(output, report, raw, project):
+    roots = [project, project.parent, os.environ.get('RUNNER_TEMP'), os.environ.get('HOME')]
+    text, status = sanitize_output(raw.decode('utf-8', errors='replace'), roots)
+    (output / 'diagnostics.txt').write_text(text)
+    report.update(diagnostics_status=status, captured_output_sha256=sha(raw))
 
 
 def run(project, output):
@@ -139,11 +152,10 @@ def run(project, output):
             code, raw = capture(project, env)
         except CaptureFailure as error:
             raw = error.output
-            (output / 'diagnostics.txt').write_text(sanitize(raw.decode('utf-8', errors='replace'), project))
-            report['captured_output_sha256'] = sha(raw)
+            retain_diagnostics(output, report, raw, project)
             raise
-        (output / 'diagnostics.txt').write_text(sanitize(raw.decode('utf-8', errors='replace'), project))
-        report.update(exit_code=code, captured_output_sha256=sha(raw))
+        retain_diagnostics(output, report, raw, project)
+        report['exit_code'] = code
         text = raw.decode('utf-8', errors='replace')
         if code or not re.search(r'(?m)^running 1 test\s*$', text) or not re.search(
                 r'(?m)^test result: ok\. 1 passed; 0 failed; 0 ignored;', text):

@@ -4697,3 +4697,8 @@ here if it is taken, so the next person does not re-derive the same plan.
   bounded failure-safe receipt accompany the unchanged live test. Seventeen
   model-free tests plus actionlint pass; all eight concurrency blocks, source
   test body, manifests and application lock remain unchanged. No dispatch yet.
+- Scoped Paddle review fixes: move native archives out of the checkout without
+  clean-source exceptions; retain buffered diagnostics for every capture error;
+  conservatively withhold credential-shaped/ambiguous diagnostic bodies with an
+  explicit receipt status. Twenty-eight model-free tests and actionlint pass;
+  original test, lock/manifests and concurrency blocks remain unchanged.
