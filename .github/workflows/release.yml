@@ -570,6 +570,10 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo clean -p ort-sys --release
 
+      - name: Refresh macOS ONNX Runtime build state
+        if: runner.os == 'macOS'
+        run: cargo clean -p ort-sys --release --target ${{ matrix.rust_target }}
+
       - name: Install frontend dependencies
         run: npm ci
 
