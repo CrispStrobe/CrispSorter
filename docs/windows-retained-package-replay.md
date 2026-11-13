@@ -62,3 +62,13 @@ the startup controls. The result is a distinct workflow-artifact observation wit
 quality-corpus qualification. Tests that simulate consumer responses check
 orchestration only and do not claim Windows/native execution. The original
 failure remains part of the record.
+
+## Retained-package replay result
+
+A subsequent source-bound Windows replay completed successfully. It retained the
+initial missing-model rejection, explicitly installed the hash-pinned permissive
+model pair and passed the scanned-PDF hOCR control on retry. Independent review
+checked the command records, diagnostic hashes, source identities and every
+retained ZIP member. This establishes one packaged CLI fixture result; the
+historical release failure remains unexplained, the package is unsigned and no
+publication receipt or physical-device, GUI or general OCR qualification follows.

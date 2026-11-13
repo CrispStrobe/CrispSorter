@@ -152,3 +152,13 @@ rejection. A basic mount/detach control could reuse only the pinned DMG without
 building or downloading models; it would not establish cleanup after native app
 execution or explain the original failure. No new hosted replay was dispatched
 while preparing this change.
+
+## Later retained-package replay
+
+A subsequent source-bound replay ran both retained unsigned packages. Their
+initial OCR attempts reported missing models; after the pinned permissive pair
+was explicitly provisioned, both scanned-PDF hOCR controls passed. This replay
+also recorded a normal successful detach and confirmed that its owned mount was
+absent afterward. The earlier detach failure remains unexplained and is not
+relabelled. These observations do not establish signing, notarization, a release
+receipt or general OCR quality.
