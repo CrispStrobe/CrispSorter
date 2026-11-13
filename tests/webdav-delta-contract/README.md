@@ -52,3 +52,17 @@ verify reqwest redirect replay or real HTTP headers. Real-client mockito tests
 in `src-tauri/src/drives/webdav.rs` cover body/content-length/If-Match and actual
 small-body replay versus large-body refusal; those require the application test
 build. Block-map JSON parsing and metadata storage remain unbounded.
+
+The dependency-free streaming import regression can also run without Cargo or
+an application build:
+
+    python3 tests/webdav-delta-contract/test_import_scope.py -v
+
+It compiles the exact production `read_file_to_writer` method with every actual
+module-scope `std` import from `webdav.rs`. Its fake HTTP/application helpers use
+fully qualified I/O traits, so they cannot supply a missing `Write` import. The
+compiled fixture checks successful streaming/counts, HTTP rejection before writes,
+and writer-error context. A negative control removes `Write` in temporary source
+and requires rustc's E0405 missing-trait error. All generated source/binaries are
+removed automatically. This checks the production method's standard-library name
+resolution; it does not compile the complete module or validate real HTTP behavior.
