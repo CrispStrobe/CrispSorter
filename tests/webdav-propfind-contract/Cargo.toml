@@ -1,0 +1,11 @@
+[workspace]
+[package]
+name = "webdav-propfind-contract"
+version = "0.1.0"
+edition = "2021"
+publish = false
+[lib]
+path = "lib.rs"
+[dependencies]
+anyhow = "=1.0.102"
+quick-xml = "=0.38.4"
