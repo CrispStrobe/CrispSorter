@@ -29,6 +29,9 @@
 //! when the trait method is called from `tauri::command`s, because
 //! Tauri commands run on a worker thread.
 
+#[path = "webdav_range.rs"]
+mod range_response;
+
 use anyhow::{anyhow, Context, Result};
 use quick_xml::events::Event;
 use quick_xml::Reader;
@@ -37,7 +40,9 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::time::Duration;
 
-use crate::sync::proxy::{build_blocking_client_with_options, ProxyConfig};
+use crate::sync::proxy::{
+    build_blocking_client_with_options, configure_blocking_builder, ProxyConfig,
+};
 
 use super::{CloudDrive, DirEntry, DriveCapabilities, DriveType, FileStat};
 
@@ -57,6 +62,7 @@ pub struct WebDavDrive {
     username: Option<String>,
     password: Option<String>,
     client: reqwest::blocking::Client,
+    range_client: reqwest::blocking::Client,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -141,12 +147,20 @@ impl WebDavDrive {
         }
         let client =
             build_blocking_client_with_options(proxy, Some(Duration::from_secs(60)), insecure_tls)?;
+        let range_client = range_response::identity_client(configure_blocking_builder(
+            proxy,
+            Some(Duration::from_secs(60)),
+            insecure_tls,
+        )?)
+        .build()
+        .context("building WebDAV range HTTP client")?;
         Ok(Self {
             label: label.into(),
             base_url: url,
             username,
             password,
             client,
+            range_client,
         })
     }
 
@@ -168,7 +182,16 @@ impl WebDavDrive {
     }
 
     fn req(&self, method: reqwest::Method, url: &str) -> reqwest::blocking::RequestBuilder {
-        let mut b = self.client.request(method, url);
+        self.req_with_client(&self.client, method, url)
+    }
+
+    fn req_with_client(
+        &self,
+        client: &reqwest::blocking::Client,
+        method: reqwest::Method,
+        url: &str,
+    ) -> reqwest::blocking::RequestBuilder {
+        let mut b = client.request(method, url);
         if let Some(u) = &self.username {
             b = b.basic_auth(u, self.password.as_deref());
         }
@@ -724,23 +747,16 @@ impl CloudDrive for WebDavDrive {
 
     /// Read an inclusive byte range from a WebDAV resource.
     fn read_range(&self, path: &Path, start: u64, end: u64) -> Result<Vec<u8>> {
-        if end < start {
-            return Err(anyhow!("invalid WebDAV byte range {start}..={end}"));
-        }
+        range_response::validate_request(start, end)?;
         let url = self.url_for(path);
         let range = format!("bytes={start}-{end}");
         let response = self
-            .req(reqwest::Method::GET, &url)
+            .req_with_client(&self.range_client, reqwest::Method::GET, &url)
             .header("Range", &range)
+            .header(reqwest::header::ACCEPT_ENCODING, "identity")
             .send()
             .with_context(|| format!("GET range {url} ({range})"))?;
-        let status = response.status();
-        if status != reqwest::StatusCode::PARTIAL_CONTENT {
-            return Err(anyhow!(
-                "WebDAV range GET {url} → {status}; server did not honor Range"
-            ));
-        }
-        Ok(response.bytes()?.to_vec())
+        range_response::read_response(response, start, end)
     }
 
     fn write_file(&self, path: &Path, data: &[u8]) -> Result<()> {
@@ -988,6 +1004,7 @@ mod tests {
             .mock("GET", "/dav/file.bin")
             .match_header("Range", "bytes=4-7")
             .with_status(206)
+            .with_header("Content-Range", "bytes 4-7/12")
             .with_body("part")
             .create();
         let drive = WebDavDrive::new("d", format!("{}/dav/", server.url()), None, None, false);

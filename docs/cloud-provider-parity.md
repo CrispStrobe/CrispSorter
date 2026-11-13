@@ -449,3 +449,15 @@ runtime evidence: native Windows reparse/relocation and UNC coverage must run
 before this isolated candidate is merged. The explicit UNC fixture remains
 unrun without an accessible configured share. No journals, admission, source
 identity or ACK bookkeeping are added.
+
+### WebDAV byte-range validation
+
+Single-range reads require a valid Content-Range matching the requested start
+and end, with shorter output accepted only when the declared total proves EOF.
+Missing/conflicting ranges, unexpected content encoding and mismatched body
+lengths fail before bytes reach the caller. Requests use a separate proxied,
+authenticated client with response decoders disabled and identity encoding;
+ordinary WebDAV requests retain their existing decoding behavior. Oversized
+bodies are read only through the declared span plus one byte. HTTP 416 remains
+an error. These checks do not make the existing in-place delta patch atomic if
+a later block fails; atomic delta replacement remains a separate follow-up.
