@@ -376,18 +376,18 @@ jobs:
         working-directory: repos/CrispSorter
         run: cargo test -p crispsorter --lib --features desktop,sidecars,audio-glint,aitoolkit,cloud-backup,pdf-zpdf,drive-filen-native,drive-internxt-native,crispembed,ocr-reviewed-pdf,crispembed-license-api,ocr-photo-tools,crispasr,translate-align,translate-nmt,pdf-render,anydoc,fuse,paddle-ocr -- --ignored live_paddle_recognises_the_fixture_sentence
 
-      - name: Run only the source-bound live Paddle fixture
+      - name: Run only the live Paddle fixture
         if: github.event_name == 'workflow_dispatch' && inputs.scope == 'paddle-live'
         working-directory: repos/CrispSorter
         env:
           PADDLE_LIVE_SCOPE: ${{ inputs.scope }}
         run: python3 scripts/run_paddle_live_fixture.py --output "$RUNNER_TEMP/paddle-live"
 
-      - name: Retain scoped Paddle source receipt and bounded diagnostics
+      - name: Retain scoped Paddle test diagnostics
         if: always() && github.event_name == 'workflow_dispatch' && inputs.scope == 'paddle-live'
         uses: actions/upload-artifact@v4
         with:
-          name: paddle-live-source-receipt
+          name: paddle-live-test-results
           path: ${{ runner.temp }}/paddle-live
           if-no-files-found: error
           retention-days: 14
@@ -404,7 +404,7 @@ jobs:
         if: always() && github.event_name == 'workflow_dispatch' && inputs.scope == 'qwen-live'
         uses: actions/upload-artifact@v4
         with:
-          name: qwen-internal-evaluation-source-receipt
+          name: qwen-internal-evaluation-test-results
           path: ${{ runner.temp }}/qwen-internal-smoke
           if-no-files-found: error
           retention-days: 14

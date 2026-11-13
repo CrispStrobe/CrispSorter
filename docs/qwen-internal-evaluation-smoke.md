@@ -3,7 +3,7 @@
 The operator explicitly accepted the Qwen Research License for
 Qwen2.5-VL-3B **internal non-commercial evaluation only**. This preparation does
 not authorize commercial use, publication, candidate promotion, or other
-restricted models. The subsequent smoke result appears below.
+restricted models. The subsequent smoke result is recorded below.
 
 The existing CI workflow's proposed `scope=qwen-live` selects only its Linux
 Rust job. `qwen_noncommercial_evaluation=true` records this explicit evaluation
@@ -44,47 +44,47 @@ that model's exact native license tag through its existing per-model API; no
 blanket native download consent is added. The ignored Rust test itself grants
 no consent. It checks the explicit child context, native registry identity,
 full downloaded/cached model hash and size, fixture hash, then runs real
-production inference. It records the source, preset, configuration and known
+production inference. Its optional diagnostics record the preset, configuration and known
 word checks. Any inherited blanket app consent is replaced in the child;
 the parent process environment stays unchanged.
 
-The runner preserves frontend/native/toolchain setup and warm dependency cache
-from the existing Linux job. It executes exactly one ignored test with
-`--locked --exact`, two Cargo jobs, one test thread and CPU forcing. The shared
-90-minute command/8 MiB diagnostic bounds and failure-safe source checks remain.
-A cold cache still compiles the feature-rich library test binary; no unrelated
-CLI build, full suite, platform job, cloud test or GPU comparison runs.
+The runner preserves frontend/native/toolchain setup and the warm dependency
+cache from the existing Linux job. It runs exactly one ignored test with
+`--exact`, two Cargo jobs, one test thread and CPU forcing. The normal Cargo
+lock behavior is used. The shared 90-minute command and 8 MiB diagnostic bounds
+remain. No unrelated CLI build, full suite, cloud job or GPU comparison runs.
 
-Model cache and raw intermediate receipt stay in separate runner temporary
-paths outside the artifact directory. Only a validated, minimized native
-observation plus source receipt and sanitized diagnostics are uploaded for
-14 days. Models and raw intermediate records are not uploaded. Unknown native
-receipt fields, changed source/model/fixture identity, zero matching tests,
-failed recognition or capture failure cannot claim a pass. Diagnostic and text
-withholding remain explicit. Every outer/native receipt states the internal
-non-commercial scope and that it does not satisfy the publication gate.
+Normal retries need no source-tree, input-hash, dependency-identity, admission
+or ACK paperwork. The normal workflow checkout and dependency setup select the
+code under test. The Qwen license consent and model/fixture assertions remain;
+this smoke is internal non-commercial evaluation, not general quality or
+publication qualification. The existing four-preset qualification test is
+unchanged.
 
-The VPS cache inspection found no exact Qwen file. Loading/downloading this
-model locally would burden its constrained RAM/disk, so no inference or app
-compilation ran there. Existing Kaggle CPU definitions lacked offline model and
-toolchain inputs; that route was excluded under the usage guide. Existing
-Paddle work is unrelated and is not duplicated. At preparation, execution was
-pending review and integration. The later smoke result is recorded below; the
-user's acceptance applies only to the stated internal evaluation.
+Cargo exit status and the exact-one-test result determine success. The optional
+native JSON and sanitized logs help debugging; missing, malformed or unwritable
+reports do not turn a passing test into a failure. Test output directories can
+be reused; known diagnostic files are replaced, and reporting is best effort.
+The Qwen test no longer needs Git or a report output path. A real Cargo failure
+returns its nonzero exit status through the CLI. Raw intermediate records and
+models stay outside the uploaded diagnostics, and raw cleanup errors are only
+reported as generic diagnostic status. Unknown JSON fields and sensitive text
+are withheld from the optional artifact.
 
-Local validation: seventeen Qwen model-free tests and twenty-eight shared
-selector/source/capture/privacy tests pass, plus actionlint and Rust syntax
-parsing. At preparation a full application typecheck and live inference had not
-been run. Any later run must use the intended reviewed immutable PR revision,
-`scope=qwen-live`, and `qwen_noncommercial_evaluation=true`; no other scope
-receives model acceptance.
+Local validation uses model-free Python tests only. No application compilation,
+model inference, dispatch or publication is needed to apply this simplification.
+The scoped workflow inputs remain `scope=qwen-live` and
+`qwen_noncommercial_evaluation=true`. No additional license approval is needed
+for the user's already authorized internal non-commercial evaluation.
 
-Raw intermediate cleanup failures also fail closed: the outer failed source
-receipt is persisted and a pending success return is canceled. Cleanup failure
-cannot make the CLI print success; raw exception text is not retained.
+The same normal retry/reporting behavior applies to `scope=paddle-live`; its
+original Rust fixture and its standard CI invocation remain unchanged.
 
-If cleanup also fails after a primary validation/capture failure, the original
-failure category remains and a separate cleanup failure category is recorded.
+Release workflows are intentionally untouched here. Draft selection, package
+version/bundle checks, hashes, signatures and upload file selection protect the
+actual assets. Removing historical original-source retry paperwork is separate
+from those package correctness checks; existing queued retries need no duplicate
+run to adopt this test-runner cleanup.
 
 ## Subsequent smoke result
 
