@@ -57,4 +57,49 @@ fn main() {
     }
     assert_eq!(found.len(), wanted.len());
     fs::write(out.join("commands.rs"), source).unwrap();
+    // Compile the actual WebDAV constructor/request/range bodies without the
+    // unrelated Tauri, model, DAV XML and delta implementation dependencies.
+    let webdav = root.join("webdav.rs");
+    println!("cargo:rerun-if-changed={}", webdav.display());
+    let wanted = [
+        "new_with_proxy",
+        "url_for",
+        "req",
+        "req_with_client",
+        "read_range",
+    ];
+    let mut found = Vec::new();
+    let mut declaration = String::new();
+    let mut methods = String::new();
+    for item in syn::parse_file(&fs::read_to_string(webdav).unwrap())
+        .unwrap()
+        .items
+    {
+        match item {
+            syn::Item::Struct(value) if value.ident == "WebDavDrive" => {
+                declaration.push_str(&value.into_token_stream().to_string())
+            }
+            syn::Item::Fn(value) if value.sig.ident == "percent_encode_segment" => {
+                declaration.push_str(&value.into_token_stream().to_string())
+            }
+            syn::Item::Impl(value) => {
+                for item in value.items {
+                    if let syn::ImplItem::Fn(function) = item {
+                        let name = function.sig.ident.to_string();
+                        if wanted.contains(&name.as_str()) {
+                            methods.push_str(&function.into_token_stream().to_string());
+                            found.push(name);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(found.len(), wanted.len());
+    fs::write(
+        out.join("webdav_range_wiring.rs"),
+        format!("{declaration} impl WebDavDrive {{ {methods} }}"),
+    )
+    .unwrap();
 }

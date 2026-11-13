@@ -178,3 +178,9 @@ mod tests {
         assert!(error.contains("no OAuth credentials are stored"), "{error}");
     }
 }
+
+#[path = "../../src-tauri/src/drives/webdav_range.rs"]
+mod webdav_range_response;
+
+#[cfg(test)]
+mod webdav_range_wiring;
