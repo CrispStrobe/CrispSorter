@@ -31,46 +31,11 @@ binds the upstream DLL-copy source to the locked crate checksum and records the
 official manifest hash. Focused controls reproduce the observed incorrect path
 and missing-parent copy failure without compiling or downloading ORT.
 
-The manual `platform: windows_original_b739` selector now performs an original-
-source Windows retry using corrected workflow tooling. It requires
-`publish: false`, `mac_appstore: false`, and `mobile_profile: standard`. Both
-preflight and build check out the exact original `b739` application commit;
-`_release_tooling` separately checks out the current workflow commit and verifies
-it against `GITHUB_WORKFLOW_SHA`. It dynamically requires exactly one existing
-`v0.15.1` draft, an exact original source target, and matching tag resolution.
-It never creates a draft or accepts a mutable branch target. No draft numeric
-identifiers or execution identifiers are pinned or emitted by the retry helper.
-Before either Windows checkout, the workflow disables Git's automatic CRLF
-conversion so committed app, manifest and retry-pin bytes remain exact. A real
-Git clone regression exercises both the conversion failure and the configured
-checkout without changing source commit identities.
+## Historical original-source retry
 
-The committed retry lock binds original source/tree, version, Cargo/runtime
-locks and manifest hashes. The guard also compares the Windows features,
-assets and native sibling refs with the corrected workflow recipe. It rechecks
-the existing draft before package mutation and before receipt upload. The
-verified Windows receipt keeps `app_source` at the original commit, adds separate
-workflow source/tree provenance, and rechecks the actual portable archive hash.
-
-Pre-build preparation still requires the original `Cargo.lock` bytes with
-SHA-256 `cc0a1af878bec8ee7cbe6ea29a0a2981cf878fa1dc89a330cbe98092eb9c00b4`.
-After build, the guard also recognizes only the independently reproduced Cargo
-canonical reorder with SHA-256
-`2059e4df62369fb4e56db8ad6b539361d02d9f17f635ccc41da2607dbc813210`.
-It reconstructs that exact four-line change inside `crispsorter 0.15.1`'s
-dependency array and compares the entire parsed lock metadata/graph, normalizing
-only that array's order. Every package, version, source, checksum and remaining
-field must remain equal. All other bytes, whitespace changes and reorders fail.
-The final retry proof records both original/effective lock hashes and the common
-complete lock metadata/graph digest; this is not a waiver for dependency updates
-or a claim of additional native execution.
-
-The retry skips the normal stale-installer cleanup entirely: it deletes or
-retargets no draft assets and may replace only its exact versioned Windows
-portable ZIP, Windows receipt and matching checksum file. The pre-upload guard
-rejects other names/locations and symlinks; sealing checks the final checksum
-file against the same portable bytes.
-Other-platform and TestFlight receipts are neither rebuilt nor relabeled; only
-the Windows job can run for this selector. Publication remains disabled and all
-existing concurrency blocks remain unchanged. The revised guard and mismatch
-controls are validated locally; a complete Windows artifact remains outstanding.
+The one-off `windows_original_b739` selector, original-source guard, proof pins
+and their tests have been removed. They previously retried the original 0.15.1
+source with corrected Windows tooling and tolerated its known dependency-order
+normalization. They are not a current release procedure. Ordinary Windows
+retries, the pinned toolchain and DLL staging fix above remain active; historical
+investigation details remain available in Git history.

@@ -533,11 +533,9 @@ that standard receipt. Package hashes/signatures still identify their recorded
 bytes, but HEAD alone does not prove the final lock bytes or dependency graph of
 those packages. Our exact metadata-only reproduction found no dependency upgrade;
 it does not establish every dependency used by an already built standard asset.
-Keep this source-binding limitation explicit. A retry from b739 that permits
-only this known metadata-only reorder must record both original/effective lock
-hashes and the separate workflow-tooling identity; HEAD must not stand in for
-proof of a byte-identical post-build tree. A future source commit containing the
-canonical lock has its own application source identity.
+These are limits of the historical observations, not current release admission
+requirements. The b739-specific retry machinery has been retired; normal
+same-version retries use current package and signing checks.
 
 The standard Linux release job built a DEB at the same release source, but its
 live OCR-preset gate stopped before recognition because the Qwen model license

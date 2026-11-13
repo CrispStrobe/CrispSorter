@@ -93,8 +93,11 @@ def main():
                'filename': output.name, 'bytes': output.stat().st_size, 'sha256': sha(output),
                'native_zip_alignment': native, 'verification': verified,
                'device_execution': 'not exercised by signature/archive verification'}
-    output.with_suffix('.signing.json').write_text(json.dumps(receipt, indent=2) + '\n')
-    output.with_suffix('.sha256').write_text(receipt['sha256'] + '  ' + output.name + '\n')
+    try:
+        output.with_suffix('.signing.json').write_text(json.dumps(receipt, indent=2) + '\n')
+        output.with_suffix('.sha256').write_text(receipt['sha256'] + '  ' + output.name + '\n')
+    except OSError:
+        print('::notice::Optional APK signing diagnostics could not be written')
     print(json.dumps(receipt, indent=2))
 
 

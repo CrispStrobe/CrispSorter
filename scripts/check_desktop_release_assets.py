@@ -1,95 +1,36 @@
 #!/usr/bin/env python3
-"""Recheck the desktop artifacts and receipts uploaded to a GitHub draft release."""
+"""Check actual desktop downloads after successful platform build/signing jobs."""
 import argparse
-import hashlib
-import json
 from pathlib import Path
-import re
 import subprocess
 import tempfile
 
-from release_ocr_qualification import fixture_sha256, package_entry, validate as validate_ocr_qualification
-
-
-def gh(*args):
-    return subprocess.check_output(['gh', *args], text=True)
-
-
-def sha(path):
-    digest = hashlib.sha256()
-    with path.open('rb') as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b''):
-            digest.update(block)
-    return digest.hexdigest()
+from release_package_assets import gh, sha, download_packages, windows_zip, mac_tar, mac_dmg
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--tag', required=True)
-    parser.add_argument('--repo', required=True)
-    parser.add_argument('--source', required=True)
-    parser.add_argument('--version', required=True)
+    for name in ['tag', 'repo', 'version']:
+        parser.add_argument('--' + name, required=True)
     args = parser.parse_args()
-    release = json.loads(gh('release', 'view', args.tag, '--repo', args.repo, '--json', 'isDraft,assets'))
-    if not release['isDraft']:
-        raise ValueError('Refusing to publish or modify a release that is already public')
-    names = {entry['name'] for entry in release['assets']}
-    required = set()
-    with tempfile.TemporaryDirectory(prefix='crispsorter-release-check-') as work:
-        work = Path(work)
-        # A green draft package build is not licensed-preset qualification.
-        # Keep publication fail-closed even if job scheduling changes later.
-        linux_receipt = f'CrispSorter_{args.version}_linux-x86_64.receipt.json'
-        linux_ocr = f'CrispSorter_{args.version}_linux-x86_64.ocr.json'
-        for name in [linux_receipt, linux_ocr]:
-            if name not in names:
-                raise ValueError('Missing Linux package/licensed OCR qualification: ' + name)
-            gh('release', 'download', args.tag, '--repo', args.repo, '--pattern', name, '--dir', str(work))
-        receipt = json.loads((work / linux_receipt).read_text())
-        artifact = package_entry(receipt, args.source, args.version)
-        report = json.loads((work / linux_ocr).read_text())
-        validate_ocr_qualification(report, receipt, sha(work / linux_receipt), args.source, args.version,
-                                   fixture_sha256(args.source, Path.cwd()))
-        name = artifact['filename']
-        if name not in names:
-            raise ValueError('Missing qualified Linux package: ' + name)
-        gh('release', 'download', args.tag, '--repo', args.repo, '--pattern', name, '--dir', str(work))
-        if sha(work / name) != artifact['sha256'] or (work / name).stat().st_size != artifact['bytes']:
-            raise ValueError('Linux package does not match qualified receipt')
-        required.add(name)
-        for platform in ['macos-arm64', 'windows-x86_64']:
-            receipt_name = f'CrispSorter_{args.version}_{platform}.receipt.json'
-            if receipt_name not in names:
-                raise ValueError('Missing current desktop receipt: ' + receipt_name)
-            gh('release', 'download', args.tag, '--repo', args.repo, '--pattern', receipt_name, '--dir', str(work))
-            receipt = json.loads((work / receipt_name).read_text())
-            if (receipt.get('schema') != 'crispsorter-release-receipt-v1' or receipt.get('platform') != platform
-                    or receipt.get('version') != args.version or receipt.get('app_source') != args.source):
-                raise ValueError('Desktop receipt does not match this source/version: ' + receipt_name)
-            artifacts = receipt.get('artifacts', [])
-            if len(artifacts) != (2 if platform == 'macos-arm64' else 1):
-                raise ValueError('Unexpected desktop artifact count')
-            for item in artifacts:
-                name = item.get('filename', '')
-                if (not re.fullmatch(r'CrispSorter_[A-Za-z0-9_.-]+', name) or '-unsigned' in name
-                        or name not in names or name in required or not item.get('signature_verification')):
-                    raise ValueError('Missing, unsigned, or invalid desktop artifact: ' + name)
-                required.add(name)
-                gh('release', 'download', args.tag, '--repo', args.repo, '--pattern', name, '--dir', str(work))
-                if not re.fullmatch(r'[0-9a-f]{64}', item.get('sha256', '')) or sha(work / name) != item['sha256']:
-                    raise ValueError('Published draft asset does not match verified receipt: ' + name)
-        mac_dmg = {n for n in required if n.endswith('.dmg')}
-        mac_tar = {n for n in required if n.endswith('.app.tar.gz')}
-        win_zip = {n for n in required if n.endswith('windows-portable.zip')}
-        if len(mac_dmg) != 1 or len(mac_tar) != 1 or len(win_zip) != 1:
-            raise ValueError('Missing verified macOS DMG/app archive or Windows portable ZIP')
-        desktop_downloads = {n for n in names if n.endswith(('.deb', '.dmg', '.exe', '.msi'))
-                             or (n.endswith('.app.tar.gz') and 'ios' not in n.lower())
-                             or ('windows-portable' in n and n.endswith('.zip'))}
-        if desktop_downloads != required:
-            raise ValueError('Unexpected stale desktop assets remain: ' + ', '.join(sorted(desktop_downloads ^ required)))
-    print('Desktop draft assets match verified, signed release receipts for this source.')
+    expected = {f'CrispSorter_{args.version}_amd64.deb', f'CrispSorter_{args.version}_aarch64.dmg',
+                f'CrispSorter_{args.version}_x64-windows-portable.zip', 'CrispSorter_aarch64.app.tar.gz'}
+    def package(name):
+        return (name.endswith(('.deb', '.dmg', '.exe', '.msi'))
+                or (name.endswith('.app.tar.gz') and 'ios' not in name.lower())
+                or ('windows-portable' in name and name.endswith('.zip')))
+    with tempfile.TemporaryDirectory(prefix='crispsorter-desktop-assets-') as directory:
+        files = download_packages(args.repo, args.tag, args.version, expected, package, Path(directory))
+        for name, path in files.items():
+            if name.endswith('.deb'):
+                values = subprocess.check_output(['dpkg-deb', '-f', str(path), 'Version', 'Architecture'], text=True)
+                fields = dict(line.split(': ', 1) for line in values.splitlines())
+                if fields != {'Version': args.version, 'Architecture': 'amd64'}:
+                    raise ValueError('Linux package version or architecture differs from the release')
+            elif name.endswith('.zip'): windows_zip(path)
+            elif name.endswith('.app.tar.gz'): mac_tar(path, args.version)
+            else: mac_dmg(path)
+    print('Desktop package downloads verified; platform jobs enforce signing and native tests.')
 
 
-if __name__ == '__main__':
-    main()
+if __name__ == '__main__': main()

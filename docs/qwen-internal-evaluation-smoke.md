@@ -80,11 +80,9 @@ for the user's already authorized internal non-commercial evaluation.
 The same normal retry/reporting behavior applies to `scope=paddle-live`; its
 original Rust fixture and its standard CI invocation remain unchanged.
 
-Release workflows are intentionally untouched here. Draft selection, package
-version/bundle checks, hashes, signatures and upload file selection protect the
-actual assets. Removing historical original-source retry paperwork is separate
-from those package correctness checks; existing queued retries need no duplicate
-run to adopt this test-runner cleanup.
+The scoped runner cleanup preserved actual package version/bundle, signature
+and upload checks. Historical original-source retry tooling has since been
+retired; ordinary platform builds and retries remain available.
 
 ## Subsequent smoke result
 

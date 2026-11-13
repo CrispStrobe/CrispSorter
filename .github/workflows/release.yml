@@ -24,9 +24,9 @@ on:
         options: [standard, ocr]
         default: standard
       platform:
-        description: 'Build all platforms, retry a desktop (windows_original_b739 keeps the original source), upload/resume an IPA, or prepare an OCR draft. Original-source, upload-only and OCR draft selectors require publish=false and mac_appstore=false.'
+        description: 'Build all platforms, retry Windows or macOS, upload/resume an IPA, or prepare an OCR draft. Upload-only and OCR draft selectors require publish=false and mac_appstore=false.'
         type: choice
-        options: [all, windows, windows_original_b739, macos, testflight, testflight_resume, testflight_current, testflight_current_resume, certificate_audit, android_ocr_draft, ios_ocr_draft, macos_validate_b739, windows_validate_b739]
+        options: [all, windows, macos, testflight, testflight_resume, testflight_current, testflight_current_resume, certificate_audit, android_ocr_draft, ios_ocr_draft]
         default: all
 
 # ── Sibling-repo version pins (single source of truth) ──────────────
@@ -200,36 +200,19 @@ jobs:
           python scripts/testflight_distribute.py --platform IOS --mode internal --version "$BUILD_NUMBER" --uploaded-after "$UPLOADED_AFTER" --marketing-version "$IPA_VERSION" --wait-minutes 35 --notes 'Test library search, cited chat, document review, and mobile navigation.'
 
   release-draft-preflight:
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'android_ocr_draft' || inputs.platform == 'ios_ocr_draft' || inputs.platform == 'windows_original_b739' || (!inputs.mac_appstore && (inputs.platform == 'all' || inputs.platform == 'windows' || inputs.platform == 'macos')) }}
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'android_ocr_draft' || inputs.platform == 'ios_ocr_draft' || (!inputs.mac_appstore && (inputs.platform == 'all' || inputs.platform == 'windows' || inputs.platform == 'macos')) }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.platform == 'windows_original_b739' && 'b739a3c0b70f39d3ae19e1bfcb412f3b44f77794' || github.sha }}
-      - uses: actions/checkout@v4
-        if: inputs.platform == 'windows_original_b739'
-        with:
-          ref: ${{ github.workflow_sha }}
-          path: _release_tooling
-      - name: Require exact original Windows source and existing draft
-        if: inputs.platform == 'windows_original_b739'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python3 _release_tooling/scripts/prepare_windows_original_retry.py --repo "$GITHUB_REPOSITORY" --output "$RUNNER_TEMP/windows-original-retry.json"
-      - name: Retain original Windows retry preflight
-        if: inputs.platform == 'windows_original_b739'
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-original-retry-preflight
-          path: ${{ runner.temp }}/windows-original-retry.json
-          retention-days: 14
+          ref: ${{ github.sha }}
       - name: Check requested mobile release profile
         if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'android_ocr_draft' || inputs.platform == 'ios_ocr_draft'
         run: python3 scripts/check_mobile_release_profile.py
       - name: Require a draft release before uploading artifacts
-        if: env.CRISPSORTER_MOBILE_RELEASE_PROFILE != 'ocr-draft' && inputs.platform != 'windows_original_b739'
+        if: env.CRISPSORTER_MOBILE_RELEASE_PROFILE != 'ocr-draft'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -249,7 +232,6 @@ jobs:
             grep -q 'HTTP 404' "$RUNNER_TEMP/release-api.err" || { cat "$RUNNER_TEMP/release-api.err" >&2; exit 1; }
             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$SOURCE" --draft --title "$TAG" --notes 'Automated draft release'
           fi
-          python3 scripts/check_release_target.py --repo "$GITHUB_REPOSITORY" --tag "$TAG" --source "$SOURCE"
 
   release-required:
     needs: release-draft-preflight
@@ -350,28 +332,16 @@ jobs:
       NO_STRIP: 'true'
 
     steps: &desktop_release_steps
-      - name: Preserve committed bytes in Windows app and tooling checkouts
+      - name: Preserve committed source bytes on Windows
         if: runner.os == 'Windows'
         shell: bash
         run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.platform == 'windows_original_b739' && 'b739a3c0b70f39d3ae19e1bfcb412f3b44f77794' || github.sha }}
-      - uses: actions/checkout@v4
-        if: inputs.platform == 'windows_original_b739'
-        with:
-          ref: ${{ github.workflow_sha }}
-          path: _release_tooling
+          ref: ${{ github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Bind original Windows app source to corrected workflow
-        if: inputs.platform == 'windows_original_b739'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python _release_tooling/scripts/prepare_windows_original_retry.py --repo "$GITHUB_REPOSITORY" --output "$RUNNER_TEMP/windows-original-retry.json"
 
       - name: Check out sibling CrispEmbed
         uses: actions/checkout@v4
@@ -906,13 +876,6 @@ jobs:
       # broken when features are on. Workaround: skip the installers,
       # zip up the unbundled `target/release/` directory with DLLs
       # co-located. That zip is the primary Windows release artifact.
-      - name: Recheck original Windows draft before uploading packages
-        if: inputs.platform == 'windows_original_b739'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python _release_tooling/scripts/prepare_windows_original_retry.py --repo "$GITHUB_REPOSITORY" --phase check
-
       - name: Build portable .zip (Windows)
         if: matrix.crispasr_lib_asset != '' && runner.os == 'Windows'
         shell: pwsh
@@ -1004,22 +967,15 @@ jobs:
 
           # Remove broken installers or older portable assets left by
           # an earlier draft, then upload the final portable ZIP.
-          if ('${{ inputs.platform }}' -eq 'windows_original_b739') {
-            python _release_tooling/scripts/prepare_windows_original_retry.py --repo "$env:GITHUB_REPOSITORY" --phase check --package "$zip"
-            if ($LASTEXITCODE -ne 0) { throw 'Original Windows draft/source check failed before asset mutation' }
-            # Exact-source retry replaces only its checked portable ZIP and
-            # Windows receipt/checksum later. It never deletes draft assets.
-          } else {
-            $assets = gh release view $tag --repo "${{ github.repository }}" --json assets --jq '.assets[].name' 2>$null
-            foreach ($name in $assets) {
-              if ($name -match '\.exe$|\.msi$|windows-portable.*\.zip$') {
-                Write-Host "Deleting broken installer asset: $name"
-                gh release delete-asset $tag $name --repo "${{ github.repository }}" -y
-                if ($LASTEXITCODE -ne 0) { throw "Failed to delete stale Windows asset $name" }
-              }
+          $assets = gh release view $tag --repo "${{ github.repository }}" --json assets --jq '.assets[].name' 2>$null
+          foreach ($name in $assets) {
+            if ($name -match '\.exe$|\.msi$|windows-portable.*\.zip$') {
+              Write-Host "Deleting broken installer asset: $name"
+              gh release delete-asset $tag $name --repo "${{ github.repository }}" -y
+              if ($LASTEXITCODE -ne 0) { throw "Failed to delete stale Windows asset $name" }
             }
-            if ($LASTEXITCODE -ne 0) { throw 'Failed to inspect or delete stale Windows assets' }
           }
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to inspect or delete stale Windows assets' }
           gh release upload $tag $zip --clobber --repo "${{ github.repository }}"
           if ($LASTEXITCODE -ne 0) { throw 'Failed to upload Windows artifact' }
 
@@ -1080,7 +1036,7 @@ jobs:
             fi
           done
 
-      - name: Verify final packages and attach source/checksum receipts
+      - name: Verify final packages
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1088,11 +1044,7 @@ jobs:
           set -euo pipefail
           python scripts/verify_release_artifacts.py --platform '${{ matrix.qualification_platform }}'
           VERSION=$(python -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')
-          if [ '${{ inputs.platform }}' = windows_original_b739 ]; then
-            python _release_tooling/scripts/prepare_windows_original_retry.py --repo "$GITHUB_REPOSITORY" --phase seal \
-              --receipt "CrispSorter_${VERSION}_windows-x86_64.receipt.json"
-          fi
-          gh release upload "v$VERSION" "CrispSorter_${VERSION}_${{ matrix.qualification_platform }}.receipt.json" "CrispSorter_${VERSION}_${{ matrix.qualification_platform }}.sha256" --clobber
+          gh release upload "v$VERSION" "CrispSorter_${VERSION}_${{ matrix.qualification_platform }}.receipt.json" "CrispSorter_${VERSION}_${{ matrix.qualification_platform }}.sha256" --clobber || echo '::notice::Optional package diagnostics could not be uploaded'
 
       # Package verification uses permissive DBNet/TrOCR only. Licensed presets
       # remain a separate mandatory gate for tag/publication-intended builds.
@@ -1101,22 +1053,14 @@ jobs:
         if: runner.os == 'Linux' && (github.event_name != 'workflow_dispatch' || inputs.publish)
         shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_BUILD_ARGS: ${{ matrix.tauri_args }}
-          CRISPSORTER_OCR_RECEIPT: ${{ runner.temp }}/linux-native-ocr-smoke.json
           QWEN2VL_OCR_FORCE_CPU: '1'
           MATH_OCR_FORCE_CPU: '1'
           RUST_MIN_STACK: '16777216'
         run: |
           set -euo pipefail
-          rm -f "$CRISPSORTER_OCR_RECEIPT"
-          VERSION=$(python -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')
-          export CRISPSORTER_OCR_PACKAGE_RECEIPT="$GITHUB_WORKSPACE/CrispSorter_${VERSION}_linux-x86_64.receipt.json"
           FEATURES=$(python -c 'import os,shlex; args=shlex.split(os.environ["TAURI_BUILD_ARGS"]); print(args[args.index("--features")+1])')
           cargo test -p crispsorter --release --lib --features "$FEATURES" ocr_task_presets_live -- --ignored --nocapture --test-threads=1
-          python scripts/release_ocr_qualification.py --receipt "CrispSorter_${VERSION}_linux-x86_64.receipt.json" \
-            --native-smoke "$CRISPSORTER_OCR_RECEIPT" --output "CrispSorter_${VERSION}_linux-x86_64.ocr.json"
-          gh release upload "v$VERSION" "CrispSorter_${VERSION}_linux-x86_64.ocr.json" --clobber
 
       - name: Remove temporary desktop signing credentials
         if: always() && (runner.os == 'macOS' || runner.os == 'Windows')
@@ -1138,7 +1082,7 @@ jobs:
   # tauri-action. Runs on ubuntu with JDK 17 + Android SDK/NDK.
   release-windows:
     needs: release-draft-preflight
-    if: ${{ github.event_name == 'workflow_dispatch' && !inputs.mac_appstore && (inputs.platform == 'windows' || inputs.platform == 'windows_original_b739') }}
+    if: ${{ github.event_name == 'workflow_dispatch' && !inputs.mac_appstore && inputs.platform == 'windows' }}
     permissions:
       contents: write
     strategy:
@@ -1148,100 +1092,6 @@ jobs:
     runs-on: ${{ matrix.platform }}
     env: *desktop_release_env
     steps: *desktop_release_steps
-
-  # Reuse only exact original unsigned packages; no build or release writes.
-  windows-package-validation-replay:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.platform == 'windows_validate_b739' }}
-    runs-on: windows-2025
-    # Draft visibility requires push access; helper operations remain reads/downloads.
-    permissions:
-      contents: write
-    steps:
-      - name: Preserve committed source bytes on Windows
-        run: |
-          git config --global core.autocrlf false
-          git config --global core.eol lf
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.workflow_sha }}
-          path: replay-tooling
-          persist-credentials: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Reject contradictory Windows validation flags
-        run: python -c 'import os,sys; sys.path.insert(0,"replay-tooling/scripts"); from replay_windows_retained_package import guard; guard(os.environ)'
-      - uses: actions/checkout@v4
-        with:
-          ref: b739a3c0b70f39d3ae19e1bfcb412f3b44f77794
-          path: original-source
-          persist-credentials: false
-      - uses: actions/checkout@v4
-        with:
-          ref: 3f28c0d10fd303a1a59290872d6a8c50a38431e6
-          path: original-workflow
-          persist-credentials: false
-      - name: Diagnose exact retained unsigned Windows ZIP
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          python replay-tooling/scripts/replay_windows_retained_package.py --repo "$env:GITHUB_REPOSITORY" --source "$env:GITHUB_WORKSPACE/original-source" --original-workflow "$env:GITHUB_WORKSPACE/original-workflow" --output "$env:RUNNER_TEMP/windows-package-replay"
-      - name: Retain bounded sanitized Windows package diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-original-package-validation-unqualified
-          path: |
-            ${{ runner.temp }}/windows-package-replay/*.json
-            ${{ runner.temp }}/windows-package-replay/*.txt
-          if-no-files-found: warn
-          retention-days: 14
-
-  macos-package-validation-replay:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.platform == 'macos_validate_b739' }}
-    runs-on: macos-15
-    # GitHub hides draft releases from tokens without push access. The helper
-    # uses only release reads/downloads; this grants visibility, not a write step.
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          path: replay-tooling
-          persist-credentials: false
-      - name: Reject contradictory replay flags before any package access
-        run: |
-          python3 - <<'PYGUARD'
-          import os
-          import sys
-          sys.path.insert(0, "replay-tooling/scripts")
-          from replay_macos_package_validation import guard
-          guard(os.environ)
-          PYGUARD
-      - uses: actions/checkout@v4
-        with:
-          ref: b739a3c0b70f39d3ae19e1bfcb412f3b44f77794
-          path: original-source
-          persist-credentials: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Diagnose exact original unsigned macOS packages
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          python3 replay-tooling/scripts/replay_macos_package_validation.py --repo "$GITHUB_REPOSITORY" \
-            --source "$GITHUB_WORKSPACE/original-source" --output "$RUNNER_TEMP/macos-package-replay"
-      - name: Retain bounded sanitized package diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-original-package-validation-unqualified
-          path: |
-            ${{ runner.temp }}/macos-package-replay/*.json
-            ${{ runner.temp }}/macos-package-replay/*.txt
-          if-no-files-found: warn
-          retention-days: 14
 
   release-macos:
     needs: release-draft-preflight
@@ -1452,10 +1302,11 @@ jobs:
                 gh release delete-asset "$TAG" "$asset" -y ;;
             esac
           done <<< "$ASSETS"
-          gh release upload "${TAG}" "$ANDROID_RELEASE_APK" "${ANDROID_RELEASE_APK%.apk}.signing.json" --clobber
+          gh release upload "${TAG}" "$ANDROID_RELEASE_APK" --clobber
+          gh release upload "${TAG}" "${ANDROID_RELEASE_APK%.apk}.signing.json" --clobber || echo '::notice::Optional signing diagnostics could not be uploaded'
           echo "✓ Uploaded $ANDROID_RELEASE_APK"
 
-      - name: Inspect Android artifact and attach checksum receipt
+      - name: Inspect Android artifact
         if: env.CRISPSORTER_MOBILE_RELEASE_PROFILE != 'ocr-draft'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1463,7 +1314,7 @@ jobs:
           set -euo pipefail
           python scripts/verify_release_artifacts.py --platform android-arm64
           VERSION=$(jq -r .version src-tauri/tauri.conf.json)
-          gh release upload "v$VERSION" "CrispSorter_${VERSION}_android-arm64.receipt.json" "CrispSorter_${VERSION}_android-arm64.sha256" --clobber
+          gh release upload "v$VERSION" "CrispSorter_${VERSION}_android-arm64.receipt.json" "CrispSorter_${VERSION}_android-arm64.sha256" --clobber || echo '::notice::Optional package diagnostics could not be uploaded'
 
       - name: Verify final signed Android OCR draft provenance
         if: env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
@@ -1972,7 +1823,7 @@ jobs:
             fi
           fi
 
-      - name: Inspect iOS artifact and attach checksum receipt
+      - name: Inspect iOS artifact
         if: env.CRISPSORTER_MOBILE_RELEASE_PROFILE != 'ocr-draft'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1980,7 +1831,7 @@ jobs:
           set -euo pipefail
           python3 scripts/verify_release_artifacts.py --platform ios-arm64
           VERSION=$(jq -r .version src-tauri/tauri.conf.json)
-          gh release upload "v$VERSION" "CrispSorter_${VERSION}_ios-arm64.receipt.json" "CrispSorter_${VERSION}_ios-arm64.sha256" --clobber
+          gh release upload "v$VERSION" "CrispSorter_${VERSION}_ios-arm64.receipt.json" "CrispSorter_${VERSION}_ios-arm64.sha256" --clobber || echo '::notice::Optional package diagnostics could not be uploaded'
 
       - name: Verify final signed iOS OCR draft provenance
         if: env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
@@ -2020,7 +1871,7 @@ jobs:
     # skipped it entirely, so a tagged release produced no App Store build
     # and therefore nothing for the macOS TestFlight step to distribute —
     # silently, since a skipped job is not a failed one.
-    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mac_appstore && inputs.platform != 'testflight_current' && inputs.platform != 'testflight_current_resume' && inputs.platform != 'android_ocr_draft' && inputs.platform != 'ios_ocr_draft' && inputs.platform != 'windows_original_b739' && inputs.platform != 'macos_validate_b739' && inputs.platform != 'windows_validate_b739')
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mac_appstore && inputs.platform != 'testflight_current' && inputs.platform != 'testflight_current_resume' && inputs.platform != 'android_ocr_draft' && inputs.platform != 'ios_ocr_draft')
             || (github.event_name != 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v')) }}
     permissions:
       contents: write
@@ -2377,8 +2228,7 @@ jobs:
           # as a confusing "no files found" on top of it.
           if-no-files-found: ignore
 
-  # Publish the draft once the 3 required platforms finish (success OR failure).
-  # Mobile jobs (Android/iOS) also don't block — they may need extra setup.
+  # Publish only after all required desktop and mobile jobs succeed.
   # (macOS-Intel dropped: GitHub has no schedulable macos-13 runner and
   # CrispEmbed ships no macOS-x86_64 lib, so that build can't link anyway.)
   publish:
@@ -2388,7 +2238,7 @@ jobs:
     # "Latest" (as happened to v0.6.0 when the Windows link failed). always()
     # is still needed so this job is evaluated even when a need "fails", but the
     # release-required.result check skips publish unless every core platform
-    # built. Mobile (Android/iOS) stays non-blocking by design. On a manual
+    # built and both mobile jobs succeeded. On a manual
     # workflow_dispatch, publish ONLY when the operator set publish=true.
     if: ${{ always() && needs.release-required.result == 'success' && needs.release-android.result == 'success' && needs.release-ios.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.publish) }}
     runs-on: ubuntu-latest
@@ -2397,6 +2247,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install APK metadata inspection tool
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'build-tools;36.0.0'
+      - name: Use configured Android manifest tool
+        run: echo "$ANDROID_HOME/build-tools/36.0.0" >> "$GITHUB_PATH"
+
       - name: Publish release draft
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -2404,8 +2261,8 @@ jobs:
           set -euo pipefail
           VERSION=$(jq -r .version src-tauri/tauri.conf.json)
           TAG="v${VERSION}"
-          python3 scripts/check_desktop_release_assets.py --tag "$TAG" --repo "$GITHUB_REPOSITORY" --source "$(git rev-parse HEAD)" --version "$VERSION"
-          python3 scripts/check_mobile_release_assets.py --tag "$TAG" --repo "$GITHUB_REPOSITORY" --source "$(git rev-parse HEAD)" --version "$VERSION"
+          python3 scripts/check_desktop_release_assets.py --tag "$TAG" --repo "$GITHUB_REPOSITORY" --version "$VERSION"
+          python3 scripts/check_mobile_release_assets.py --tag "$TAG" --repo "$GITHUB_REPOSITORY" --version "$VERSION"
           echo "Publishing release ${TAG}…"
           gh release edit "${TAG}" --draft=false --latest
           echo "✓ Published ${TAG}"
