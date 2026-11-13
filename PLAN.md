@@ -4728,3 +4728,13 @@ here if it is taken, so the next person does not re-derive the same plan.
   existing exact version/build and continues internal assignment. Lookup errors
   stop upload; normal retries can repeat selection and assignment. No upload or
   dispatch was performed while preparing this change.
+
+- 2026-11-13: Retired the one-off b739 Windows source retry and macOS/Windows
+  retained-package replay selectors, their unused replay/reevaluation helpers,
+  and the old Linux observation recorder/tests. Concise historical notes remain; exclusive proof pins and fixture copies
+  were removed. Ordinary platform builds/retries and current package,
+  signature, version, licensing and TestFlight checks remain active. No active
+  release snapshot or concurrency block was changed.
+  Existing same-version draft retries no longer require an identical Git target.
+  The four-preset OCR test still runs normally with model consent and actual
+  recognition assertions, without Git/package-receipt or report prerequisites.
