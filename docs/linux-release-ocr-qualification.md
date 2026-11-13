@@ -78,3 +78,8 @@ attest to unretained post-build lock bytes or reconstruct the compiled dependenc
 graph. Changed draft assets or tampered/incomplete retained evidence fail closed.
 The reviewed evidence lock anchors these local operator observations; it is not
 a third-party build or execution attestation.
+
+The user declined the Qwen test. Leave it unrun and do not set its license
+acceptance; the Qwen-dependent publication qualification remains open unless the
+user later changes that decision. The separate permissive-model package
+observation does not satisfy that gate.
