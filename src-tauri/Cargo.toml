@@ -494,6 +494,10 @@ crispasr-cuda     = ["crispasr", "crispasr/cuda", "crispasr-sys/cuda"]
 sysinfo = "0.33"
 arboard = "3"
 
+[target.'cfg(unix)'.dependencies]
+cap-std = "=4.0.3"
+cap-fs-ext = "=4.0.3"
+
 [target.'cfg(target_os = "android")'.dependencies]
 # The model installer uses public roots without an uninitialized JVM verifier.
 # This version is already pinned transitively in the workspace lockfile.

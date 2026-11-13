@@ -540,6 +540,54 @@ impl TransferQueue {
         TransferHandle { job_id, progress_rx: rx, handle, cancellation }
     }
 
+    /// Held-directory manual-pull candidate. Existing pathname downloads are
+    /// unchanged; shipping pair commands are not switched until Windows works.
+    #[cfg(unix)]
+    pub(crate) fn submit_pull_download(
+        &self,
+        drive_id: String,
+        remote_path: PathBuf,
+        target: Arc<super::pull_destination::PullDestination>,
+        size: Option<u64>,
+        read_fn: impl Fn(&Path, &mut dyn Write) -> Result<u64> + Send + Sync + 'static,
+    ) -> TransferHandle<u64> {
+        let job_id = NEXT_JOB_ID.fetch_add(1, Ordering::Relaxed);
+        let initial = TransferProgress {
+            job_id, direction: TransferDirection::Download, drive_id: drive_id.clone(),
+            remote_path: remote_path.to_string_lossy().into_owned(), bytes_done: 0,
+            bytes_total: size, resume_state: None, state: TransferState::Queued,
+        };
+        let (tx, rx) = watch::channel(initial);
+        let sem = self.semaphore.clone();
+        let cancellation = TransferCancellation::default();
+        let task_cancel = cancellation.clone();
+        let write_cancel = cancellation.clone();
+        self.register_job(job_id, rx.clone(), cancellation.clone());
+        let handle = tokio::spawn(async move {
+            let source = remote_path.clone();
+            run_with_retries(job_id, TransferDirection::Download, drive_id, remote_path,
+                size, None, sem, tx, task_cancel, Arc::new(move || {
+                    let log = crate::operation_log::OperationLog::start("storage.materialize",
+                        serde_json::json!({"mode":"stream", "job_id":job_id}));
+                    let result = (|| {
+                        let stage = target.stage(size, |writer| {
+                            let mut writer = CancellableWriter { writer, cancellation: &write_cancel };
+                            read_fn(&source, &mut writer)
+                        })?;
+                        log.step("validated", serde_json::json!({"bytes":stage.bytes()}));
+                        write_cancel.publish(|| stage.publish())
+                    })();
+                    match &result {
+                        Ok(bytes) => log.succeed(serde_json::json!({"bytes":bytes})),
+                        Err(_) if write_cancel.is_cancelled() => log.cancel(),
+                        Err(_) => log.fail("materialization_failed"),
+                    }
+                    result
+                })).await
+        });
+        TransferHandle { job_id, progress_rx: rx, handle, cancellation }
+    }
+
     /// Synchronous file-target adapter for filesystem/FUSE consumers. It uses
     /// the same semaphore, cancellation registry and staged publication path.
     pub fn download_to_file_blocking(

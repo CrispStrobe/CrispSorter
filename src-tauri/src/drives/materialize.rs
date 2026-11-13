@@ -66,8 +66,18 @@ pub(crate) fn stage_file(
         .prefix(".crispsorter-transfer-")
         .tempfile_in(parent)
         .context("create private transfer staging file")?;
+    let bytes = write_stage(temporary.as_file_mut(), expected_size, write)?;
+    if let Some(permissions) = permissions {
+        temporary.as_file().set_permissions(permissions)
+            .context("preserve destination permissions")?;
+    }
+    Ok(StagedFile { temporary, destination: destination.to_owned(), bytes })
+}
+
+/// Shared byte-count validation for pathname and held-directory destinations.
+pub(crate) fn write_stage(file: &mut std::fs::File, expected_size: Option<u64>, write: impl FnOnce(&mut dyn Write) -> Result<u64>) -> Result<u64> {
     let mut writer = MeteredWriter {
-        inner: temporary.as_file_mut(),
+        inner: file,
         expected_size,
         bytes: 0,
     };
@@ -78,12 +88,8 @@ pub(crate) fn stage_file(
         anyhow::ensure!(bytes == expected, "source size changed during storage transfer");
     }
     writer.flush().context("flush transfer staging file")?;
-    temporary.as_file().sync_all().context("sync transfer staging file")?;
-    if let Some(permissions) = permissions {
-        temporary.as_file().set_permissions(permissions)
-            .context("preserve destination permissions")?;
-    }
-    Ok(StagedFile { temporary, destination: destination.to_owned(), bytes })
+    writer.inner.sync_all().context("sync transfer staging file")?;
+    Ok(bytes)
 }
 
 /// Enforce the declared size before publishing a local streaming upload.

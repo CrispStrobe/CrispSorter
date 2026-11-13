@@ -415,3 +415,28 @@ The authoritative checklist is `PLAN.md`. The most relevant open items are:
 When continuing this work, fetch and rebase from `origin/main` first. Parallel
 agents land directly on main, so preserve newer commits and keep one focused
 change per handover step.
+
+### Unmerged held-directory pull candidate
+
+The isolated directory-handle candidate opens the configured root once for the
+whole pull, including its explicitly selected alias, then opens/creates each
+descendant without following symlinks. Queue waits and retries retain those
+objects. On Unix, a moved directory remains the authorized destination object;
+replacing its old pathname never redirects staging, publication or cleanup.
+This does not promise that the completed file remains reachable at the original
+pathname. Existing symlink leaves are rejected; a leaf replaced after the final
+check is replaced as an entry without following its referent.
+
+Stages are random, exclusive 0600 files in the held destination directory, so
+existing file-creation permissions remain sufficient. Ancestor-swap protection
+does not protect against another writer replacing entries inside that same
+directory. Source failures/cancellation clean owned stages through the held
+parent, and uncertain final rename errors remain non-replayable. A successful
+rename disarms cleanup of the former stage name.
+
+The Unix candidate has a real queue adapter and focused swap/relocation/retry/
+cancellation/uncertain-rename controls, but shipping pair commands still use the
+existing path. Windows needs its separate native handle-relative create, rename
+and disposition implementation and native UNC/reparse tests. There is no new
+Windows pathname fallback and no change to supported-platform shipping pulls.
+No journals, admission, source identity or ACK bookkeeping are added.
