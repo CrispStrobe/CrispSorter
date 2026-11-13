@@ -12,13 +12,14 @@ they do not add approval or evidence requirements to normal retries.
 
 ## Current release and provider follow-up — 13 November 2026
 
-- Version 0.15.4 remains an unpublished standard release. The Linux retry and
-  signed Android/iOS builds succeeded, and the iOS build was assigned to internal
-  TestFlight. The Windows retry passed its package checks, and a focused macOS
-  package diagnostic passed after provisioning OCR models. A macOS release
-  rebuild is being retried. Standard mobile packages
-  do not include native OCR. Windows and macOS desktop packages cannot be signed
-  until the corresponding private signing keys are available.
+- Version 0.15.4 remains an unpublished standard release. Linux, Windows,
+  Android, iOS and macOS builds passed their release checks; iOS is assigned to
+  internal TestFlight. The draft includes SHA256SUMS.txt verified against its
+  current platform assets. Windows and macOS desktop packages remain unsigned,
+  and macOS is not notarized, until the private signing keys are available.
+  Standard mobile packages omit native OCR, and physical device checks are unrun.
+  The macOS package is Apple Silicon only; no Intel macOS binary was built.
+  Platform binaries use different main revisions; see the draft release notes.
 - Manual cloud pulls retain directory handles from root capture through queued
   staging and publication, so replacing an ancestor cannot redirect writes.
   Native Linux, macOS and Windows tests passed, including a Windows UNC case.
