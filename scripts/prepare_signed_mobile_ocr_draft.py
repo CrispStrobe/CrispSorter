@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Prepare only a production-pinned, unpublished mobile OCR build environment."""
 import argparse
+import json
 import os
 from pathlib import Path
 import shutil
@@ -12,6 +13,7 @@ from check_mobile_release_layout import check as check_layout
 from check_mobile_release_profile import profile
 from check_release_versions import check_versions
 from mobile_qualification_lock import select_lock
+from mobile_native_provenance import BASE_NOTICES, SHEEN_NOTICES
 from mobile_staging_paths import directory, output_file
 from prepare_ocr_cargo_env import prepare as prepare_cargo
 
@@ -51,10 +53,14 @@ def prepare(project, output, target, embed_commit, asr_ref, docx_ref, protoc, nd
                   ort_xcframework=ort / 'onnxruntime.xcframework' if target == 'ios-arm64' else None)
     resources.mkdir(exist_ok=True)
     shutil.copy2(output / 'runtime/runtime-build.json', output_file(resources, 'ocr-mobile-runtime.json'))
-    for notice in (output / 'runtime/notices').iterdir():
+    native = json.loads((output / 'runtime/runtime-build.json').read_text())
+    for name in native['native_provenance']['notices']:
+        if name not in BASE_NOTICES and name not in SHEEN_NOTICES:
+            raise ValueError('Unknown generated native notice filename')
+        notice = output / 'runtime/notices' / name
         if not notice.is_file() or notice.is_symlink():
             raise ValueError('Native notices must be regular files')
-        shutil.copy2(notice, output_file(resources, notice.name))
+        shutil.copy2(notice, output_file(resources, name))
     for source, name in [('LICENSE', 'onnxruntime-LICENSE.txt'), ('ThirdPartyNotices.txt', 'onnxruntime-ThirdPartyNotices.txt')]:
         shutil.copy2(ort / 'notices' / source, output_file(resources, name))
     environment = {'OCR_DRAFT_ROOT': str(output), 'CRISPEMBED_SYS_LIB_DIR': str(output / 'runtime/lib'),

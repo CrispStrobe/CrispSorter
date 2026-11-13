@@ -45,8 +45,8 @@ class DraftStaging(unittest.TestCase):
         (output / 'lib').mkdir(parents=True, exist_ok=True)
         (output / 'lib' / ('libcrispembed.so' if target.startswith('android-') else 'libcrispembed.a')).write_bytes(b'native fixture')
         (output / 'notices').mkdir(exist_ok=True)
-        (output / 'notices/native-LICENSE.txt').write_text('notice')
-        (output / 'runtime-build.json').write_text('{}')
+        (output / 'notices/crispembed-LICENSE.txt').write_text('notice')
+        (output / 'runtime-build.json').write_text(json.dumps({'native_provenance':{'notices':{'crispembed-LICENSE.txt':{}}}}))
 
     def ort(self, command, **kwargs):
         self.assertIn('prepare_mobile_ort.py', command[1])
@@ -75,7 +75,7 @@ class DraftStaging(unittest.TestCase):
                 self.assertEqual(environment['LICENSES_CARGO_FEATURES'], 'ocr-mobile,tauri/custom-protocol')
                 self.assertEqual(environment['CARGO_BUILD_JOBS'], '2')
                 self.assertEqual(self.manifest.read_text(), 'committed fixture manifest')
-                self.assertEqual((self.project / 'src-tauri/bin/ocr-mobile-runtime.json').read_text(), '{}')
+                self.assertEqual(set(json.loads((self.project / 'src-tauri/bin/ocr-mobile-runtime.json').read_text())['native_provenance']['notices']), {'crispembed-LICENSE.txt'})
                 self.assertTrue((self.project / 'src-tauri/bin/onnxruntime-LICENSE.txt').is_file())
                 self.assertEqual(cargo.call_args.kwargs['ort_lib_dir'], self.output / 'ort/lib' if target.startswith('android-') else None)
                 self.assertEqual(cargo.call_args.kwargs['ort_xcframework'], self.output / 'ort/onnxruntime.xcframework' if target.startswith('ios-') else None)
@@ -110,6 +110,18 @@ class DraftStaging(unittest.TestCase):
         first, _, _ = self.prepare('ios-arm64')
         second, _, _ = self.prepare('ios-arm64')
         self.assertEqual(first, second)
+
+    def test_reused_native_notice_directory_never_bundles_unrelated_files(self):
+        notices = self.output / 'runtime/notices'; notices.mkdir(parents=True)
+        secret = notices / 'unrelated-secret.txt'; secret.write_text('PRIVATE-SENTINEL')
+        (notices / 'unrelated-link.txt').symlink_to(secret)
+        self.prepare()
+        resources = self.project / 'src-tauri/bin'
+        self.assertTrue((resources / 'crispembed-LICENSE.txt').is_file())
+        self.assertFalse((resources / secret.name).exists())
+        self.assertFalse((resources / 'unrelated-link.txt').exists())
+        self.assertEqual(secret.read_text(), 'PRIVATE-SENTINEL')
+        self.assertTrue((notices / 'unrelated-link.txt').is_symlink())
 
     def test_symlinked_output_or_generated_file_is_not_overwritten(self):
         outside = self.base / 'outside'; outside.mkdir()
