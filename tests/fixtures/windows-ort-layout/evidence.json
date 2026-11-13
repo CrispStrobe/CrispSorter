@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "application_source": "b739a3c0b70f39d3ae19e1bfcb412f3b44f77794",
+  "observed_toolchain": "rustc 1.100.0 (0ef1bc386 2026-11-09)",
+  "observed_out_dir": "target/release/build/ort-sys/79359be6031be721/out",
+  "observed_copied_dll": "target/release/build/DirectML.dll",
+  "observed_error": "dynamic_link.rs:42:52: fs::copy unwrap failed with Windows error 3 (path not found)",
+  "dependency": {
+    "name": "ort-sys",
+    "version": "2.0.0-rc.11",
+    "crate_checksum": "06503bb33f294c5f1ba484011e053bfa6ae227074bdb841e9863492dc5960d4b",
+    "source_file": "build/dynamic_link.rs",
+    "source_sha256": "ede19cd48c6041501d54f6271834ec89817b90f8bbd517f177b5c479762ee2e0"
+  },
+  "compatibility_toolchain": "1.99.1",
+  "release_manifest": {
+    "url": "https://static.rust-lang.org/dist/channel-rust-1.99.1.toml",
+    "date": "2026-10-15",
+    "sha256": "fb152be80975c194aa5fc684b2aec3a6e14e2b855efe2faa4e5f8ae6e590f463",
+    "windows_target": "x86_64-pc-windows-msvc",
+    "rust_available": true,
+    "rustc_available": true,
+    "cargo_available": true
+  },
+  "layout_source": "https://doc.rust-lang.org/stable/nightly-rustc/src/cargo/compiler/layout.rs.html",
+  "layout_source_version": "Cargo1.99.1 (58cf8f9c3 2026-10-13), legacy build/<package>-<hash>/out with new layout opt-in",
+  "locked_registry_msrv_audit": {
+    "declared": 872,
+    "unspecified": 464,
+    "missing_index_entries": 0,
+    "highest_declared": "1.98",
+    "highest_package": "mail-parser1.0.1",
+    "qualification": "MSRV metadata only; no Windows build performed."
+  }
+}
