@@ -7,6 +7,18 @@ from urllib.parse import urlsplit
 from mobile_native_provenance import BASE_NOTICES, SHEEN_NOTICES, SHEEN_SYMBOLS
 
 
+HEADERS = ('onnxruntime_session_options_config_keys.h', 'coreml_provider_factory.h',
+           'cpu_provider_factory.h', 'onnxruntime_lite_custom_op.h',
+           'onnxruntime_run_options_config_keys.h', 'onnxruntime_float16.h',
+           'onnxruntime_ep_device_ep_metadata_keys.h', 'onnxruntime_cxx_inline.h',
+           'onnxruntime_cxx_api.h', 'onnxruntime_ep_c_api.h', 'onnxruntime_c_api.h')
+FRAMEWORK = 'onnxruntime.xcframework/ios-arm64/onnxruntime.framework/'
+ORT_FILES = (tuple('include/' + name for name in HEADERS)
+             + tuple(FRAMEWORK + 'Headers/' + name for name in HEADERS)
+             + (FRAMEWORK + 'onnxruntime', FRAMEWORK + 'Info.plist',
+                'onnxruntime.xcframework/Info.plist', 'notices/LICENSE', 'notices/ThirdPartyNotices.txt'))
+
+
 def keys(value, expected):
     if not isinstance(value, dict) or set(value) != set(expected):
         raise ValueError('Unexpected retained record fields')

@@ -574,9 +574,16 @@ and produced the expected hOCR text. It performed no model download or Qwen
 license acceptance. This is package-specific DBNet/TrOCR evidence, not a passed
 Qwen preset gate or a substitute for the missing automated release receipt.
 
-### Same-run signed iOS draft input retention (2026-11-13)
+### Historical same-run signed iOS draft input retention (2026-11-13)
 
-The signed iOS OCR draft now attempts allowlisted input retention after final
+Automatic replay-input collection has been removed from the release workflow.
+The following records the earlier implementation and retained artifacts; those
+records remain historical observations. Normal signed drafts need no replay
+bundle. Both mobile draft artifact uploads are best effort, while final
+signature, version, native-linkage and license checks remain required. No
+standard release or TestFlight selection behavior changed.
+
+The earlier signed iOS OCR draft attempted allowlisted input retention after final
 validation, including when that validation fails. `replay-inputs/` is uploaded
 beside the recorder's `artifact/` directory for 14 days. It contains the original
 `libcrispembed.a`, native receipt/notices, exact device ONNX framework and headers,

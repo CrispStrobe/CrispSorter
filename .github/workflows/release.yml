@@ -1468,6 +1468,7 @@ jobs:
             --staging "$OCR_DRAFT_ROOT" --artifact "$ANDROID_RELEASE_APK"
       - name: Retain signed OCR draft as explicitly unqualified build evidence
         if: always() && env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: signed-ocr-draft-android-arm64-unqualified
@@ -1968,19 +1969,13 @@ jobs:
         run: |
           python3 scripts/record_signed_mobile_ocr_draft.py --target ios-arm64 \
             --staging "$OCR_DRAFT_ROOT" --artifact "$IPA"
-      - name: Retain original same-run iOS OCR provenance inputs
-        if: always() && env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
-        run: |
-          python3 scripts/retain_ios_ocr_draft_inputs.py \
-            --staging "$RUNNER_TEMP/signed-mobile-ocr-draft"
       - name: Retain signed OCR draft as explicitly unqualified build evidence
         if: always() && env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: signed-ocr-draft-ios-arm64-unqualified
-          path: |
-            ${{ runner.temp }}/signed-mobile-ocr-draft/artifact
-            ${{ runner.temp }}/signed-mobile-ocr-draft/replay-inputs
+          path: ${{ runner.temp }}/signed-mobile-ocr-draft/artifact
           if-no-files-found: warn
           retention-days: 14
 

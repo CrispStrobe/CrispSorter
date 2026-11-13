@@ -209,6 +209,21 @@ class WorkflowSafety(unittest.TestCase):
     def job(self, name, end):
         return self.workflow.split('\n  ' + name + ':', 1)[1].split('\n  ' + end + ':', 1)[0]
 
+    def test_diagnostic_uploads_are_optional_and_replay_inputs_not_collected(self):
+        self.assertNotIn('retain_ios_ocr_draft_inputs.py',self.workflow)
+        self.assertNotIn('/signed-mobile-ocr-draft/replay-inputs',self.workflow)
+        for target in ['android-arm64','ios-arm64']:
+            marker='          name: signed-ocr-draft-'+target+'-unqualified'
+            start=self.workflow.rindex('      - name: ',0,self.workflow.index(marker))
+            step=self.workflow[start:].split('\n      - ',1)[0].split('\n  # ',1)[0]
+            self.assertIn('        continue-on-error: true\n',step)
+            self.assertIn('          if-no-files-found: warn\n',step)
+            self.assertIn('          path: ${{ runner.temp }}/signed-mobile-ocr-draft/artifact\n',step)
+        for target in ['Android','iOS']:
+            step=self.workflow.split('      - name: Verify final signed '+target+' OCR draft provenance\n',1)[1].split('\n      - ',1)[0]
+            self.assertIn('record_signed_mobile_ocr_draft.py',step)
+            self.assertNotIn('continue-on-error',step)
+
     def test_draft_selectors_never_admit_public_ocr_profile(self):
         for target in ['android-arm64', 'ios-arm64']:
             with patch.dict(os.environ, context(target)):

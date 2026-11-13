@@ -12,7 +12,7 @@ import sys
 import zipfile
 
 import ios_draft_retention_schema as retention_schema
-from retain_ios_ocr_draft_inputs import ORT_FILES
+from ios_draft_retention_schema import ORT_FILES
 from check_desktop_release_assets import sha
 from mobile_draft_safe_cli import SafeArgumentParser, run as safe_run
 from check_mobile_release_profile import profile
