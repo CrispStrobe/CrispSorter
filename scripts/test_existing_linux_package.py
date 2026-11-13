@@ -46,13 +46,22 @@ class ExistingPackageTests(unittest.TestCase):
             control['sanitized_output_sha256'][name] = hashlib.sha256(data).hexdigest()
         self.data = {'partial-verification.json': partial, 'offline-control.json': control,
                      'version.json': {'name': 'crispsorter', 'version': recorder.VERSION, 'target': 'linux', 'arch': 'x86_64'},
-                     'doctor.json': {'pdf_extract_compiled_in': True},
+                     'doctor.json': {'tesseract_installed': True, 'ocrs_models_available': False, 'paddle_ocr_available': False,
+                                     'pdf_extract_compiled_in': True, 'fuse_compiled': False, 'fuse_runtime_available': False,
+                                     'embedder_model_cached': True, 'lance_dir_exists': False},
                      'worker-protocol.json': {'arguments': ['--crispsorter-ocr-worker'], 'exit_codes': [1, 1]}}
         for name, data in self.data.items(): (self.root / name).write_text(json.dumps(data))
+        self.pin = {'schema': 'crispsorter-reviewed-linux-package-evidence-v1', 'original_app_source': recorder.SOURCE,
+                    'package': {'filename': recorder.PACKAGE, 'bytes': self.package.stat().st_size, 'sha256': self.hash},
+                    'evidence_sha256': {name: hashlib.sha256((self.root / name).read_bytes()).hexdigest()
+                        for name in [*self.data, 'ocr-task.pdf', 'offline-control.stdout.hocr', 'offline-control.stderr.txt']}}
+        self.pin_bytes = json.dumps(self.pin).encode()
+        (self.root / recorder.EVIDENCE_PIN).write_bytes(self.pin_bytes)
 
     def fake_git(self, args, **kwargs):
         binary = not kwargs.get('text')
         if args[-1].startswith(recorder.SOURCE + ':'): return self.fixture
+        if args[-1] == 'HEAD:' + recorder.EVIDENCE_PIN: return self.pin_bytes
         if 'show' in args: return b'committed recorder fixture'
         result = '' if 'status' in args else ('3' * 40 if args[-1] == 'HEAD^{tree}' else '2' * 40)
         return result.encode() if binary else result
@@ -104,6 +113,28 @@ class ExistingPackageTests(unittest.TestCase):
         path = self.root / 'scripts/record_existing_linux_package.py'
         path.write_bytes(b'modified recorder')
         with self.assertRaisesRegex(ValueError, 'committed source'):
+            self.record()
+
+    def test_self_consistent_replacement_hocr_and_declared_hash_cannot_replace_reviewed_evidence(self):
+        replacement = b'<div class="ocr_page">Cobalt Warranty 2031 replacement text</div>'
+        (self.root / 'offline-control.stdout.hocr').write_bytes(replacement)
+        control = copy.deepcopy(self.data['offline-control.json'])
+        control['sanitized_output_sha256']['stdout.hocr'] = hashlib.sha256(replacement).hexdigest()
+        (self.root / 'offline-control.json').write_text(json.dumps(control))
+        with self.assertRaisesRegex(ValueError, 'committed reviewed pin'):
+            self.record()
+
+    def test_empty_doctor_cannot_pass_even_if_its_digest_were_pinned(self):
+        (self.root / 'doctor.json').write_text('{}')
+        self.pin['evidence_sha256']['doctor.json'] = hashlib.sha256(b'{}').hexdigest()
+        self.pin_bytes = json.dumps(self.pin).encode()
+        (self.root / recorder.EVIDENCE_PIN).write_bytes(self.pin_bytes)
+        with self.assertRaisesRegex(ValueError, 'startup/protocol'):
+            self.record()
+
+    def test_reviewed_pin_cannot_be_modified_without_changing_committed_tooling(self):
+        (self.root / recorder.EVIDENCE_PIN).write_text('{}')
+        with self.assertRaisesRegex(ValueError, 'pin differs from its committed source'):
             self.record()
 
     def test_draft_tag_and_asset_binding_cannot_be_waived(self):

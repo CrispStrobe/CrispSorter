@@ -21,6 +21,12 @@ def sha(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
+def fixture_sha256(source, root):
+    """Use committed source bytes, never an editable digest in a raw report."""
+    data = subprocess.check_output(['git', '-C', str(root), 'show', source + ':tests/quality/ocr-task.png'])
+    return hashlib.sha256(data).hexdigest()
+
+
 def package_control():
     return {'permissive_package_control': {'status': 'passed', 'engine': 'dbnet_trocr',
                                          'models': ['dbnet-det', 'trocr-printed']},
@@ -68,11 +74,17 @@ def validate_native_smoke(smoke):
         raise ValueError('Native preset report does not qualify every required preset')
 
 
-def seal(receipt, receipt_sha256, smoke, source, version):
-    if not re.fullmatch(r'[0-9a-f]{64}', receipt_sha256):
-        raise ValueError('Package receipt requires its exact SHA-256 identity')
+def seal(receipt, receipt_sha256, smoke, source, version, expected_fixture_sha256):
+    if (not re.fullmatch(r'[0-9a-f]{64}', receipt_sha256)
+            or not re.fullmatch(r'[0-9a-f]{64}', expected_fixture_sha256)):
+        raise ValueError('Package receipt and committed fixture require exact SHA-256 identities')
     package = package_entry(receipt, source, version)
     validate_native_smoke(smoke)
+    if (smoke.get('schema') != 'crispsorter-native-ocr-presets-v1'
+            or smoke.get('app_source') != source
+            or smoke.get('fixture') != {'filename': 'ocr-task.png', 'sha256': expected_fixture_sha256}
+            or smoke.get('package_receipt') != {'sha256': receipt_sha256, 'package': package}):
+        raise ValueError('Raw native evidence belongs to another source, fixture or package receipt')
     return {'schema': SCHEMA, 'app_source': source, 'version': version,
             'package': package, 'package_receipt_sha256': receipt_sha256,
             'status': 'passed', 'scope': 'Synthetic native app-binding presets; package DBNet/TrOCR has its separate control',
@@ -80,10 +92,10 @@ def seal(receipt, receipt_sha256, smoke, source, version):
             'native_smoke': smoke}
 
 
-def validate(report, receipt, receipt_sha256, source, version):
+def validate(report, receipt, receipt_sha256, source, version, expected_fixture_sha256):
     if not isinstance(report, dict):
         raise ValueError('Licensed native OCR qualification must be an object')
-    expected = seal(receipt, receipt_sha256, report.get('native_smoke', {}), source, version)
+    expected = seal(receipt, receipt_sha256, report.get('native_smoke', {}), source, version, expected_fixture_sha256)
     if report != expected:
         raise ValueError('Licensed native OCR qualification does not match the exact source/package receipt')
 
@@ -104,7 +116,8 @@ def main():
         raise ValueError('Expected exactly one built Linux package for qualification')
     if packages[0].stat().st_size != identity['bytes'] or sha(packages[0]) != identity['sha256']:
         raise ValueError('Linux package changed after package verification')
-    report = seal(receipt, sha(args.receipt), json.loads(args.native_smoke.read_text()), source, version)
+    report = seal(receipt, sha(args.receipt), json.loads(args.native_smoke.read_text()), source, version,
+                  fixture_sha256(source, root))
     with args.output.open('x') as stream:
         stream.write(json.dumps(report, indent=2) + '\n')
 

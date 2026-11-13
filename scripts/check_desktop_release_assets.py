@@ -8,7 +8,7 @@ import re
 import subprocess
 import tempfile
 
-from release_ocr_qualification import package_entry, validate as validate_ocr_qualification
+from release_ocr_qualification import fixture_sha256, package_entry, validate as validate_ocr_qualification
 
 
 def gh(*args):
@@ -48,7 +48,8 @@ def main():
         receipt = json.loads((work / linux_receipt).read_text())
         artifact = package_entry(receipt, args.source, args.version)
         report = json.loads((work / linux_ocr).read_text())
-        validate_ocr_qualification(report, receipt, sha(work / linux_receipt), args.source, args.version)
+        validate_ocr_qualification(report, receipt, sha(work / linux_receipt), args.source, args.version,
+                                   fixture_sha256(args.source, Path.cwd()))
         name = artifact['filename']
         if name not in names:
             raise ValueError('Missing qualified Linux package: ' + name)

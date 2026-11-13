@@ -2124,7 +2124,27 @@ mod tests {
         let image = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/quality/ocr-task.png");
         let reference: serde_json::Value = serde_json::from_slice(&std::fs::read(image.with_extension("json")).unwrap()).unwrap();
         use sha2::{Digest, Sha256};
-        assert_eq!(format!("{:x}", Sha256::digest(std::fs::read(&image).unwrap())), reference["sha256"].as_str().unwrap());
+        let fixture_sha256 = format!("{:x}", Sha256::digest(std::fs::read(&image).unwrap()));
+        assert_eq!(fixture_sha256, reference["sha256"].as_str().unwrap());
+        let project = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let git = std::process::Command::new("git").arg("-C").arg(project)
+            .args(["rev-parse", "HEAD"]).output().expect("native smoke source must resolve");
+        assert!(git.status.success(), "native smoke source must resolve");
+        let app_source = String::from_utf8(git.stdout).unwrap().trim().to_owned();
+        // Capture the already-verified package receipt before inference. A raw
+        // report from another source/fixture/package cannot later be relabeled
+        // by the sealer. Standalone native tests need not have a package receipt.
+        let package_receipt = std::env::var("CRISPSORTER_OCR_PACKAGE_RECEIPT").ok().map(|path| {
+            let bytes = std::fs::read(path).expect("package receipt must be readable");
+            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(value["app_source"].as_str(), Some(app_source.as_str()));
+            assert_eq!(value["version"].as_str(), Some(env!("CARGO_PKG_VERSION")));
+            assert_eq!(value["platform"].as_str(), Some("linux-x86_64"));
+            let artifacts = value["artifacts"].as_array().unwrap();
+            assert_eq!(artifacts.len(), 1);
+            serde_json::json!({"sha256":format!("{:x}", Sha256::digest(&bytes)),
+                "package":{"filename":artifacts[0]["filename"],"bytes":artifacts[0]["bytes"],"sha256":artifacts[0]["sha256"]}})
+        });
         let mut models = Vec::new();
         for name in ["dbnet-det", "trocr-printed", "qwen2vl-3b"] {
             use std::io::Read;
@@ -2150,7 +2170,10 @@ mod tests {
             let matched = ["cobalt", "warranty", "2031"].iter().all(|word| normalized.contains(word));
             cases.push(serde_json::json!({"preset":preset,"text":text,"matched":matched,"elapsed_seconds":started.elapsed().as_secs_f64(),"config":config}));
         }
-        let receipt = serde_json::json!({"scope":"Synthetic native app wiring smoke, not a corpus accuracy claim; timings exclude initial downloads", "models":models,"cases":cases});
+        let receipt = serde_json::json!({"schema":"crispsorter-native-ocr-presets-v1",
+            "app_source":app_source,"fixture":{"filename":"ocr-task.png","sha256":fixture_sha256},
+            "package_receipt":package_receipt,
+            "scope":"Synthetic native app wiring smoke, not a corpus accuracy claim; timings exclude initial downloads", "models":models,"cases":cases});
         println!("{receipt}");
         if let Ok(path) = std::env::var("CRISPSORTER_OCR_RECEIPT") {
             std::fs::write(path, serde_json::to_vec_pretty(&receipt).unwrap()).unwrap();

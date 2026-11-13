@@ -1046,9 +1046,10 @@ jobs:
         run: |
           set -euo pipefail
           rm -f "$CRISPSORTER_OCR_RECEIPT"
+          VERSION=$(python -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')
+          export CRISPSORTER_OCR_PACKAGE_RECEIPT="$GITHUB_WORKSPACE/CrispSorter_${VERSION}_linux-x86_64.receipt.json"
           FEATURES=$(python -c 'import os,shlex; args=shlex.split(os.environ["TAURI_BUILD_ARGS"]); print(args[args.index("--features")+1])')
           cargo test -p crispsorter --release --lib --features "$FEATURES" ocr_task_presets_live -- --ignored --nocapture --test-threads=1
-          VERSION=$(python -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')
           python scripts/release_ocr_qualification.py --receipt "CrispSorter_${VERSION}_linux-x86_64.receipt.json" \
             --native-smoke "$CRISPSORTER_OCR_RECEIPT" --output "CrispSorter_${VERSION}_linux-x86_64.ocr.json"
           gh release upload "v$VERSION" "CrispSorter_${VERSION}_linux-x86_64.ocr.json" --clobber

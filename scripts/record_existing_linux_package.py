@@ -20,6 +20,7 @@ PACKAGE_BYTES = 229393246
 PACKAGE_SHA256 = 'b1cc6d018bc1651c5a1604227b43cdc5b73019bad4ab627d94355f8e21cacd55'
 MODELS = {'dbnet-ic15-q8_0.gguf': (12960448, '163c3b3d1211fd47b4ea323e2e684287bdc75ae68f0ffea397ccfcdc29a74de2'),
           'trocr-small-printed-q8_0.gguf': (67508320, '1aa4cdf3413539d7dbd53a565149abe4ca878f84a7ae2129e9a297f3a26b50d4')}
+EVIDENCE_PIN = 'scripts/linux-existing-package-evidence-lock.json'
 
 
 def sha(path):
@@ -67,6 +68,23 @@ def record(root, tooling, draft):
     helper = 'scripts/record_existing_linux_package.py'
     if subprocess.check_output(['git', '-C', str(tooling), 'show', 'HEAD:' + helper]) != (tooling / helper).read_bytes():
         raise ValueError('Observation helper differs from its committed source')
+    pin_bytes = subprocess.check_output(['git', '-C', str(tooling), 'show', 'HEAD:' + EVIDENCE_PIN])
+    if (tooling / EVIDENCE_PIN).read_bytes() != pin_bytes:
+        raise ValueError('Reviewed evidence pin differs from its committed source')
+    pin = json.loads(pin_bytes)
+    expected_files = {'partial-verification.json', 'version.json', 'doctor.json', 'worker-protocol.json',
+                      'offline-control.json', 'offline-control.stdout.hocr', 'offline-control.stderr.txt', 'ocr-task.pdf'}
+    if (pin.get('schema') != 'crispsorter-reviewed-linux-package-evidence-v1'
+            or pin.get('original_app_source') != SOURCE
+            or pin.get('package') != {'filename': PACKAGE, 'bytes': PACKAGE_BYTES, 'sha256': PACKAGE_SHA256}
+            or not isinstance(pin.get('evidence_sha256'), dict) or set(pin['evidence_sha256']) != expected_files):
+        raise ValueError('Reviewed evidence pin does not match the original source/package')
+    # These committed digests are independent of all editable declarations in
+    # the retained JSON. Replacing hOCR plus its declared digest cannot pass.
+    for name, digest in pin['evidence_sha256'].items():
+        path = evidence_file(root, name, 4 * 1024 * 1024)
+        if not re.fullmatch('[0-9a-f]{64}', digest) or sha(path) != digest:
+            raise ValueError('Retained evidence differs from the committed reviewed pin: ' + name)
     fixture = subprocess.check_output(['git', '-C', str(tooling), 'show', SOURCE + ':tests/quality/ocr-task.pdf'])
     fixture_sha = hashlib.sha256(fixture).hexdigest()
     if sha(evidence_file(root, 'ocr-task.pdf')) != fixture_sha:
@@ -86,6 +104,10 @@ def record(root, tooling, draft):
             or partial.get('package_checks') != {'version': 'passed', 'doctor': 'passed', 'ocr_worker_protocol': 'passed'}
             or version != {'name': 'crispsorter', 'version': VERSION, 'target': 'linux', 'arch': 'x86_64'}
             or not isinstance(checks['doctor.json'], dict)
+            or checks['doctor.json'].get('pdf_extract_compiled_in') is not True
+            or set(checks['doctor.json']) != {'tesseract_installed', 'ocrs_models_available', 'paddle_ocr_available',
+                 'pdf_extract_compiled_in', 'fuse_compiled', 'fuse_runtime_available', 'embedder_model_cached', 'lance_dir_exists'}
+            or any(type(value) is not bool for value in checks['doctor.json'].values())
             or worker.get('exit_codes') != [1, 1]
             or worker.get('arguments') != ['--crispsorter-ocr-worker']):
         raise ValueError('Retained package startup/protocol checks do not match the original package observation')
@@ -115,6 +137,7 @@ def record(root, tooling, draft):
             'original_app_source_association': SOURCE, 'version': VERSION,
             'verification_tooling_source': git('rev-parse', 'HEAD'),
             'verification_tooling_tree': git('rev-parse', 'HEAD^{tree}'),
+            'reviewed_evidence_pin_sha256': hashlib.sha256(pin_bytes).hexdigest(),
             'draft_observation': draft,
             'package': {'filename': PACKAGE, 'bytes': PACKAGE_BYTES, 'sha256': PACKAGE_SHA256},
             'retained_evidence_sha256': {name: sha(root / name) for name in [*checks, 'ocr-task.pdf']},

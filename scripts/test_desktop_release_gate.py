@@ -48,7 +48,10 @@ class DesktopGate(unittest.TestCase):
         self.names.append(receipt_name)
         native = {'models': [{'registry_name': name, 'bytes': 1, 'sha256': 'a' * 64} for name in qualification.MODELS],
                   'cases': [{'preset': name, 'text': 'Cobalt warranty 2031', 'matched': True} for name in qualification.PRESETS]}
-        report = qualification.seal(receipt, gate.sha(self.root / receipt_name), native, SOURCE, '0.13')
+        native.update(schema='crispsorter-native-ocr-presets-v1', app_source=SOURCE,
+                      fixture={'filename': 'ocr-task.png', 'sha256': 'f' * 64},
+                      package_receipt={'sha256': gate.sha(self.root / receipt_name), 'package': receipt['artifacts'][0]})
+        report = qualification.seal(receipt, gate.sha(self.root / receipt_name), native, SOURCE, '0.13', 'f' * 64)
         ocr_name = 'CrispSorter_0.13_linux-x86_64.ocr.json'
         (self.root / ocr_name).write_text(json.dumps(report))
         self.names.append(ocr_name)
@@ -64,7 +67,7 @@ class DesktopGate(unittest.TestCase):
         raise AssertionError(args)
 
     def run_gate(self):
-        with patch.object(gate, 'gh', self.fake_gh), patch.object(sys, 'argv', ['gate', '--tag', 'v0.13',
+        with patch.object(gate, 'gh', self.fake_gh), patch.object(gate, 'fixture_sha256', return_value='f' * 64), patch.object(sys, 'argv', ['gate', '--tag', 'v0.13',
                 '--repo', 'example/repo', '--source', SOURCE, '--version', '0.13']):
             gate.main()
 

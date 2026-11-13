@@ -14,6 +14,7 @@ import verify_release_artifacts as verifier
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = '1' * 40
+FIXTURE = 'f' * 64
 
 
 class QualificationTests(unittest.TestCase):
@@ -35,6 +36,9 @@ class QualificationTests(unittest.TestCase):
                                   for name in sorted(qualification.MODELS)],
                        'cases': [{'preset': name, 'matched': True, 'text': 'Cobalt Warranty 2031'}
                                  for name in sorted(qualification.PRESETS)]}
+        self.native.update(schema='crispsorter-native-ocr-presets-v1', app_source=SOURCE,
+                           fixture={'filename': 'ocr-task.png', 'sha256': FIXTURE},
+                           package_receipt={'sha256': 'b' * 64, 'package': copy.deepcopy(self.receipt['artifacts'][0])})
 
     def test_package_success_explicitly_excludes_licensed_qualification(self):
         control = qualification.package_control()
@@ -44,8 +48,8 @@ class QualificationTests(unittest.TestCase):
         self.assertTrue(control['licensed_native_presets']['required_before_publication'])
 
     def test_successful_native_smoke_seals_distinct_source_package_and_receipt(self):
-        value = qualification.seal(self.receipt, 'b' * 64, self.native, SOURCE, '0.15.1')
-        qualification.validate(value, self.receipt, 'b' * 64, SOURCE, '0.15.1')
+        value = qualification.seal(self.receipt, 'b' * 64, self.native, SOURCE, '0.15.1', FIXTURE)
+        qualification.validate(value, self.receipt, 'b' * 64, SOURCE, '0.15.1', FIXTURE)
         self.assertEqual(value['package'], self.receipt['artifacts'][0])
         self.assertIn('native app-binding', value['scope'])
         self.assertEqual(self.receipt['ocr_qualification']['licensed_native_presets']['status'], 'not_run')
@@ -64,10 +68,10 @@ class QualificationTests(unittest.TestCase):
             elif case == 'missing-text': value['cases'][0]['text'] = 'Cobalt'
             else: del value['cases'][0]['matched']
             with self.subTest(case=case), self.assertRaises(ValueError):
-                qualification.seal(self.receipt, 'b' * 64, value, SOURCE, '0.15.1')
+                qualification.seal(self.receipt, 'b' * 64, value, SOURCE, '0.15.1', FIXTURE)
 
     def test_source_version_package_and_receipt_mismatches_are_rejected(self):
-        good = qualification.seal(self.receipt, 'b' * 64, self.native, SOURCE, '0.15.1')
+        good = qualification.seal(self.receipt, 'b' * 64, self.native, SOURCE, '0.15.1', FIXTURE)
         for case in ['source', 'version', 'package', 'receipt', 'skip']:
             value = copy.deepcopy(good)
             if case == 'source': value['app_source'] = '2' * 40
@@ -76,14 +80,34 @@ class QualificationTests(unittest.TestCase):
             elif case == 'receipt': value['package_receipt_sha256'] = 'c' * 64
             else: value['status'] = 'not_run'
             with self.subTest(case=case), self.assertRaises(ValueError):
-                qualification.validate(value, self.receipt, 'b' * 64, SOURCE, '0.15.1')
+                qualification.validate(value, self.receipt, 'b' * 64, SOURCE, '0.15.1', FIXTURE)
+
+    def test_raw_native_report_cannot_be_resealed_for_another_valid_source_package_or_fixture(self):
+        changed = copy.deepcopy(self.receipt)
+        changed['app_source'] = '2' * 40
+        changed['artifacts'][0]['sha256'] = 'c' * 64
+        qualification.package_entry(changed, '2' * 40, '0.15.1')
+        with self.assertRaisesRegex(ValueError, 'Raw native evidence'):
+            qualification.seal(changed, 'd' * 64, self.native, '2' * 40, '0.15.1', FIXTURE)
+        with self.assertRaisesRegex(ValueError, 'Raw native evidence'):
+            qualification.seal(self.receipt, 'b' * 64, self.native, SOURCE, '0.15.1', 'e' * 64)
+        with self.assertRaisesRegex(ValueError, 'Raw native evidence'):
+            qualification.seal(self.receipt, 'd' * 64, self.native, SOURCE, '0.15.1', FIXTURE)
+        fresh = copy.deepcopy(self.native)
+        fresh['app_source'] = '2' * 40
+        fresh['package_receipt'] = {'sha256': 'd' * 64, 'package': changed['artifacts'][0]}
+        value = qualification.seal(changed, 'd' * 64, fresh, '2' * 40, '0.15.1', FIXTURE)
+        qualification.validate(value, changed, 'd' * 64, '2' * 40, '0.15.1', FIXTURE)
 
     def run_sealer(self):
         receipt, native, output = [self.root / name for name in ['package.json', 'native.json', 'qualified.json']]
         receipt.write_text(json.dumps(self.receipt))
-        native.write_text(json.dumps(self.native))
+        report = copy.deepcopy(self.native)
+        report['package_receipt']['sha256'] = qualification.sha(receipt)
+        native.write_text(json.dumps(report))
         with patch.object(Path, 'cwd', return_value=self.root), \
                 patch.object(qualification.subprocess, 'check_output', return_value=SOURCE), \
+                patch.object(qualification, 'fixture_sha256', return_value=FIXTURE), \
                 patch.object(sys, 'argv', ['seal', '--receipt', str(receipt), '--native-smoke', str(native), '--output', str(output)]):
             qualification.main()
         return output
@@ -139,12 +163,18 @@ class QualificationTests(unittest.TestCase):
         self.assertIn("runner.os == 'Linux' && (github.event_name != 'workflow_dispatch' || inputs.publish)", section)
         self.assertIn('ocr_task_presets_live -- --ignored --nocapture --test-threads=1', section)
         self.assertIn('rm -f "$CRISPSORTER_OCR_RECEIPT"', section)
+        self.assertLess(section.index('export CRISPSORTER_OCR_PACKAGE_RECEIPT='), section.index('cargo test'))
         self.assertIn('set -euo pipefail', section)
         self.assertNotIn('continue-on-error', section)
         self.assertNotIn('CRISPSORTER_ACCEPT_MODEL_LICENSE', section)
         self.assertNotIn('CRISPEMBED_ACCEPT_LICENSE', section)
         self.assertNotIn('--accept-license', section)
         self.assertIn("needs.release-required.result == 'success'", workflow.split('  publish:', 1)[1])
+        producer = (ROOT / 'src-tauri/src/extractors/ocr_crispembed.rs').read_text()
+        self.assertIn('"schema":"crispsorter-native-ocr-presets-v1"', producer)
+        self.assertIn('"app_source":app_source', producer)
+        self.assertIn('"sha256":fixture_sha256', producer)
+        self.assertIn('"package_receipt":package_receipt', producer)
 
     def test_clean_package_control_provisions_only_explicit_permissive_models(self):
         def plan(installed):
