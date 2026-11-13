@@ -463,7 +463,9 @@ struct DavResponse {
 /// Resilient to unfamiliar properties (we only read what we ask for).
 fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
     let mut reader = Reader::from_str(body);
-    reader.config_mut().trim_text(true);
+    // References, CDATA and comments split text events. Trim only complete
+    // metadata fields below, otherwise spaces around an entity disappear.
+    reader.config_mut().trim_text(false);
 
     let mut out = Vec::new();
     let mut buf = Vec::new();
@@ -473,6 +475,12 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
     let mut text_buf = String::new();
 
     loop {
+        let collecting_text = path_stack.last().is_some_and(|name| {
+            matches!(
+                name.as_str(),
+                "href" | "displayname" | "getcontentlength" | "getlastmodified"
+            )
+        });
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
                 let local = local_name(&e.name().as_ref());
@@ -491,9 +499,40 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
                     }
                 }
             }
-            Ok(Event::Text(e)) => {
-                if let Ok(s) = e.xml_content() {
-                    text_buf.push_str(&s);
+            Ok(Event::Text(e)) if collecting_text => {
+                text_buf.push_str(
+                    &e.xml10_content()
+                        .map_err(|e| anyhow!("propfind text error: {e}"))?,
+                );
+            }
+            Ok(Event::CData(e)) if collecting_text => {
+                text_buf.push_str(
+                    &e.xml10_content()
+                        .map_err(|e| anyhow!("propfind CDATA error: {e}"))?,
+                );
+            }
+            Ok(Event::GeneralRef(e)) if collecting_text => {
+                if let Some(ch) = e
+                    .resolve_char_ref()
+                    .map_err(|e| anyhow!("propfind reference error: {e}"))?
+                {
+                    // XML 1.0 Char production; Rust char alone also allows
+                    // forbidden control characters and U+FFFE/U+FFFF.
+                    if !matches!(ch, '\t' | '\n' | '\r' | '\u{20}'..='\u{D7FF}' | '\u{E000}'..='\u{FFFD}' | '\u{10000}'..='\u{10FFFF}')
+                    {
+                        return Err(anyhow!(
+                            "propfind invalid XML character reference: U+{:04X}",
+                            ch as u32
+                        ));
+                    }
+                    text_buf.push(ch);
+                } else {
+                    let name = e
+                        .decode()
+                        .map_err(|e| anyhow!("propfind reference error: {e}"))?;
+                    let value = quick_xml::escape::resolve_xml_entity(&name)
+                        .ok_or_else(|| anyhow!("propfind unknown entity: &{name};"))?;
+                    text_buf.push_str(value);
                 }
             }
             Ok(Event::End(e)) => {
@@ -501,8 +540,9 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
                 if let Some(ref mut r) = current {
                     match local.as_str() {
                         "href" => r.href = text_buf.trim().to_owned(),
-                        "displayname" if !text_buf.trim().is_empty() => {
-                            r.displayname = Some(text_buf.trim().to_owned())
+                        "displayname" if !text_buf.is_empty() => {
+                            // A display name is a filename: edge spaces are significant.
+                            r.displayname = Some(text_buf.clone())
                         }
                         "getcontentlength" if !text_buf.trim().is_empty() => {
                             r.contentlength = text_buf.trim().parse().ok()
@@ -1554,6 +1594,19 @@ mod tests {
         assert_eq!(parsed[0].displayname.as_deref(), Some("file.bin"));
         assert_eq!(parsed[0].contentlength, Some(42));
         assert!(!parsed[0].is_collection);
+    }
+
+    #[test]
+    fn parse_propfind_preserves_spaces_around_escaped_ampersand() {
+        let xml = r#"<d:multistatus xmlns:d="DAV:"><d:response>
+            <d:href>/dav/Sales%20%26%20Marketing.txt</d:href>
+            <d:propstat><d:prop>
+                <d:displayname>Sales &amp; Marketing.txt</d:displayname>
+            </d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat>
+        </d:response></d:multistatus>"#;
+        let parsed = parse_propfind(xml).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].displayname.as_deref(), Some("Sales & Marketing.txt"));
     }
 
     #[test]
