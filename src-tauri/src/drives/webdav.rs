@@ -313,6 +313,7 @@ impl WebDavDrive {
             return Ok(None);
         };
         let remote = Self::blockmap_from_server(&remote_map)?;
+        crate::sync::delta::validate_blockmap(&remote)?;
         let expected_etag = remote_map.etag.clone();
         let local = crate::sync::delta::compute_local_blockmap_against(local_path, &remote)?;
         let changed = crate::sync::delta::diff_blockmaps(&local, &remote)?;

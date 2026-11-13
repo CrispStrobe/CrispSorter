@@ -1,5 +1,7 @@
 This small harness compiles production delta calculations and staged in-place
-WebDAV downloads without Tauri, OCR models or networking. Run with one Cargo job:
+WebDAV uploads/downloads without Tauri, OCR models or networking. The harness
+extracts both production transfer methods and supplies a fake transport. Run
+with one Cargo job:
 
     CARGO_BUILD_JOBS=1 cargo test --locked --manifest-path tests/webdav-delta-contract/Cargo.toml
 
@@ -25,3 +27,15 @@ inspection/open follows existing symlinks and resolves ancestors, retaining the
 previous behavior. It is not an atomic no-follow open.
 Once opened, later path replacement cannot redirect commit: a moved original
 file remains the selected object. No pathname-race fix is claimed.
+
+Upload maps are checked for ordered, contiguous offsets, exact block lengths
+and complete file coverage before opening or hashing the local source. Diffing
+also validates both layouts, and downloads use the same validator. Regression
+tests exercise matching hashes with malformed offsets, sizes, coverage and extra
+blocks; the extracted upload method sends neither blocks nor finalize on invalid
+input. A valid changed-upload control verifies the fake transport records both.
+
+Follow-up: a valid server-selected giant block size can still cause upload
+hashing and block requests to allocate a whole block. Streaming upload hashing
+and request bodies remain unimplemented. Block-map JSON parsing also remains
+unbounded; this layout validation change does not impose a metadata/body limit.
