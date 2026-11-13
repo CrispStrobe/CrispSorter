@@ -294,7 +294,7 @@ def sanitize_output(text, roots=()):
             value,
         )
         for root in sorted(map(str, roots), key=len, reverse=True):
-            if root:
+            if root and root != Path(root).anchor:
                 value = value.replace(root, "<local-path>")
         return value
 
@@ -341,6 +341,8 @@ def sanitize_output(text, roots=()):
 
     def structured(value, depth=0):
         value = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", value)
+        if re.fullmatch(r'"disk[0-9]{1,4}(?:s[0-9]{1,4})?" ejected\.\s*', value):
+            return plain(value)
         if value.lstrip().startswith('"'):
             return json.dumps(
                 tree(json.loads(value.strip()), depth + 1), ensure_ascii=True
@@ -710,6 +712,72 @@ def probe(apps, fixture, env, output):
     return bool(good), records, provisioned
 
 
+def cleanup_mount(mount, output):
+    """Detach only the owned active mount, without force or automatic retries."""
+    result = {
+        "status": "failed",
+        "attempted": False,
+        "mount_present_before": None,
+        "mount_present_after": None,
+        "scope": "Normal detach of this replay's owned read-only DMG mount only",
+    }
+    try:
+        if (
+            mount.name != "mount"
+            or mount.parent.resolve() != output.resolve()
+            or mount.is_symlink()
+        ):
+            raise ValueError("Refusing cleanup of an unowned or symlinked mount path")
+        result["mount_present_before"] = mount.is_mount()
+        if not result["mount_present_before"]:
+            result["reason"] = (
+                "Owned mount is not active; detach was not attempted and cleanup is not established"
+            )
+        else:
+            env = app_env(output / "cleanup-home")
+            result["attempted"] = True
+            record, _ = command(
+                Path("/usr/bin/hdiutil"),
+                ["detach", str(mount)],
+                env,
+                output,
+                "dmg-detach",
+                timeout=30,
+            )
+            result["command"] = record
+            result["mount_present_after"] = mount.is_mount()
+            if completed(record) and result["mount_present_after"] is False:
+                result["status"] = "detached"
+            else:
+                result["reason"] = (
+                    "Detach command or mount-absence check failed; inspect retained bounded diagnostics"
+                )
+    except Exception as error:
+        result["error_type"] = type(error).__name__
+        result["error"] = sanitize(str(error), [str(output), str(mount)])
+    (output / "dmg-cleanup.json").write_text(json.dumps(result, indent=2) + "\n")
+    return result
+
+
+def finalize_cleanup(result, mount, output):
+    try:
+        if mount is not None:
+            result["cleanup"] = cleanup_mount(mount, output)
+            result["detach_failed"] = result["cleanup"]["status"] != "detached"
+            if result["detach_failed"]:
+                result["status"] = "failed"
+    except Exception as error:
+        # Cleanup diagnostics must not replace the original probe/error.
+        result["status"] = "failed"
+        result["detach_failed"] = True
+        result["cleanup_recording_error"] = {
+            "type": type(error).__name__,
+            "message": sanitize(str(error), [str(output)]),
+        }
+    finally:
+        (output / "observation.json").write_text(json.dumps(result, indent=2) + "\n")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", required=True)
@@ -827,14 +895,7 @@ def main():
             "macOS package replay failed; inspect retained sanitized observation and command outputs"
         ) from None
     finally:
-        if mount is not None:
-            detached = subprocess.run(
-                ["hdiutil", "detach", str(mount)], capture_output=True
-            )
-            if detached.returncode:
-                result["status"] = "failed"
-                result["detach_failed"] = True
-        (output / "observation.json").write_text(json.dumps(result, indent=2) + "\n")
+        finalize_cleanup(result, mount, output)
     if result["status"] != "passed":
         raise SystemExit(1)
 

@@ -127,3 +127,28 @@ current draft state, download models, assess signatures, or reconstruct missing
 original compiled-source receipts. The original ZIP and observation remain
 unchanged. This is a review of existing sanitized evidence, not a new successful
 macOS replay, signing result or release receipt.
+
+## Future DMG cleanup diagnostics
+
+The historical detach failure cannot be diagnosed from retained evidence: its
+stdout/stderr and timeout state were not recorded. The app's worker code waits
+for its child process; no retained evidence establishes an orphaned worker or
+justifies forced ejection, process killing outside the invoked utility, or an
+automatic retry.
+
+Future replay cleanup detaches only the owned active mount path. It invokes the
+normal `/usr/bin/hdiutil detach` once, with a credential-free environment and a
+30-second limit. Bounded sanitized stdout/stderr and command metadata are
+retained as `dmg-detach.*`; `dmg-cleanup.json` records mount presence before and
+after. Cleanup requires both complete successful command evidence and absence
+of that mount afterward. Inactive, unowned or symlinked paths are not detached
+and do not establish cleanup. Timeouts, pipe failures, rejected diagnostics,
+nonzero exits and a remaining mount all fail closed. Cleanup/recording exceptions
+cannot erase the original probe error or stop final observation persistence.
+
+These changes do not repair or relabel the historical result. New macOS
+execution is needed to establish future cleanup behavior and obtain any actual
+rejection. A basic mount/detach control could reuse only the pinned DMG without
+building or downloading models; it would not establish cleanup after native app
+execution or explain the original failure. No new hosted replay was dispatched
+while preparing this change.
