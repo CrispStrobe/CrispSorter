@@ -55,7 +55,7 @@ fn inventory_with_limits(
         File {
             path: PathBuf,
             relative: String,
-            size: u64,
+            listing_size: Option<u64>,
         },
     }
     anyhow::ensure!(
@@ -72,16 +72,16 @@ fn inventory_with_limits(
     let mut planned = Vec::new();
     while let Some(task) = pending.pop() {
         match task {
-            Task::File {
-                path,
-                relative,
-                size,
-            } => {
-                let mtime_unix = drive.stat(&path)?.mtime_unix;
+            Task::File { path, relative, listing_size } => {
+                let metadata = drive.stat(&path)?;
+                anyhow::ensure!(!metadata.is_dir, "provider file became a directory during inventory");
                 planned.push(crate::sync::pairs::SyncRemoteEntry {
                     relative_path: relative,
-                    size,
-                    mtime_unix,
+                    // Some adapters encode an unavailable stat size as zero.
+                    // Prefer nonzero stat sizes without discarding a listing's
+                    // known size when stat cannot distinguish unknown/empty.
+                    size: if metadata.size == 0 { listing_size.unwrap_or(0) } else { metadata.size },
+                    mtime_unix: metadata.mtime_unix,
                 });
             }
             Task::Directory {
@@ -130,7 +130,7 @@ fn inventory_with_limits(
                         pending.push(Task::File {
                             path: child,
                             relative,
-                            size: entry.size.unwrap_or(0),
+                            listing_size: entry.size,
                         });
                     }
                 }
@@ -246,6 +246,99 @@ mod tests {
         assert_eq!(output.len(), 1);
         assert_eq!(output[0].relative_path, "日本語 folder/Prüfung%2F.pdf");
         assert_eq!(output[0].size, 8);
+    }
+
+    struct ListingSizeDrive {
+        local: LocalDrive,
+        listing_size: Option<u64>,
+        stat_size: Option<u64>,
+        stat_is_dir: bool,
+    }
+    impl CloudDrive for ListingSizeDrive {
+        fn label(&self) -> &str { "listing-size" }
+        fn drive_type(&self) -> DriveType { DriveType::Local }
+        fn list_dir(&self, path: &Path) -> anyhow::Result<Vec<DirEntry>> {
+            let mut entries = self.local.list_dir(path)?;
+            for entry in &mut entries {
+                if !entry.is_dir { entry.size = self.listing_size; }
+            }
+            Ok(entries)
+        }
+        fn stat(&self, path: &Path) -> anyhow::Result<FileStat> {
+            let mut metadata = self.local.stat(path)?;
+            if let Some(size) = self.stat_size { metadata.size = size; }
+            metadata.is_dir = self.stat_is_dir;
+            Ok(metadata)
+        }
+        fn read_file_to_writer(&self, path: &Path, writer: &mut dyn std::io::Write) -> anyhow::Result<u64> {
+            self.local.read_file_to_writer(path, writer)
+        }
+        fn read_file(&self, _: &Path) -> anyhow::Result<Vec<u8>> { panic!("pull used whole-file API") }
+        fn write_file(&self, _: &Path, _: &[u8]) -> anyhow::Result<()> { panic!("pull uploaded bytes") }
+        fn delete(&self, _: &Path) -> anyhow::Result<()> { panic!("pull deleted bytes") }
+    }
+
+    #[tokio::test]
+    async fn inventory_sizes_reach_download_with_missing_stale_or_ambiguous_metadata() {
+        use crate::sync::transfer_queue::{TransferQueue, TransferState};
+        for (listing_size, stat_size, content, expected_size, succeeds) in [
+            (None, None, &b"complete document"[..], 17, true),
+            (Some(1), None, &b"complete document"[..], 17, true),
+            (Some(100), None, &b"complete document"[..], 17, true),
+            (Some(17), Some(0), &b"complete document"[..], 17, true),
+            (None, Some(0), &b""[..], 0, true),
+            (Some(0), Some(0), &b""[..], 0, true),
+            // Zero can mean either unknown or empty. Retain bounded transfer
+            // validation instead of silently accepting contradictory metadata.
+            (Some(17), Some(0), &b""[..], 17, false),
+            (None, Some(0), &b"complete document"[..], 0, false),
+        ] {
+            let remote = tempfile::tempdir().unwrap();
+            let local = tempfile::tempdir().unwrap();
+            std::fs::write(remote.path().join("source.bin"), content).unwrap();
+            let drive = std::sync::Arc::new(ListingSizeDrive {
+                local: LocalDrive::new("inventory", remote.path()), listing_size, stat_size, stat_is_dir: false,
+            });
+            let mut inventory = Vec::new();
+            inventory_remote(drive.as_ref(), remote.path(), "", &[], &[], &mut inventory).unwrap();
+            assert_eq!(inventory.len(), 1);
+            let entry = &inventory[0];
+            assert_eq!(entry.size, expected_size);
+            assert_eq!(entry.mtime_unix, drive.stat(&remote.path().join("source.bin")).unwrap().mtime_unix);
+            let destination = local.path().join("download.bin");
+            std::fs::write(&destination, b"previous").unwrap();
+            let transfer = TransferQueue::with_concurrency(1).submit_drive_download_to_file(
+                "inventory".into(), drive, remote.path().join(&entry.relative_path),
+                destination.clone(), Some(entry.size),
+            );
+            let progress = transfer.progress_rx.clone();
+            assert_eq!(progress.borrow().bytes_total, Some(expected_size));
+            let result = transfer.handle.await.unwrap();
+            if succeeds {
+                assert_eq!(result.unwrap(), content.len() as u64);
+                assert_eq!(std::fs::read(destination).unwrap(), content);
+                assert_eq!(progress.borrow().state, TransferState::Done);
+            } else {
+                assert!(result.is_err());
+                assert_eq!(std::fs::read(destination).unwrap(), b"previous");
+                assert!(matches!(progress.borrow().state, TransferState::Failed { .. }));
+            }
+            assert_eq!(std::fs::read_dir(local.path()).unwrap().count(), 1);
+        }
+    }
+
+    #[test]
+    fn file_changed_to_directory_preserves_existing_inventory() {
+        let remote = tempfile::tempdir().unwrap();
+        std::fs::write(remote.path().join("source.bin"), b"content").unwrap();
+        let drive = ListingSizeDrive {
+            local: LocalDrive::new("inventory", remote.path()),
+            listing_size: Some(7), stat_size: None, stat_is_dir: true,
+        };
+        let mut output = vec![marker()];
+        let error = inventory_remote(&drive, remote.path(), "", &[], &[], &mut output).unwrap_err();
+        assert!(error.to_string().contains("became a directory"));
+        assert_eq!(output, [marker()]);
     }
 
     struct ScriptedDrive {
