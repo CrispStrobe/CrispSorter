@@ -67,7 +67,7 @@ class DesktopModels(unittest.TestCase):
                 self.assertTrue(state['ocr'])
 
     def test_failure_diagnostics_are_bounded_and_safe(self):
-        for secret in ('{"token":"SECRET-SENTINEL"}', 'https://user:SECRET-SENTINEL@host/x', 'https://host/x?key=SECRET-SENTINEL', 'Bearer SECRET-SENTINEL'):
+        for secret in ('{"token":"SECRET-SENTINEL"}', 'https://user:SECRET-SENTINEL@host/x', 'https://host/x?key=SECRET-SENTINEL', 'Bearer SECRET-SENTINEL', 'token: C:\\private\\cache\nSECRET-SENTINEL'):
             error = subprocess.CalledProcessError(1, ['app'], output='', stderr=secret)
             with patch.object(verifier.subprocess, 'run', side_effect=error):
                 with self.assertRaises(RuntimeError) as caught:
@@ -80,6 +80,19 @@ class DesktopModels(unittest.TestCase):
                     verifier.run_packaged(['app'], Path('/tmp'), {}, 10)
             self.assertNotIn('SECRET-SENTINEL', str(caught.exception))
             self.assertIn('Windows path content', str(caught.exception))
+        for path in (r'C:\Users\PRIVATE-USER\temp\PRIVATE-FILE', r'\\PRIVATE-SERVER\PRIVATE-SHARE\PRIVATE-FILE', r'C:/PRIVATE-USER/PRIVATE-FILE'):
+            error = subprocess.CalledProcessError(1, ['app'],
+                output='loading ' + path + '\nmissing OCR models dbnet-det, trocr-printed',
+                stderr='model cache: ' + path + '\nruntime could not initialize DBNet')
+            with patch.object(verifier.subprocess, 'run', side_effect=error):
+                with self.assertRaises(RuntimeError) as caught:
+                    verifier.run_packaged(['app'], Path('/tmp'), {}, 10)
+            text = str(caught.exception)
+            self.assertNotIn('PRIVATE', text)
+            self.assertNotIn('loading', text)
+            self.assertNotIn('model cache', text)
+            self.assertIn('missing OCR models dbnet-det, trocr-printed', text)
+            self.assertIn('runtime could not initialize DBNet', text)
         for error in (subprocess.CalledProcessError(1, ['app'], stderr='missing OCR models dbnet-det'),
                       subprocess.TimeoutExpired(['app'], 1, stderr=b'model download stalled')):
             with patch.object(verifier.subprocess, 'run', side_effect=error):

@@ -121,11 +121,17 @@ def run_packaged(command, destination, env, timeout):
         raw = decoded(error.stdout) + '\n' + decoded(error.stderr)
         if len(raw) > 256 * 1024:
             diagnostics = '<diagnostics withheld: output exceeds safe diagnostic bound>'
-        elif re.search(r'(?:[A-Za-z]:[\\/]|\\\\[^\\\s])', raw):
-            # Backslash escape decoding can change Windows path spellings
-            # before redaction. Withhold rather than expose a partial path.
-            diagnostics = '<diagnostics withheld: Windows path content>'
+        elif sanitize_output(raw)[1] != 'sanitized':
+            # Inspect credentials before omitting lines: a path-bearing line
+            # could contain the label for a secret on the following line.
+            diagnostics = '<diagnostics withheld: sensitive or ambiguous content>'
         else:
+            # Inspect original lines before escape decoding can turn a path's
+            # backslashes into tabs/newlines. Omit the complete path-bearing
+            # line, preserving separate actionable model/runtime messages.
+            raw = '\n'.join('<diagnostic line omitted: Windows path content>'
+                            if re.search(r'(?:[A-Za-z]:[\\/]|\\\\[^\\\s])', line) else line
+                            for line in raw.splitlines())
             diagnostics, _ = sanitize_output(raw, [destination, Path.cwd(), Path.home()])
             diagnostics = diagnostics[-8000:]
         status = f'exit {error.returncode}' if isinstance(error, subprocess.CalledProcessError) else 'timeout'
