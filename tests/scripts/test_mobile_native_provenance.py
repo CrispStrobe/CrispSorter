@@ -29,14 +29,10 @@ class NativeProvenanceTests(unittest.TestCase):
         if sheen:
             (source / 'vendor/sheenbidi/Source').mkdir()
             (source / 'vendor/sheenbidi/Source/SheenBidi.c').write_text('// self-authored source fixture; never compiled\n')
-        for checkout in (source / 'ggml', source):
-            for args in (['init', '-q'], ['add', '.'],
-                         ['-c', 'user.name=Provenance control', '-c', 'user.email=provenance-control@example.invalid', 'commit', '-qm', 'fixture']):
-                subprocess.run(['git', '-C', str(checkout), *args], check=True, capture_output=True, timeout=30)
         (output / 'lib').mkdir(parents=True)
         library = output / 'lib' / ('libcrispembed.so' if platform == 'android' else 'libcrispembed.a')
         library.write_bytes(b'self-authored artifact identity fixture; never executed')
-        lock = {'native_components': {'sheenbidi': {'source_tree': provenance.git(source, 'rev-parse', 'HEAD:vendor/sheenbidi')}}} if sheen else {}
+        lock = {'native_components': {'sheenbidi': {}}} if sheen else {}
         return source, output, library, lock
 
     def collect(self, source, output, library, lock, platform='android'):
@@ -67,6 +63,15 @@ class NativeProvenanceTests(unittest.TestCase):
                 (artifact / 'bin' / notice.name).write_bytes(notice.read_bytes())
         return artifact
 
+    def test_notice_collection_can_repeat_and_preserves_unrelated_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, output, library, lock = self.fixture(root)
+            first = self.collect(source, output, library, lock)
+            marker = output / 'notices/keep.txt'; marker.write_text('unrelated')
+            self.assertEqual(first, self.collect(source, output, library, lock))
+            self.assertEqual(marker.read_text(), 'unrelated')
+
     def test_source_notice_blobs_and_vendor_tree_survive_android_packaging(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -76,7 +81,6 @@ class NativeProvenanceTests(unittest.TestCase):
             result = provenance.verify_packaged(artifact, 'android', output, runtime, lock)
             self.assertEqual(len(result['packaged_notices']), 10)
             component = result['components']['sheenbidi']
-            self.assertEqual(component['source_tree'], lock['native_components']['sheenbidi']['source_tree'])
             self.assertEqual(component['artifacts'][library.name]['defined_symbols'], list(provenance.SHEEN_SYMBOLS))
 
     def test_old_source_without_vendor_still_carries_existing_native_notices(self):
@@ -88,13 +92,16 @@ class NativeProvenanceTests(unittest.TestCase):
             self.assertEqual(result['components'], {})
             self.assertEqual(len(result['packaged_notices']), 7)
 
-    def test_required_vendor_must_match_immutable_source_tree(self):
+    def test_required_native_component_must_be_present_without_git_tree_gate(self):
         for sheen in (False, True):
             with self.subTest(sheen=sheen), tempfile.TemporaryDirectory() as directory:
                 source, output, library, lock = self.fixture(Path(directory), sheen=sheen)
                 lock = {'native_components': {'sheenbidi': {'source_tree': 'f' * 40}}}
-                with self.assertRaisesRegex(ValueError, 'source tree differs'):
+                if sheen:
                     self.collect(source, output, library, lock)
+                else:
+                    with self.assertRaisesRegex(ValueError, 'missing a required component'):
+                        self.collect(source, output, library, lock)
 
     def test_missing_or_undefined_symbols_do_not_count_as_embedded_implementation(self):
         complete = ['00000010 T ' + symbol for symbol in provenance.SHEEN_SYMBOLS]
@@ -103,19 +110,15 @@ class NativeProvenanceTests(unittest.TestCase):
                 provenance.defined_sheen_symbols('\n'.join([replacement, *complete[1:]]))
         self.assertEqual(provenance.defined_sheen_symbols('\n'.join('00000010 T _' + symbol for symbol in provenance.SHEEN_SYMBOLS)), list(provenance.SHEEN_SYMBOLS))
 
-    def test_changed_or_symlinked_source_notices_are_rejected(self):
-        for mode in ('changed', 'symlink'):
-            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                source, output, library, lock = self.fixture(root)
-                notice = source / 'vendor/sheenbidi/LICENSE'
-                if mode == 'changed':
-                    notice.write_text('uncommitted content')
-                else:
-                    notice.unlink()
-                    notice.symlink_to(source / 'LICENSE')
-                with self.assertRaises(ValueError):
-                    self.collect(source, output, library, lock)
+    def test_actual_source_notice_bytes_are_copied_but_symlinks_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, output, library, lock = self.fixture(Path(directory))
+            notice = source / 'vendor/sheenbidi/LICENSE'
+            notice.write_text('current source notice')
+            self.collect(source, output, library, lock)
+            self.assertEqual((output / 'notices/SheenBidi-LICENSE.txt').read_text(), 'current source notice')
+            notice.unlink(); notice.symlink_to(source / 'LICENSE')
+            with self.assertRaises(ValueError): self.collect(source, output, library, lock)
 
     def test_missing_changed_and_duplicate_app_notices_are_rejected(self):
         for mode in ('missing', 'changed', 'duplicate'):

@@ -4,15 +4,19 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import io
+import json
+import sys
 from pathlib import Path
 import stat
 import struct
 import tempfile
 import unittest
 import zipfile
+from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts/prepare_mobile_ort.py"
+sys.path.insert(0, str(SCRIPT.parent))
 SPEC = importlib.util.spec_from_file_location("prepare_mobile_ort", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 MODULE = importlib.util.module_from_spec(SPEC)
@@ -34,6 +38,50 @@ def elf(*, machine=62, alignment=16384, dependency="libc.so"):
 
 
 class MobileOrtTests(unittest.TestCase):
+    def runtime_fixture(self, root):
+        archive = root / "fixture.aar"
+        header = b"#define ORT_API_VERSION 23\n"
+        binary = elf()
+        with zipfile.ZipFile(archive, "w") as bundle:
+            bundle.writestr("headers/onnxruntime_c_api.h", header)
+            bundle.writestr("jni/x86_64/libonnxruntime.so", binary)
+        data = archive.read_bytes()
+        lock = {"android": {"url":"https://fixture.invalid/runtime.aar", "filename":"runtime.aar", "version":"fixture",
+                "bytes":len(data), "sha256":MODULE.sha256(data),
+                "libraries":{"x86_64":{"bytes":len(binary), "sha256":MODULE.sha256(binary)}}},
+                "header_sha256":MODULE.sha256(header), "api_version":23, "rust_binding":"fixture",
+                "notices":[{"filename":"LICENSE", "bytes":7, "sha256":MODULE.sha256(b"license")}]}
+        return archive, lock
+
+    def test_normal_rerun_repairs_outputs_and_partial_cache_without_deleting_unrelated_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); archive, lock = self.runtime_fixture(root)
+            output = root / "ort"; lock_path = root / "lock.json"; lock_path.write_text(json.dumps(lock))
+            argv = ["prepare", "--target", "android-x86_64", "--output", str(output), "--lock", str(lock_path)]
+            def download(pin): return archive.read_bytes() if pin.get("filename") == "runtime.aar" else b"license"
+            with patch.object(sys, 'argv', argv), patch.object(MODULE, 'download', side_effect=download): MODULE.main()
+            marker = output / "keep.txt"; marker.write_text("unrelated")
+            (output / "lib/libonnxruntime.so").write_bytes(b"partial generated library")
+            with patch.object(sys, 'argv', argv), patch.object(MODULE, 'download', side_effect=AssertionError("cache should suffice")):
+                MODULE.main()
+            self.assertEqual((output / "lib/libonnxruntime.so").read_bytes(), elf())
+            cache = root / "ort-runtime.aar"; cache.write_bytes(b"partial cached download")
+            with patch.object(sys, 'argv', argv), patch.object(MODULE, 'download', side_effect=download) as fetch:
+                MODULE.main(); self.assertEqual(fetch.call_count, 1)
+            self.assertEqual(marker.read_text(), "unrelated")
+            self.assertEqual(cache.read_bytes(), archive.read_bytes())
+            self.assertEqual(json.loads((output / "ort-runtime.json").read_text())["target"], "android-x86_64")
+
+    def test_rerun_refuses_symlinked_generated_paths_without_changing_referent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); archive, lock = self.runtime_fixture(root)
+            output = root / "ort"; (output / "lib").mkdir(parents=True)
+            sentinel = root / "sentinel"; sentinel.write_bytes(b"unrelated")
+            (output / "lib/libonnxruntime.so").symlink_to(sentinel)
+            with self.assertRaisesRegex(ValueError, "regular file"):
+                MODULE.extract(archive, output, "android-x86_64", lock)
+            self.assertEqual(sentinel.read_bytes(), b"unrelated")
+
     def test_android_rejects_wrong_abi_alignment_and_unbundled_cpp_runtime(self):
         details = MODULE.android_details(elf(), "x86_64")
         self.assertEqual(details["dependencies"], ["libc.so"])

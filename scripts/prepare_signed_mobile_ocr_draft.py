@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Prepare only a production-pinned, unpublished mobile OCR build environment."""
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -14,6 +13,8 @@ from check_mobile_release_layout import check as check_layout
 from check_mobile_release_profile import profile
 from check_release_versions import check_versions
 from mobile_qualification_lock import select_lock
+from mobile_native_provenance import BASE_NOTICES, SHEEN_NOTICES
+from mobile_staging_paths import directory, output_file
 from prepare_ocr_cargo_env import prepare as prepare_cargo
 
 RUNTIME_LOCK = 'scripts/ocr-mobile-runtime-lock.json'
@@ -22,7 +23,9 @@ TARGETS = {'android-arm64': 'aarch64-linux-android', 'ios-arm64': 'aarch64-apple
 
 
 def prepare(project, output, target, embed_commit, asr_ref, docx_ref, protoc, ndk=None):
-    description = profile('ocr-draft')
+    profile('ocr-draft')
+    if output.is_symlink() or (output.exists() and not output.is_dir()):
+        raise ValueError('Draft staging must be a regular directory')
     project, output = project.resolve(), output.resolve()
     if os.environ.get('CRISPSORTER_RELEASE_SELECTOR') != {'android-arm64': 'android_ocr_draft', 'ios-arm64': 'ios_ocr_draft'}.get(target):
         raise ValueError('Draft target differs from its explicit selector')
@@ -34,16 +37,13 @@ def prepare(project, output, target, embed_commit, asr_ref, docx_ref, protoc, nd
     resources = project / 'src-tauri/bin'
     if resources.is_symlink() or (resources.exists() and not resources.is_dir()):
         raise ValueError('Native resource staging must be a regular directory')
-    if output.exists():
-        raise ValueError('Choose a fresh draft staging directory')
     production = select_lock(PRODUCTION_LOCK, project)
     runtime = select_lock(RUNTIME_LOCK, project)
     if production['source'] != runtime['source'] or runtime['source'] != embed_commit:
         raise ValueError('Draft runtime must use the existing production source pin')
-    version = check_versions(project)
-    layout = check_layout(project, embed_commit, asr_ref, docx_ref, require_ocr_lock=True)
-    output.mkdir(parents=True)
-    (output / 'layout.json').write_text(json.dumps(layout, indent=2) + '\n')
+    check_versions(project)
+    check_layout(project, embed_commit, asr_ref, docx_ref, require_ocr_lock=True)
+    directory(output)
     build_runtime(project.parent / 'CrispEmbed', output / 'runtime', target, 2, ndk, project / RUNTIME_LOCK)
     subprocess.run([sys.executable, str(project / 'scripts/prepare_mobile_ort.py'),
                     '--target', target, '--output', str(output / 'ort')], cwd=project, check=True)
@@ -52,19 +52,17 @@ def prepare(project, output, target, embed_commit, asr_ref, docx_ref, protoc, nd
                   ort_lib_dir=ort / 'lib' if target.startswith('android-') else None,
                   ort_xcframework=ort / 'onnxruntime.xcframework' if target == 'ios-arm64' else None)
     resources.mkdir(exist_ok=True)
-    shutil.copy2(output / 'runtime/runtime-build.json', resources / 'ocr-mobile-runtime.json')
-    for notice in (output / 'runtime/notices').iterdir():
+    shutil.copy2(output / 'runtime/runtime-build.json', output_file(resources, 'ocr-mobile-runtime.json'))
+    native = json.loads((output / 'runtime/runtime-build.json').read_text())
+    for name in native['native_provenance']['notices']:
+        if name not in BASE_NOTICES and name not in SHEEN_NOTICES:
+            raise ValueError('Unknown generated native notice filename')
+        notice = output / 'runtime/notices' / name
         if not notice.is_file() or notice.is_symlink():
             raise ValueError('Native notices must be regular files')
-        shutil.copy2(notice, resources / notice.name)
+        shutil.copy2(notice, output_file(resources, name))
     for source, name in [('LICENSE', 'onnxruntime-LICENSE.txt'), ('ThirdPartyNotices.txt', 'onnxruntime-ThirdPartyNotices.txt')]:
-        shutil.copy2(ort / 'notices' / source, resources / name)
-    record = {'schema': 'crispsorter-signed-ocr-draft-preparation-v1', 'target': target,
-              'app_source': layout['app_source'], 'production_source': production['source'], 'version': version,
-              'runtime_lock': RUNTIME_LOCK,
-              'runtime_lock_sha256': hashlib.sha256((project / RUNTIME_LOCK).read_bytes()).hexdigest(),
-              'profile': description, 'qualification': 'Not established; build preparation only'}
-    (output / 'preparation.json').write_text(json.dumps(record, indent=2) + '\n')
+        shutil.copy2(ort / 'notices' / source, output_file(resources, name))
     environment = {'OCR_DRAFT_ROOT': str(output), 'CRISPEMBED_SYS_LIB_DIR': str(output / 'runtime/lib'),
             'OCR_ORT_ROOT': str(ort), 'LICENSES_REQUIRE': '1',
             'LICENSES_CARGO_TARGET': TARGETS[target],

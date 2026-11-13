@@ -777,3 +777,15 @@ other languages, mobile devices or the release license inventory.
 ### Standard 0.15.2 internal TestFlight
 
 The standard 0.15.2 iOS build was accepted as valid and assigned to Internal Testers. It omits native OCR; no physical-device or OCR quality qualification is implied.
+
+### Repeating signed OCR draft preparation
+
+Repeat preparation with the same staging directory after interruption or success.
+Known native/ORT outputs are rebuilt or refreshed while unrelated files remain.
+A valid pinned ORT archive and notices are reused; corrupt generated cache bytes
+are fetched again, and explicitly supplied archives must still match their pins.
+Symlinked generated files/directories are rejected instead of overwriting their
+referents. The build still checks configured dependency revisions, layout,
+versions, native ABI/dependencies, required symbols and actual packaged notices.
+Local edits and unused preparation/source reports do not gate a retry. This does
+not substitute for a signed platform build or device execution.

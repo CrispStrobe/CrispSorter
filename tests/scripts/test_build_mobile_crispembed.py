@@ -13,22 +13,15 @@ spec.loader.exec_module(mobile)
 
 
 class BuildTests(unittest.TestCase):
-    def test_source_and_submodule_must_match_and_be_clean(self):
+    def test_configured_source_and_submodule_match_without_clean_tree_gate(self):
         lock = {'source_commit': 'source', 'ggml_commit': 'ggml'}
         source = Path('/checkout')
-        values = {('rev-parse', 'HEAD'): 'source', ('status', '--porcelain', '--untracked-files=all'): ''}
         def fake_git(repo, *args):
-            if repo == source / 'ggml' and args == ('rev-parse', 'HEAD'):
-                return 'ggml'
-            return values[args]
-        with patch.object(mobile, 'git', side_effect=fake_git):
-            mobile.check_source(source, lock)
-            values[('status', '--porcelain', '--untracked-files=all')] = ' M source.cpp'
-            with self.assertRaisesRegex(ValueError, 'must be clean'):
-                mobile.check_source(source, lock)
+            self.assertEqual(args, ('rev-parse', 'HEAD'))
+            return 'ggml' if repo == source / 'ggml' else 'source'
+        with patch.object(mobile, 'git', side_effect=fake_git): mobile.check_source(source, lock)
         with patch.object(mobile, 'git', return_value='wrong'):
-            with self.assertRaisesRegex(ValueError, 'does not match'):
-                mobile.check_source(source, lock)
+            with self.assertRaisesRegex(ValueError, 'does not match'): mobile.check_source(source, lock)
 
     def test_ios_requires_complete_archives(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -48,18 +41,26 @@ class BuildTests(unittest.TestCase):
                 self.assertIn(build / 'libcrispembed-core.a', run.call_args.args[0])
                 self.assertIn(build / 'ggml/libggml-metal.a', run.call_args.args[0])
 
-    def test_rejects_checkout_or_nonempty_output_before_running_build(self):
+    def test_rerun_rebuilds_and_revalidates_without_clearing_unrelated_output(self):
+        import json
         with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            source, output = root / 'source', root / 'output'
-            source.mkdir()
-            output.mkdir()
-            (output / 'old').touch()
+            root = Path(temp); source = root / 'source'; source.mkdir()
+            output = root / 'output'; output.mkdir()
+            marker = output / 'keep.txt'; marker.write_text('unrelated')
+            lock = root / 'lock.json'; lock.write_text('{"source_commit":"source","ggml_commit":"ggml"}')
+            def run(args, **kwargs):
+                if args[:2] == ['cmake', '--build']:
+                    (output / 'build/libcrispembed.so').write_bytes(b'new native runtime')
+            with patch.object(mobile, 'check_source') as check, patch.object(mobile, 'configure_args', return_value=['cmake']), \
+                    patch.object(mobile, 'run', side_effect=run), patch.object(mobile, 'closure', return_value=['libcrispembed.so']) as closure, \
+                    patch.object(mobile, 'collect_native_provenance', return_value={}) as notices:
+                for _ in range(2): mobile.build_runtime(source, output, 'android-arm64', 1, None, lock)
+                self.assertEqual(check.call_count, 4); self.assertEqual(closure.call_count, 2); self.assertEqual(notices.call_count, 2)
+            self.assertEqual(marker.read_text(), 'unrelated')
+            self.assertEqual((output / 'lib/libcrispembed.so').read_bytes(), b'new native runtime')
             with patch.object(mobile, 'check_source') as check:
-                with self.assertRaisesRegex(ValueError, 'must be empty'):
-                    mobile.build_runtime(source, output, 'android-arm64', 1, None)
                 with self.assertRaisesRegex(ValueError, 'outside the source'):
-                    mobile.build_runtime(source, source / 'build', 'android-arm64', 1, None)
+                    mobile.build_runtime(source, source / 'build', 'android-arm64', 1, None, lock)
                 check.assert_not_called()
 
     def test_android_disables_unpinned_optional_siblings(self):

@@ -20,6 +20,8 @@ import urllib.parse
 import urllib.request
 import zipfile
 
+from mobile_staging_paths import directory, output_file
+
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGETS = {"android-arm64": ("android", "arm64-v8a"), "android-x86_64": ("android", "x86_64"),
@@ -35,6 +37,13 @@ def sha256(data: bytes) -> str:
 def check_bytes(data: bytes, pin: dict, label: str) -> None:
     if len(data) != pin["bytes"] or sha256(data) != pin["sha256"]:
         raise ValueError(f"{label} differs from its committed length/SHA-256 pin")
+
+
+def cached_bytes(path, pin):
+    if path.is_symlink() or not path.is_file() or path.stat().st_size != pin["bytes"]:
+        return None
+    data = path.read_bytes()
+    return data if sha256(data) == pin["sha256"] else None
 
 
 class HttpsRedirects(urllib.request.HTTPRedirectHandler):
@@ -154,8 +163,8 @@ def extract(archive_path: Path, output: Path, target: str, lock: dict) -> dict:
     platform, identifier = TARGETS[target]
     pin = lock[platform]
     check_bytes(archive_path.read_bytes(), pin, "runtime archive")
-    if output.exists() or output.is_symlink():
-        raise ValueError("choose a new empty output path for runtime staging")
+    if output.is_symlink() or (output.exists() and not output.is_dir()):
+        raise ValueError("Runtime staging must be a regular directory")
     files = {}
     with zipfile.ZipFile(archive_path) as archive:
         entries = members(archive)
@@ -195,11 +204,9 @@ def extract(archive_path: Path, output: Path, target: str, lock: dict) -> dict:
                        "minimum_os_version": info.get("MinimumOSVersion")}
     if sum(len(data) for data in files.values()) > MAX_ARCHIVE_BYTES:
         raise ValueError("staged runtime exceeds its total size limit")
-    output.mkdir(parents=True)
+    directory(output)
     for name, data in files.items():
-        destination = output / name
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(data)
+        output_file(output, name).write_bytes(data)
     return {"schema_version": 1, "kind": "ocr-mobile-ort-runtime", "target": target,
             "version": pin["version"], "api_version": lock["api_version"], "rust_binding": lock["rust_binding"],
             "archive": {key: pin[key] for key in ("url", "filename", "bytes", "sha256")},
@@ -217,9 +224,9 @@ def main() -> None:
     lock = json.loads(args.lock.read_text())
     platform, _ = TARGETS[args.target]
     pin = lock[platform]
+    if args.output.is_symlink() or (args.output.exists() and not args.output.is_dir()):
+        parser.error("runtime output must be a regular directory")
     output = args.output.resolve()
-    if output.exists():
-        parser.error("choose a new output directory")
     output.parent.mkdir(parents=True, exist_ok=True)
     if args.archive:
         archive_path = args.archive
@@ -227,23 +234,24 @@ def main() -> None:
             parser.error("runtime archive path or length differs from the committed input")
     else:
         archive_path = output.parent / (output.name + "-" + pin["filename"])
-        with archive_path.open("xb") as handle:
-            handle.write(download(pin))
+        archive_path = output_file(output.parent, archive_path.name)
+        if cached_bytes(archive_path, pin) is None:
+            archive_path.write_bytes(download(pin))
     notices = {}
     for notice in lock["notices"]:
         data = ((args.notices_dir / (pin["version"] + "-" + notice["filename"])).read_bytes() if args.notices_dir
-                else download({**notice, "url": f"https://raw.githubusercontent.com/microsoft/onnxruntime/v{pin['version']}/{notice['filename']}"}))
+                else cached_bytes(output / "notices" / notice["filename"], notice))
+        if data is None:
+            data = download({**notice, "url": f"https://raw.githubusercontent.com/microsoft/onnxruntime/v{pin['version']}/{notice['filename']}"})
         check_bytes(data, notice, "ONNX Runtime notice")
         notices[notice["filename"]] = data
     receipt = extract(archive_path, output, args.target, lock)
     for name, data in notices.items():
-        destination = output / "notices" / name
-        destination.parent.mkdir(exist_ok=True)
-        destination.write_bytes(data)
+        output_file(output, "notices/" + name).write_bytes(data)
         receipt["files"]["notices/" + name] = {"bytes": len(data), "sha256": sha256(data)}
     receipt["lock_sha256"] = sha256(args.lock.read_bytes())
     receipt["recorded_at"] = datetime.now(timezone.utc).isoformat()
-    (output / "ort-runtime.json").write_text(json.dumps(receipt, indent=2) + "\n")
+    output_file(output, "ort-runtime.json").write_text(json.dumps(receipt, indent=2) + "\n")
     print(json.dumps({"target": args.target, "version": receipt["version"], "archive_sha256": pin["sha256"], "details": receipt["details"]}))
 
 
