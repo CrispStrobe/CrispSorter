@@ -11,6 +11,7 @@ fn main() {
         "parse_propfind_handles_unprefixed_dav_namespace",
         "parse_propfind_preserves_spaces_around_escaped_ampersand",
         "parse_propfind_rejects_truncation_after_complete_response",
+        "parse_propfind_requires_a_multistatus_document_root",
     ] {
         let start = text.find(&format!("    fn {name}()")).unwrap();
         let end = start + text[start..].find("\n    #[test]").unwrap();

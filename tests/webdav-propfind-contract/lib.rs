@@ -150,3 +150,28 @@ fn propfind_rejects_mismatched_closing_tags() {
     let xml = response("/dav/first.txt", "first.txt").replace("</d:multistatus>", "</d:response>");
     assert!(parse_propfind(&xml).is_err());
 }
+
+#[test]
+fn propfind_rejects_unrelated_roots_even_with_nested_dav_responses() {
+    let valid = response("/dav/report", "report");
+    for xml in [
+        format!("<html>{valid}</html>"),
+        valid.replace("d:multistatus", "d:error"),
+        format!("{valid}<error/>"),
+        format!("<error/>{valid}"),
+    ] {
+        assert!(parse_propfind(&xml).is_err(), "accepted non-listing: {xml}");
+    }
+    assert_eq!(parse_propfind(&valid).unwrap().len(), 1);
+}
+
+#[test]
+fn propfind_accepts_default_namespace_and_unprefixed_empty_documents() {
+    for xml in [
+        r#"<?xml version="1.0"?><!-- before --><multistatus xmlns="DAV:"/><!-- after -->"#,
+        "<multistatus></multistatus>",
+        "<multistatus/>",
+    ] {
+        assert!(parse_propfind(xml).unwrap().is_empty());
+    }
+}
