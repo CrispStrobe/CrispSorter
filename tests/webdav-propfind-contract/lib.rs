@@ -1,7 +1,7 @@
 #![cfg(test)]
 //! Compile the production parser with the same quick-xml version as the app.
 use anyhow::{anyhow, Result};
-use quick_xml::{events::Event, Reader};
+use quick_xml::events::Event;
 include!(concat!(env!("OUT_DIR"), "/webdav_propfind.rs"));
 include!(concat!(env!("OUT_DIR"), "/server_fixtures.rs"));
 
@@ -173,5 +173,58 @@ fn propfind_accepts_default_namespace_and_unprefixed_empty_documents() {
         "<multistatus/>",
     ] {
         assert!(parse_propfind(xml).unwrap().is_empty());
+    }
+}
+
+#[test]
+fn propfind_namespace_uri_guards_protocol_and_metadata() {
+    for field in [
+        "<v:status/>",
+        "<unknown:status/>",
+        "<propstat><unknown:prop><displayname>wrong</displayname></unknown:prop><unknown:status/></propstat>",
+        "<propstat><prop><v:wrapper><d:displayname>wrong</d:displayname><d:getcontentlength>99</d:getcontentlength><d:href>/wrong</d:href></v:wrapper></prop></propstat>",
+        "<propstat><prop><unknown:displayname>wrong</unknown:displayname><unknown:resourcetype><collection/></unknown:resourcetype></prop></propstat>",
+        "<v:status>HTTP/1.1 403 Forbidden</v:status>",
+        "<v:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype><d:displayname>wrong</d:displayname></d:prop><d:status/></v:propstat>",
+        "<d:prop><v:displayname>wrong</v:displayname><v:resourcetype><d:collection/></v:resourcetype></d:prop>",
+        "<v:displayname><d:displayname>wrong</d:displayname></v:displayname>",
+        "<v:wrapper><d:href>/wrong</d:href><d:displayname>wrong</d:displayname><d:getcontentlength>99</d:getcontentlength><d:getlastmodified>wrong</d:getlastmodified></v:wrapper>",
+        "<d:propstat><d:prop><v:displayname>wrong</v:displayname><v:resourcetype/></d:prop><v:status/></d:propstat>",
+        "<d:propstat><d:prop><d:resourcetype><v:collection/></d:resourcetype></d:prop><v:status>opaque</v:status></d:propstat>",
+        "<d:prop xmlns:d='urn:vendor'><d:displayname>wrong</d:displayname><d:resourcetype><d:collection/></d:resourcetype></d:prop>",
+    ] {
+        let xml = format!("<d:multistatus xmlns:d='DAV:' xmlns:v='urn:vendor'><v:response><d:href>/fake</d:href></v:response><d:response><d:href>/real</d:href>{field}</d:response></d:multistatus>");
+        let parsed = parse_propfind(&xml).unwrap_or_else(|e| panic!("{field}: {e}"));
+        assert_eq!(parsed.len(), 1, "{field}");
+        assert_eq!(parsed[0].href, "/real", "{field}");
+        assert!(parsed[0].displayname.is_none(), "{field}");
+        assert!(parsed[0].contentlength.is_none(), "{field}");
+        assert!(parsed[0].lastmodified.is_none(), "{field}");
+        assert!(!parsed[0].is_collection, "{field}");
+    }
+}
+
+#[test]
+fn propfind_namespace_root_and_legacy_compatibility() {
+    for root in [
+        "<v:multistatus xmlns:v='urn:vendor'/>",
+        "<multistatus xmlns='urn:vendor'/>",
+        "<missing:multistatus/>",
+        "<v:multistatus xmlns:v='urn:vendor'><response><href>/fake</href></response></v:multistatus>",
+    ] {
+        assert!(parse_propfind(root).is_err(), "{root}");
+    }
+    for xml in [
+        "<a:multistatus xmlns:a='DAV:'><a:response><href>/real</href><prop><displayname>real</displayname><resourcetype><collection/></resourcetype></prop></a:response></a:multistatus>",
+        "<multistatus><response><href>/real</href><prop><displayname>real</displayname><resourcetype><collection/></resourcetype></prop></response></multistatus>",
+        "<multistatus xmlns='DAV:'><response><href>/real</href><prop><displayname>real</displayname><resourcetype><collection/></resourcetype></prop></response></multistatus>",
+        "<z:multistatus xmlns:z='DAV:' xmlns:v='urn:vendor'><z:response v:status='bad'><z:href>/real</z:href><z:prop><z:resourcetype xmlns:z='urn:vendor'/><v:wrapper xmlns:z='urn:vendor'><z:displayname>wrong</z:displayname></v:wrapper><z:displayname>real</z:displayname><z:resourcetype><z:collection/></z:resourcetype></z:prop></z:response></z:multistatus>",
+        "<multistatus xmlns='DAV:'><response><href>/real</href><prop><wrapper xmlns='urn:vendor'><displayname>wrong</displayname></wrapper><displayname>real</displayname><resourcetype xmlns=''><collection/></resourcetype></prop></response></multistatus>",
+    ] {
+        let parsed = parse_propfind(xml).unwrap();
+        assert_eq!(parsed.len(), 1, "{xml}");
+        assert_eq!(parsed[0].href, "/real");
+        assert_eq!(parsed[0].displayname.as_deref(), Some("real"));
+        assert!(parsed[0].is_collection);
     }
 }

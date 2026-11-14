@@ -8,6 +8,7 @@ fn main() {
     let mut server_fixtures = String::new();
     for name in [
         "parse_propfind_handles_nextcloud_response",
+        "parse_propfind_filters_foreign_namespace_properties",
         "parse_propfind_handles_unprefixed_dav_namespace",
         "parse_propfind_preserves_spaces_around_escaped_ampersand",
         "parse_propfind_rejects_truncation_after_complete_response",

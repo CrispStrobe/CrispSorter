@@ -24,10 +24,15 @@ a successful legacy server reply. Direct response statuses are read only at
 multistatus/response/status and must be valid 2xx status lines. A failed resource
 fails the whole listing rather than silently returning incomplete results. For
 compatibility, a 2xx direct status may coexist with propstats; it does not override
-a failed property status or unavailable resource type. Structural matching still
-uses local names, without namespace URI validation or full XML/schema validation.
+a failed property status or unavailable resource type. Namespace resolution accepts the DAV: URI with any prefix or default namespace,
+including nested rebinding and restoration. Explicit foreign URI elements and unknown
+prefixes are opaque; fields must also occur at recognized DAV property paths, so
+DAV-looking children inside vendor subtrees cannot overwrite metadata. Unprefixed,
+no-namespace elements remain accepted per element for legacy and mixed server
+replies, including namespace resets. This compatibility tradeoff filters foreign
+URIs rather than enforcing strict namespaces; it is not full XML/schema validation.
 This target does not exercise HTTP transport or compile the full application.
 
 Run from the repository root, reusing an inactive lightweight target directory:
 
-    CARGO_BUILD_JOBS=1 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0 cargo test --locked --manifest-path tests/webdav-propfind-contract/Cargo.toml -- --test-threads=1
+    CARGO_BUILD_JOBS=1 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0 cargo test --offline --locked --manifest-path tests/webdav-propfind-contract/Cargo.toml -- --test-threads=1

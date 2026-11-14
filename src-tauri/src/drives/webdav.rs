@@ -43,7 +43,6 @@ mod range_response;
 
 use anyhow::{anyhow, Context, Result};
 use quick_xml::events::Event;
-use quick_xml::Reader;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -461,14 +460,16 @@ struct DavResponse {
 
 /// Parse a multi-status PROPFIND XML body into a flat list of responses.
 /// Resilient to unfamiliar properties (we only read what we ask for).
-/// Require one multistatus document root, retaining local-name matching for
-/// prefixed, default-namespace and plain unprefixed server compatibility.
+/// Require one multistatus document root. Resolve DAV: namespaces with any
+/// prefix or default declaration; accept unprefixed/no-namespace legacy elements
+/// even in mixed server replies. Explicit foreign URIs and unknown prefixes are
+/// opaque, including DAV-looking descendants outside recognized property paths.
 /// Buffer propstat properties until their status is known. Statusless blocks
 /// retain legacy server compatibility. A direct response status must be 2xx;
 /// failed responses fail the whole listing to avoid returning incomplete results.
-/// Namespace URIs are not validated here.
+/// This compatibility filter is not full XML or DAV schema validation.
 fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
-    let mut reader = Reader::from_str(body);
+    let mut reader = quick_xml::reader::NsReader::from_str(body);
     // References, CDATA and comments split text events. Trim only complete
     // metadata fields below, otherwise spaces around an entity disappear.
     reader.config_mut().trim_text(false);
@@ -490,19 +491,23 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
 
     loop {
         let collecting_text = path_stack.last().is_some_and(|name| {
-            matches!(
+            (matches!(
                 name.as_str(),
                 "href" | "displayname" | "getcontentlength" | "getlastmodified"
-            ) || (name == "status"
-                && (dav_path_is(&path_stack, &["multistatus", "response", "status"])
-                    || dav_path_is(
-                        &path_stack,
-                        &["multistatus", "response", "propstat", "status"],
-                    )))
+            ) && dav_field_path(&path_stack))
+                || (name == "status"
+                    && (dav_path_is(&path_stack, &["multistatus", "response", "status"])
+                        || dav_path_is(
+                            &path_stack,
+                            &["multistatus", "response", "propstat", "status"],
+                        )))
         });
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) => {
-                let local = local_name(&e.name().as_ref());
+        let (namespace, event) = reader
+            .read_resolved_event_into(&mut buf)
+            .map_err(|e| anyhow!("propfind parse error: {e}"))?;
+        match event {
+            Event::Start(e) => {
+                let local = dav_element_name(namespace, e.name());
                 if path_stack.is_empty() {
                     if root_seen || local != "multistatus" {
                         return Err(anyhow!(
@@ -575,8 +580,8 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
                 path_stack.push(local);
                 text_buf.clear();
             }
-            Ok(Event::Empty(e)) => {
-                let local = local_name(&e.name().as_ref());
+            Event::Empty(e) => {
+                let local = dav_element_name(namespace, e.name());
                 if path_stack.is_empty() {
                     if root_seen || local != "multistatus" {
                         return Err(anyhow!(
@@ -643,19 +648,19 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
                     }
                 }
             }
-            Ok(Event::Text(e)) if collecting_text => {
+            Event::Text(e) if collecting_text => {
                 text_buf.push_str(
                     &e.xml10_content()
                         .map_err(|e| anyhow!("propfind text error: {e}"))?,
                 );
             }
-            Ok(Event::CData(e)) if collecting_text => {
+            Event::CData(e) if collecting_text => {
                 text_buf.push_str(
                     &e.xml10_content()
                         .map_err(|e| anyhow!("propfind CDATA error: {e}"))?,
                 );
             }
-            Ok(Event::GeneralRef(e)) if collecting_text => {
+            Event::GeneralRef(e) if collecting_text => {
                 if let Some(ch) = e
                     .resolve_char_ref()
                     .map_err(|e| anyhow!("propfind reference error: {e}"))?
@@ -679,8 +684,8 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
                     text_buf.push_str(value);
                 }
             }
-            Ok(Event::End(e)) => {
-                let local = local_name(&e.name().as_ref());
+            Event::End(e) => {
+                let local = dav_element_name(namespace, e.name());
                 if local == "status"
                     && dav_path_is(&path_stack, &["multistatus", "response", "status"])
                 {
@@ -745,21 +750,25 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
                         merge_resource_type(r, &mut type_available, direct_type_collection)?;
                     }
                 }
-                if local == "href" {
+                if local == "href" && dav_field_path(&path_stack) {
                     if let Some(r) = current.as_mut() {
                         r.href = text_buf.trim().to_owned();
                     }
                 }
                 if let Some(r) = propstat.as_mut().or(current.as_mut()) {
                     match local.as_str() {
-                        "displayname" if !text_buf.is_empty() => {
+                        "displayname" if dav_field_path(&path_stack) && !text_buf.is_empty() => {
                             // A display name is a filename: edge spaces are significant.
                             r.displayname = Some(text_buf.clone())
                         }
-                        "getcontentlength" if !text_buf.trim().is_empty() => {
+                        "getcontentlength"
+                            if dav_field_path(&path_stack) && !text_buf.trim().is_empty() =>
+                        {
                             r.contentlength = text_buf.trim().parse().ok()
                         }
-                        "getlastmodified" if !text_buf.trim().is_empty() => {
+                        "getlastmodified"
+                            if dav_field_path(&path_stack) && !text_buf.trim().is_empty() =>
+                        {
                             r.lastmodified = Some(text_buf.trim().to_owned())
                         }
                         "response" if dav_path_is(&path_stack, &["multistatus", "response"]) => {
@@ -778,7 +787,7 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
                 path_stack.pop();
                 text_buf.clear();
             }
-            Ok(Event::Eof) => {
+            Event::Eof => {
                 // quick-xml can reach EOF with unclosed elements. Do not
                 // return parsed entries when EOF leaves an element open.
                 if !path_stack.is_empty() {
@@ -791,7 +800,6 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
                 }
                 break;
             }
-            Err(e) => return Err(anyhow!("propfind parse error: {e}")),
             _ => {}
         }
         buf.clear();
@@ -842,9 +850,35 @@ fn parse_dav_status(text: &str, scope: &str) -> Result<u16> {
     status.ok_or_else(|| anyhow!("propfind parse error: invalid {scope} status"))
 }
 
-fn local_name(qname: &[u8]) -> String {
-    let s = std::str::from_utf8(qname).unwrap_or("");
-    s.split(':').next_back().unwrap_or(s).to_ascii_lowercase()
+// An empty path component makes a foreign subtree opaque. Do not equate an
+// unknown prefix with the unprefixed/no-namespace legacy form.
+fn dav_element_name(
+    namespace: quick_xml::name::ResolveResult<'_>,
+    qname: quick_xml::name::QName<'_>,
+) -> String {
+    let recognized = match namespace {
+        quick_xml::name::ResolveResult::Bound(uri) => uri.as_ref() == b"DAV:",
+        quick_xml::name::ResolveResult::Unbound => !qname.as_ref().contains(&b':'),
+        quick_xml::name::ResolveResult::Unknown(_) => false,
+    };
+    if recognized {
+        String::from_utf8_lossy(qname.local_name().as_ref()).to_ascii_lowercase()
+    } else {
+        String::new()
+    }
+}
+
+// Retain direct legacy properties, but never read fields from vendor subtrees.
+fn dav_field_path(path: &[String]) -> bool {
+    let Some((field, parent)) = path.split_last() else {
+        return false;
+    };
+    if field == "href" {
+        return dav_path_is(parent, &["multistatus", "response"]);
+    }
+    dav_path_is(parent, &["multistatus", "response"])
+        || dav_path_is(parent, &["multistatus", "response", "prop"])
+        || dav_path_is(parent, &["multistatus", "response", "propstat", "prop"])
 }
 
 /// Parse RFC 7231 IMF-fixdate ("Wed, 21 Oct 2015 07:28:00 GMT") to unix
@@ -1845,9 +1879,30 @@ mod tests {
     }
 
     #[test]
+    fn parse_propfind_filters_foreign_namespace_properties() {
+        let xml = r#"<d:multistatus xmlns:d="DAV:" xmlns:v="urn:vendor">
+          <v:response><d:href>/fake</d:href></v:response>
+          <d:response><d:href>/real</d:href><v:status/>
+            <v:propstat><d:status>HTTP/1.1 403 Forbidden</d:status></v:propstat>
+            <d:propstat><d:prop>
+              <v:displayname>wrong</v:displayname>
+              <v:resourcetype><d:collection/></v:resourcetype>
+              <v:wrapper><d:href>/wrong</d:href><d:displayname>wrong</d:displayname></v:wrapper>
+              <d:displayname>real</d:displayname><d:resourcetype/>
+            </d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat>
+          </d:response>
+        </d:multistatus>"#;
+        let parsed = parse_propfind(xml).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].href, "/real");
+        assert_eq!(parsed[0].displayname.as_deref(), Some("real"));
+        assert!(!parsed[0].is_collection);
+        assert!(parse_propfind(r#"<multistatus xmlns="urn:vendor"/>"#).is_err());
+    }
+
+    #[test]
     fn parse_propfind_handles_unprefixed_dav_namespace() {
-        // Some servers (e.g. Synology) drop the `D:` prefix.  We match on
-        // the local-name only so this should still parse.
+        // Some servers (e.g. Synology) use the DAV: default namespace.
         let xml = r#"<?xml version="1.0"?>
         <multistatus xmlns="DAV:">
           <response>
