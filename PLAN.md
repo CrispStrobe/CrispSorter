@@ -3647,6 +3647,15 @@ a transfer without leaving the search/catalog workflow.
     Nextcloud/ownCloud use the separate CrispCloud delta app when available,
     while Internxt, Filen, and generic WebDAV retain whole-file fallback.
     ✅ 2026-08-01
+  - [x] Bounded WebDAV PROPFIND type ambiguity follow-up (2026-11-14).
+    Contradictory duplicate DAV resourcetype declarations within one successful
+    or legacy statusless propstat now fail the listing instead of silently
+    classifying it as a directory. Consistent duplicates remain compatible;
+    conflicts in failed propstats are ignored when an available type exists.
+    The lightweight production-parser contract target passed all 32 tests
+    offline/locked with one build job, debug info and incremental disabled.
+    This verifies parsing only; HTTP transport, live provider parity and full
+    application builds were not exercised in this follow-up.
   - [x] Nextcloud / ownCloud WebDAV boundary. Both providers are usable
     through WebDavDrive (remote.php DAV roots, Basic/app-password auth,
     PROPFIND, MKCOL, MOVE, COPY, and OCS sharing). The actual CrispCloud

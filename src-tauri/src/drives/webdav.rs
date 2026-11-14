@@ -482,9 +482,10 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
     let mut propstat_status: Option<u16> = None;
     let mut response_status: Option<u16> = None;
     let mut propstat_has_type = false;
+    let mut propstat_type_conflict = false;
     let mut type_available = false;
     let mut type_failed = false;
-    let mut direct_type_collection = false;
+    let mut resource_type_collection = false;
     let mut root_seen = false;
     let mut path_stack: Vec<String> = Vec::new();
     let mut text_buf = String::new();
@@ -532,22 +533,16 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
                     propstat = Some(DavResponse::default());
                     propstat_status = None;
                     propstat_has_type = false;
+                    propstat_type_conflict = false;
                 }
                 if local == "resourcetype"
-                    && propstat.is_some()
-                    && dav_path_is(
+                    && (dav_path_is(
                         &path_stack,
                         &["multistatus", "response", "propstat", "prop"],
-                    )
-                {
-                    propstat_has_type = true;
-                }
-                if local == "resourcetype"
-                    && propstat.is_none()
-                    && (dav_path_is(&path_stack, &["multistatus", "response", "prop"])
+                    ) || dav_path_is(&path_stack, &["multistatus", "response", "prop"])
                         || dav_path_is(&path_stack, &["multistatus", "response"]))
                 {
-                    direct_type_collection = false;
+                    resource_type_collection = false;
                 }
                 // Accept both <collection/> and <collection></collection>.
                 if local == "collection"
@@ -571,11 +566,7 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
                             ],
                         ))
                 {
-                    if let Some(r) = propstat.as_mut() {
-                        r.is_collection = true;
-                    } else {
-                        direct_type_collection = true;
-                    }
+                    resource_type_collection = true;
                 }
                 path_stack.push(local);
                 text_buf.clear();
@@ -591,8 +582,7 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
                     root_seen = true;
                 }
                 if dav_path_is(&path_stack, &["multistatus", "response", "status"])
-                    || (local == "status"
-                        && dav_path_is(&path_stack, &["multistatus", "response"]))
+                    || (local == "status" && dav_path_is(&path_stack, &["multistatus", "response"]))
                 {
                     return Err(anyhow!("propfind parse error: invalid response status"));
                 }
@@ -608,7 +598,10 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
                         &["multistatus", "response", "propstat", "prop"],
                     )
                 {
-                    propstat_has_type = true;
+                    if let Some(r) = propstat.as_mut() {
+                        propstat_type_conflict |=
+                            merge_resource_type(r, &mut propstat_has_type, false).is_err();
+                    }
                 }
                 if local == "resourcetype"
                     && propstat.is_none()
@@ -641,11 +634,7 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
                             ],
                         ))
                 {
-                    if let Some(r) = propstat.as_mut() {
-                        r.is_collection = true;
-                    } else {
-                        direct_type_collection = true;
-                    }
+                    resource_type_collection = true;
                 }
             }
             Event::Text(e) if collecting_text => {
@@ -718,6 +707,13 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
                 {
                     if let (Some(properties), Some(r)) = (propstat.take(), current.as_mut()) {
                         if propstat_status.is_none_or(|status| (200..300).contains(&status)) {
+                            // Status may follow the properties: only available
+                            // declarations can make the listing ambiguous.
+                            if propstat_type_conflict {
+                                return Err(anyhow!(
+                                    "propfind parse error: conflicting resourcetype"
+                                ));
+                            }
                             if properties.displayname.is_some() {
                                 r.displayname = properties.displayname;
                             }
@@ -740,6 +736,27 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
                     }
                 }
                 if local == "resourcetype"
+                    && dav_path_is(
+                        &path_stack,
+                        &[
+                            "multistatus",
+                            "response",
+                            "propstat",
+                            "prop",
+                            "resourcetype",
+                        ],
+                    )
+                {
+                    if let Some(r) = propstat.as_mut() {
+                        propstat_type_conflict |= merge_resource_type(
+                            r,
+                            &mut propstat_has_type,
+                            resource_type_collection,
+                        )
+                        .is_err();
+                    }
+                }
+                if local == "resourcetype"
                     && propstat.is_none()
                     && (dav_path_is(
                         &path_stack,
@@ -747,7 +764,7 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
                     ) || dav_path_is(&path_stack, &["multistatus", "response", "resourcetype"]))
                 {
                     if let Some(r) = current.as_mut() {
-                        merge_resource_type(r, &mut type_available, direct_type_collection)?;
+                        merge_resource_type(r, &mut type_available, resource_type_collection)?;
                     }
                 }
                 if local == "href" && dav_field_path(&path_stack) {
@@ -2014,6 +2031,95 @@ mod tests {
     }
 
     #[test]
+    fn parse_propfind_rejects_conflicting_types_in_one_propstat() {
+        let files = ["<resourcetype/>", "<resourcetype></resourcetype>"];
+        let folders = [
+            "<resourcetype><collection/></resourcetype>",
+            "<resourcetype><collection></collection></resourcetype>",
+        ];
+        for file in files {
+            for folder in folders {
+                for (first, second) in [(file, folder), (folder, file)] {
+                    for split_props in [false, true] {
+                        let props = if split_props {
+                            format!("<prop>{first}</prop><prop>{second}</prop>")
+                        } else {
+                            format!("<prop>{first}{second}</prop>")
+                        };
+                        for status in ["<status>HTTP/1.1 200 OK</status>", ""] {
+                            for status_first in [false, true] {
+                                let block = if status_first {
+                                    format!("<propstat>{status}{props}</propstat>")
+                                } else {
+                                    format!("<propstat>{props}{status}</propstat>")
+                                };
+                                let xml = format!("<multistatus><response><href>/dav/ambiguous</href>{block}</response></multistatus>");
+                                let error = parse_propfind(&xml).expect_err(&xml);
+                                assert!(
+                                    error.to_string().contains("conflicting resourcetype"),
+                                    "{error}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn parse_propfind_ignores_conflicting_types_in_failed_propstat() {
+        let file = "<resourcetype/>";
+        let folder = "<resourcetype><collection/></resourcetype>";
+        for (first, second) in [(file, folder), (folder, file)] {
+            for status_first in [false, true] {
+                let props = format!("<prop>{first}{second}</prop>");
+                let status = "<status>HTTP/1.1 404 Not Found</status>";
+                let bad = if status_first {
+                    format!("<propstat>{status}{props}</propstat>")
+                } else {
+                    format!("<propstat>{props}{status}</propstat>")
+                };
+                let unavailable =
+                    format!("<multistatus><response>{bad}</response></multistatus>");
+                let error = parse_propfind(&unavailable).unwrap_err();
+                assert!(error.to_string().contains("unavailable resourcetype"), "{error}");
+                for (available, is_collection) in [(file, false), (folder, true)] {
+                    for good in [
+                        format!("<propstat><prop>{available}</prop><status>HTTP/1.1 200 OK</status></propstat>"),
+                        format!("<prop>{available}</prop>"),
+                        available.to_owned(),
+                    ] {
+                        for blocks in [format!("{good}{bad}"), format!("{bad}{good}")] {
+                            let xml =
+                                format!("<multistatus><response>{blocks}</response></multistatus>");
+                            assert_eq!(
+                                parse_propfind(&xml).unwrap()[0].is_collection,
+                                is_collection,
+                                "{xml}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn parse_propfind_preserves_consistent_duplicate_types_and_resets_state() {
+        for status in ["<status>HTTP/1.1 200 OK</status>", ""] {
+            let file = "<resourcetype/><resourcetype></resourcetype>";
+            let folder = "<resourcetype><collection/></resourcetype><resourcetype><collection></collection></resourcetype>";
+            let vendor = "<v:resourcetype><collection/></v:resourcetype><v:wrapper><resourcetype><collection/></resourcetype></v:wrapper>";
+            let xml = format!("<multistatus xmlns:v='urn:vendor'><response><href>/dav/folder</href><propstat><prop>{folder}</prop>{status}</propstat><propstat><prop>{folder}</prop>{status}</propstat></response><response><href>/dav/file</href><propstat><prop>{file}{vendor}<resourcetype><v:collection/><v:wrapper><collection/></v:wrapper></resourcetype></prop>{status}</propstat><propstat><prop>{file}</prop>{status}</propstat></response></multistatus>");
+            let parsed = parse_propfind(&xml).unwrap();
+            assert_eq!(parsed.len(), 2);
+            assert!(parsed[0].is_collection);
+            assert!(!parsed[1].is_collection);
+        }
+    }
+
+    #[test]
     fn parse_propfind_rejects_unavailable_type_and_bad_status() {
         for resource_type in [
             "<resourcetype/>",
@@ -2041,7 +2147,7 @@ mod tests {
         assert!(parse_propfind("<multistatus><response><propstat><prop><resourcetype/></prop><status/></propstat></response></multistatus>").is_err());
         let xml = "<multistatus><response><vendor><resourcetype><collection/></resourcetype></vendor><propstat><prop><resourcetype/></prop><status>HTTP/1.1 404 Not Found</status></propstat></response></multistatus>";
         assert!(parse_propfind(xml).is_err());
-        for status in ["", "<status>HTTP/1.1 200 OK</status>"] {
+        for status in ["<status>HTTP/1.1 200 OK</status>", ""] {
             let file = format!("<propstat><prop><resourcetype/></prop>{status}</propstat>");
             let folder = "<propstat><prop><resourcetype><collection/></resourcetype></prop><status>HTTP/1.1 200 OK</status></propstat>";
             for props in [format!("{file}{folder}"), format!("{folder}{file}")] {
