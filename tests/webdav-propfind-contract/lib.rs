@@ -116,3 +116,37 @@ fn propfind_keeps_xml_legal_reference_whitespace() {
     let parsed = parse_propfind(&response("/dav/report", "&#9;A&#10;B&#13;")).unwrap();
     assert_eq!(parsed[0].displayname.as_deref(), Some("\tA\nB\r"));
 }
+
+#[test]
+fn propfind_rejects_truncated_listings_instead_of_returning_partial_entries() {
+    let complete = response("/dav/first.txt", "first.txt");
+    let first_entry = complete.strip_suffix("</d:multistatus>").unwrap();
+    for truncated in [
+        first_entry.to_owned(),
+        r#"<d:multistatus xmlns:d="DAV:">"#.to_owned(),
+        format!("{first_entry}<d:response><d:href>/dav/second.txt"),
+        format!("{first_entry}<d:response><d:propstat><d:prop><vendor>"),
+    ] {
+        assert!(
+            parse_propfind(&truncated).is_err(),
+            "truncated listing accepted: {truncated}"
+        );
+    }
+    assert_eq!(parse_propfind(&complete).unwrap().len(), 1);
+}
+
+#[test]
+fn propfind_accepts_complete_empty_multistatus() {
+    for xml in [
+        r#"<d:multistatus xmlns:d="DAV:"/>"#,
+        r#"<d:multistatus xmlns:d="DAV:"></d:multistatus>"#,
+    ] {
+        assert!(parse_propfind(xml).unwrap().is_empty());
+    }
+}
+
+#[test]
+fn propfind_rejects_mismatched_closing_tags() {
+    let xml = response("/dav/first.txt", "first.txt").replace("</d:multistatus>", "</d:response>");
+    assert!(parse_propfind(&xml).is_err());
+}

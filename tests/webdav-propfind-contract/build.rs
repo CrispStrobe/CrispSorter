@@ -3,13 +3,14 @@ fn main() {
     let source = "../../src-tauri/src/drives/webdav.rs";
     println!("cargo:rerun-if-changed={source}");
     let text = fs::read_to_string(source).unwrap();
-    // Keep the app's representative server fixtures and entity regression in
+    // Keep the app's representative server fixtures and parser regressions in
     // this small target, alongside the focused regressions.
     let mut server_fixtures = String::new();
     for name in [
         "parse_propfind_handles_nextcloud_response",
         "parse_propfind_handles_unprefixed_dav_namespace",
         "parse_propfind_preserves_spaces_around_escaped_ampersand",
+        "parse_propfind_rejects_truncation_after_complete_response",
     ] {
         let start = text.find(&format!("    fn {name}()")).unwrap();
         let end = start + text[start..].find("\n    #[test]").unwrap();

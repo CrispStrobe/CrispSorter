@@ -561,7 +561,14 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
                 path_stack.pop();
                 text_buf.clear();
             }
-            Ok(Event::Eof) => break,
+            Ok(Event::Eof) => {
+                // quick-xml can reach EOF with unclosed elements. Do not
+                // return parsed entries when EOF leaves an element open.
+                if !path_stack.is_empty() {
+                    return Err(anyhow!("propfind parse error: unexpected EOF in XML element"));
+                }
+                break;
+            }
             Err(e) => return Err(anyhow!("propfind parse error: {e}")),
             _ => {}
         }
@@ -1607,6 +1614,18 @@ mod tests {
         let parsed = parse_propfind(xml).unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].displayname.as_deref(), Some("Sales & Marketing.txt"));
+    }
+
+    #[test]
+    fn parse_propfind_rejects_truncation_after_complete_response() {
+        let truncated = r#"<d:multistatus xmlns:d="DAV:"><d:response>
+            <d:href>/dav/first.txt</d:href>
+            <d:propstat><d:prop><d:displayname>first.txt</d:displayname>
+            </d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat>
+        </d:response>"#;
+        assert!(parse_propfind(truncated).is_err());
+        let complete = format!("{truncated}</d:multistatus>");
+        assert_eq!(parse_propfind(&complete).unwrap().len(), 1);
     }
 
     #[test]

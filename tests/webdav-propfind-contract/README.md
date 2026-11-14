@@ -1,9 +1,10 @@
 This small target compiles the actual production WebDAV PROPFIND parser and
-its two existing server fixtures and production entity regression, without
+its two existing server fixtures and production entity/truncation regressions, without
 Tauri or HTTP dependencies. It uses
 quick-xml 0.38.4, the app's locked version. Regressions cover XML named/numeric
 references, split text, CDATA, Unicode, significant displayname whitespace,
-invalid references, and ignored vendor properties. It does not exercise HTTP
+invalid references, ignored vendor properties, rejected truncated listings,
+and complete empty multistatus responses. It does not exercise HTTP
 transport or compile the full application.
 
 Run from the repository root, reusing an inactive lightweight target directory:
