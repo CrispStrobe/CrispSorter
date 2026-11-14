@@ -1,3 +1,4 @@
+// Shared catalogue adaptation: retain directories and legacy unknown-size provenance.
 //! In-memory file index with O(1) size-bucket duplicate lookups.
 //!
 //! Mirrors Catfish's `FileIndex` data layout so the .caf round-trip
@@ -26,7 +27,12 @@ pub struct FileEntry {
 
 impl FileEntry {
     pub fn new(path: PathBuf, size: u64, mtime: u32) -> Self {
-        Self { path, size, mtime, hash: None }
+        Self {
+            path,
+            size,
+            mtime,
+            hash: None,
+        }
     }
 
     pub fn with_hash(mut self, hash: String) -> Self {
@@ -89,6 +95,13 @@ pub struct FileIndex {
 
     /// All files in insertion order.
     pub all_files: Vec<FileEntry>,
+    /// Shared adaptation: retain explicit directories (including empty
+    /// ones) and their CAF second-resolution timestamps.
+    #[serde(default)]
+    pub directories: Vec<(PathBuf, u32)>,
+    /// Legacy v1-v6 size-zero records do not establish an exact file size.
+    #[serde(default)]
+    pub unknown_size_paths: Vec<PathBuf>,
 
     /// Volume-level metadata read from the `.caf` header. Carries
     /// label / alias / serial / comment / freesize / archive flag /
@@ -128,6 +141,8 @@ impl FileIndex {
             root_path,
             is_windows_path,
             all_files: Vec::new(),
+            directories: Vec::new(),
+            unknown_size_paths: Vec::new(),
             header: VolumeHeader::default(),
             save_version: 8,
             size_index: HashMap::new(),
@@ -217,7 +232,11 @@ mod tests {
         deser.rebuild_indexes();
         assert_eq!(deser.size_index.get(&100).unwrap().len(), 2);
         assert_eq!(
-            deser.hash_index.get(&(100, "deadbeef".to_string())).unwrap().len(),
+            deser
+                .hash_index
+                .get(&(100, "deadbeef".to_string()))
+                .unwrap()
+                .len(),
             1
         );
     }

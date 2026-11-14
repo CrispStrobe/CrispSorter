@@ -43,7 +43,9 @@ impl std::str::FromStr for HashAlgo {
             "md5" => Ok(Self::Md5),
             "sha1" => Ok(Self::Sha1),
             "sha256" => Ok(Self::Sha256),
-            _ => Err(format!("unknown hash algorithm `{value}`; expected md5, sha1, or sha256")),
+            _ => Err(format!(
+                "unknown hash algorithm `{value}`; expected md5, sha1, or sha256"
+            )),
         }
     }
 }
@@ -95,12 +97,23 @@ impl ScanReport {
         if self.is_complete() {
             return Ok(());
         }
-        let first = self.issues.first().map(|issue| {
-            format!("; first {:?} error at {}: {}", issue.kind, issue.path.display(), issue.message)
-        }).unwrap_or_default();
+        let first = self
+            .issues
+            .first()
+            .map(|issue| {
+                format!(
+                    "; first {:?} error at {}: {}",
+                    issue.kind,
+                    issue.path.display(),
+                    issue.message
+                )
+            })
+            .unwrap_or_default();
         Err(io::Error::other(format!(
             "incomplete scan of {}: {} issue(s), {} detail(s) suppressed{first}",
-            self.index.root_path.display(), self.issue_count(), self.suppressed_issues,
+            self.index.root_path.display(),
+            self.issue_count(),
+            self.suppressed_issues,
         )))
     }
 
@@ -120,7 +133,8 @@ impl Diagnostics {
     fn push(&mut self, path: &Path, kind: ScanIssueKind, error: impl std::fmt::Display) {
         if self.issues.len() < MAX_SCAN_ISSUES {
             self.issues.push(ScanIssue {
-                path: path.to_owned(), kind,
+                path: path.to_owned(),
+                kind,
                 message: error.to_string().chars().take(2048).collect(),
             });
         } else {
@@ -171,8 +185,10 @@ pub fn scan_dir_with_report(root: &Path, options: ScanOptions) -> io::Result<Sca
     let root_metadata = fs::metadata(root)
         .map_err(|error| io::Error::new(error.kind(), format!("{}: {error}", root.display())))?;
     if !root_metadata.is_dir() {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput,
-            format!("{} is not a directory", root.display())));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} is not a directory", root.display()),
+        ));
     }
 
     // Keep the established jwalk default. A warm-cache fixture alone does not
@@ -195,24 +211,63 @@ fn scan_entries(
         let mut entry = match result {
             Ok(entry) => entry,
             Err(error) => {
-                diagnostics.push(error.path().unwrap_or(root), ScanIssueKind::Traversal, &error);
+                diagnostics.push(
+                    error.path().unwrap_or(root),
+                    ScanIssueKind::Traversal,
+                    &error,
+                );
                 continue;
             }
         };
         // jwalk attaches failures opening a directory to the directory entry,
         // not necessarily to an Err iterator item. Inspect before filtering.
+        let directory_read_failed = entry.read_children_error.is_some();
         if let Some(error) = entry.read_children_error.take() {
-            diagnostics.push(error.path().unwrap_or(root), ScanIssueKind::Traversal, &error);
+            diagnostics.push(
+                error.path().unwrap_or(root),
+                ScanIssueKind::Traversal,
+                &error,
+            );
         }
         let file_type = entry.file_type();
         if file_type.is_symlink() {
             // The explicitly selected root alias is followed by jwalk; it is
             // not an omitted descendant and must not inflate this counter.
-            if entry.depth() != 0 { skipped_symlinks += 1; }
+            if entry.depth() != 0 {
+                skipped_symlinks += 1;
+            }
+            continue;
+        }
+        if file_type.is_dir() {
+            if entry.depth() != 0 {
+                let path = entry.path();
+                match fs::symlink_metadata(&path) {
+                    Ok(metadata) if metadata.is_dir() => {
+                        let mtime = metadata
+                            .modified()
+                            .ok()
+                            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                            .and_then(|duration| u32::try_from(duration.as_secs()).ok());
+                        if mtime.is_none() {
+                            diagnostics.push(&path,ScanIssueKind::ModifiedTime,"Directory modification time is outside the CAF range or unavailable");
+                        }
+                        index.directories.push((path, mtime.unwrap_or(0)));
+                    }
+                    Ok(_) => diagnostics.push(
+                        &path,
+                        ScanIssueKind::Metadata,
+                        "Directory changed type during scanning",
+                    ),
+                    Err(error) if !directory_read_failed => {
+                        diagnostics.push(&path, ScanIssueKind::Metadata, error)
+                    }
+                    Err(_) => (),
+                }
+            }
             continue;
         }
         if !file_type.is_file() {
-            if !file_type.is_dir() { skipped_special_entries += 1; }
+            skipped_special_entries += 1;
             continue;
         }
         let path = entry.path();
@@ -226,8 +281,11 @@ fn scan_entries(
         let metadata = match metadata {
             Ok(metadata) if metadata.is_file() => metadata,
             Ok(_) => {
-                diagnostics.push(&path, ScanIssueKind::Metadata,
-                    "Entry is no longer a regular file");
+                diagnostics.push(
+                    &path,
+                    ScanIssueKind::Metadata,
+                    "Entry is no longer a regular file",
+                );
                 continue;
             }
             Err(error) => {
@@ -241,15 +299,21 @@ fn scan_entries(
             continue;
         }
         let mtime = match metadata.modified() {
-            Ok(time) => match time.duration_since(UNIX_EPOCH)
-                .ok().and_then(|duration| u32::try_from(duration.as_secs()).ok()) {
-                    Some(seconds) => seconds,
-                    None => {
-                        diagnostics.push(&path, ScanIssueKind::ModifiedTime,
-                            "Modification time is outside the CAF unsigned 32-bit epoch range");
-                        0
-                    }
-                },
+            Ok(time) => match time
+                .duration_since(UNIX_EPOCH)
+                .ok()
+                .and_then(|duration| u32::try_from(duration.as_secs()).ok())
+            {
+                Some(seconds) => seconds,
+                None => {
+                    diagnostics.push(
+                        &path,
+                        ScanIssueKind::ModifiedTime,
+                        "Modification time is outside the CAF unsigned 32-bit epoch range",
+                    );
+                    0
+                }
+            },
             Err(error) => {
                 diagnostics.push(&path, ScanIssueKind::ModifiedTime, error);
                 0
@@ -265,29 +329,45 @@ fn scan_entries(
         // need construction after in-place hashing.
         for (position, entry) in index.all_files.iter().enumerate() {
             if let Some(hash) = &entry.hash {
-                index.hash_index.entry((entry.size, hash.clone())).or_default().push(position);
+                index
+                    .hash_index
+                    .entry((entry.size, hash.clone()))
+                    .or_default()
+                    .push(position);
             }
         }
     }
 
-    ScanReport { index, issues: diagnostics.issues,
-        suppressed_issues: diagnostics.suppressed, skipped_symlinks,
-        skipped_special_entries, excluded_by_size }
+    ScanReport {
+        index,
+        issues: diagnostics.issues,
+        suppressed_issues: diagnostics.suppressed,
+        skipped_symlinks,
+        skipped_special_entries,
+        excluded_by_size,
+    }
 }
 
 fn hash_entries(entries: &mut [FileEntry], algo: HashAlgo) -> Diagnostics {
     let diagnostics = Mutex::new(Diagnostics::default());
     // Reuse a streaming buffer within each Rayon job instead of allocating and
     // zeroing a MiB for every small file. Rayon may create more jobs than threads.
-    entries.par_iter_mut().for_each_init(|| vec![0u8; HASH_BUFFER_BYTES], |buffer, entry| {
-        let result = fs::File::open(&entry.path)
-            .and_then(|mut file| hash_reader(&mut file, algo, buffer));
-        match result {
-            Ok(hash) => entry.hash = Some(hash),
-            Err(error) => diagnostics.lock().unwrap()
-                .push(&entry.path, ScanIssueKind::Hash, error),
-        }
-    });
+    entries.par_iter_mut().for_each_init(
+        || vec![0u8; HASH_BUFFER_BYTES],
+        |buffer, entry| {
+            let result = fs::File::open(&entry.path)
+                .and_then(|mut file| hash_reader(&mut file, algo, buffer));
+            match result {
+                Ok(hash) => entry.hash = Some(hash),
+                Err(error) => {
+                    diagnostics
+                        .lock()
+                        .unwrap()
+                        .push(&entry.path, ScanIssueKind::Hash, error)
+                }
+            }
+        },
+    );
     diagnostics.into_inner().unwrap()
 }
 
@@ -382,7 +462,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("file");
         fs::write(&file, b"data").unwrap();
-        assert_eq!(scan_dir(&file, Default::default()).unwrap_err().kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(
+            scan_dir(&file, Default::default()).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
         let missing = tmp.path().join("missing");
         let error = scan_dir_with_report(&missing, Default::default()).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
@@ -406,7 +489,11 @@ mod tests {
         assert_eq!(report.issues[0].kind, ScanIssueKind::Metadata);
         assert_eq!(report.issues[0].path, gone);
         assert!(!report.is_complete());
-        assert!(report.into_complete_index().unwrap_err().to_string().contains("gone"));
+        assert!(report
+            .into_complete_index()
+            .unwrap_err()
+            .to_string()
+            .contains("gone"));
     }
 
     #[test]
@@ -454,7 +541,9 @@ mod tests {
         let listed: Vec<_> = jwalk::WalkDir::new(tmp.path()).into_iter().collect();
         for entry in &listed {
             let entry = entry.as_ref().unwrap();
-            if entry.file_type().is_file() { fs::remove_file(entry.path()).unwrap(); }
+            if entry.file_type().is_file() {
+                fs::remove_file(entry.path()).unwrap();
+            }
         }
         let report = scan_entries(tmp.path(), Default::default(), listed);
         assert!(report.index.is_empty());
@@ -470,10 +559,16 @@ mod tests {
         let good = tmp.path().join("good");
         let gone = tmp.path().join("gone");
         fs::write(&good, b"abc").unwrap();
-        let mut entries = vec![FileEntry::new(good, 3, 1), FileEntry::new(gone.clone(), 9, 1)];
+        let mut entries = vec![
+            FileEntry::new(good, 3, 1),
+            FileEntry::new(gone.clone(), 9, 1),
+        ];
         let diagnostics = hash_entries(&mut entries, HashAlgo::Sha256);
         assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].hash.as_deref(), Some("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"));
+        assert_eq!(
+            entries[0].hash.as_deref(),
+            Some("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+        );
         assert_eq!(entries[1].size, 9);
         assert!(entries[1].hash.is_none());
         assert_eq!(diagnostics.issues.len(), 1);
@@ -487,16 +582,38 @@ mod tests {
         fs::write(tmp.path().join("abc"), b"abc").unwrap();
         fs::write(tmp.path().join("zero"), b"").unwrap();
         for (algo, abc, zero) in [
-            (HashAlgo::Md5, "900150983cd24fb0d6963f7d28e17f72", "d41d8cd98f00b204e9800998ecf8427e"),
-            (HashAlgo::Sha1, "a9993e364706816aba3e25717850c26c9cd0d89d", "da39a3ee5e6b4b0d3255bfef95601890afd80709"),
-            (HashAlgo::Sha256, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
+            (
+                HashAlgo::Md5,
+                "900150983cd24fb0d6963f7d28e17f72",
+                "d41d8cd98f00b204e9800998ecf8427e",
+            ),
+            (
+                HashAlgo::Sha1,
+                "a9993e364706816aba3e25717850c26c9cd0d89d",
+                "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+            ),
+            (
+                HashAlgo::Sha256,
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            ),
         ] {
-            let report = scan_dir_with_report(tmp.path(), ScanOptions { hash: Some(algo), ..Default::default() }).unwrap();
+            let report = scan_dir_with_report(
+                tmp.path(),
+                ScanOptions {
+                    hash: Some(algo),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
             assert!(report.is_complete());
             for (size, hash) in [(3, abc), (0, zero)] {
                 let positions = &report.index.hash_index[&(size, hash.to_owned())];
                 assert_eq!(positions.len(), 1);
-                assert_eq!(report.index.all_files[positions[0]].hash.as_deref(), Some(hash));
+                assert_eq!(
+                    report.index.all_files[positions[0]].hash.as_deref(),
+                    Some(hash)
+                );
             }
             assert_eq!(report.index.by_size(0).count(), 1);
         }
@@ -507,17 +624,33 @@ mod tests {
         use sha2::Digest;
         let data = vec![0x5a; HASH_BUFFER_BYTES * 2 + 37];
         let expected = hex::encode(sha2::Sha256::digest(&data));
-        struct InterruptedOnce { first: bool, bytes: io::Cursor<Vec<u8>> }
+        struct InterruptedOnce {
+            first: bool,
+            bytes: io::Cursor<Vec<u8>>,
+        }
         impl Read for InterruptedOnce {
             fn read(&mut self, target: &mut [u8]) -> io::Result<usize> {
                 if self.first {
                     self.first = false;
                     Err(io::Error::from(io::ErrorKind::Interrupted))
-                } else { self.bytes.read(target) }
+                } else {
+                    self.bytes.read(target)
+                }
             }
         }
-        let mut reader = InterruptedOnce { first: true, bytes: io::Cursor::new(data) };
-        assert_eq!(hash_reader(&mut reader, HashAlgo::Sha256, &mut vec![0; HASH_BUFFER_BYTES]).unwrap(), expected);
+        let mut reader = InterruptedOnce {
+            first: true,
+            bytes: io::Cursor::new(data),
+        };
+        assert_eq!(
+            hash_reader(
+                &mut reader,
+                HashAlgo::Sha256,
+                &mut vec![0; HASH_BUFFER_BYTES]
+            )
+            .unwrap(),
+            expected
+        );
     }
 
     #[cfg(unix)]
@@ -533,7 +666,14 @@ mod tests {
         symlink(root.join("missing"), root.join("broken")).unwrap();
         let alias = tmp.path().join("alias");
         symlink(&root, &alias).unwrap();
-        let report = scan_dir_with_report(&alias, ScanOptions { max_size_bytes: Some(3), ..Default::default() }).unwrap();
+        let report = scan_dir_with_report(
+            &alias,
+            ScanOptions {
+                max_size_bytes: Some(3),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert!(report.is_complete());
         assert_eq!(report.skipped_symlinks, 2);
         assert_eq!(report.excluded_by_size, 1);
@@ -549,9 +689,21 @@ mod tests {
         fs::write(tmp.path().join("data"), b"abc").unwrap();
         symlink(tmp.path().join("data"), tmp.path().join("alias")).unwrap();
         symlink(tmp.path().join("absent"), tmp.path().join("broken")).unwrap();
-        let report = scan_dir_with_report(tmp.path(), ScanOptions { follow_symlinks: true, hash: Some(HashAlgo::Md5), ..Default::default() }).unwrap();
+        let report = scan_dir_with_report(
+            tmp.path(),
+            ScanOptions {
+                follow_symlinks: true,
+                hash: Some(HashAlgo::Md5),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(report.index.len(), 2);
-        assert!(report.index.all_files.iter().all(|entry| entry.hash.as_deref() == Some("900150983cd24fb0d6963f7d28e17f72")));
+        assert!(report
+            .index
+            .all_files
+            .iter()
+            .all(|entry| entry.hash.as_deref() == Some("900150983cd24fb0d6963f7d28e17f72")));
         assert_eq!(report.issues.len(), 1);
         assert_eq!(report.issues[0].kind, ScanIssueKind::Traversal);
         assert!(!report.is_complete());
@@ -564,7 +716,10 @@ mod tests {
         let path = tmp.path().join("old");
         let file = fs::File::create(&path).unwrap();
         file.set_len(7).unwrap();
-        file.set_times(fs::FileTimes::new().set_modified(UNIX_EPOCH - std::time::Duration::from_secs(1))).unwrap();
+        file.set_times(
+            fs::FileTimes::new().set_modified(UNIX_EPOCH - std::time::Duration::from_secs(1)),
+        )
+        .unwrap();
         let report = scan_dir_with_report(tmp.path(), Default::default()).unwrap();
         assert_eq!(report.index.total_size(), 7);
         assert_eq!(report.index.all_files[0].mtime, 0);
