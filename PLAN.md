@@ -3620,6 +3620,15 @@ a transfer without leaving the search/catalog workflow.
     sibling name, and manual rejects until review. Pure decision tests cover
     every mutation policy; the broader preview/resolution surface remains
     open. ✅ 2026-08-01
+  - [x] Bounded local file-manager lookup-error handling (2026-11-14):
+    initial destination and keep-both candidate probes reject context-wrapped
+    typed local I/O errors other than NotFound before mutation, across policies.
+    Typed local NotFound keeps ordinary new-destination behavior. The tiny
+    rustc harness compiles the actual resolver/decision and uses filesystem-backed
+    fakes: baseline permission failure overwrites bytes; the fix preserves them
+    for copy/move and rejects candidate failures. Existing/missing paths and
+    legacy remote/untyped behavior are controls. Remote/untyped ambiguity,
+    dangling symlinks, provider caching and lookup-to-write races remain open.
   - [x] Settings now provides a sync-pair comparison table with explicit
     policy selection and local/remote metadata. It offers confirmed one-click
     local-wins/remote-wins application through the existing guarded pair push
@@ -3633,7 +3642,7 @@ a transfer without leaving the search/catalog workflow.
       push plan before any transfer can advance its watermark. Existing-file
       move/copy replacement now requires two known, strictly ordered times.
       Source-bound decision tests cover missing/equal timestamps and explicit
-      overrides. Provider CAS, lookup-error/absence handling, retry/replay
+      overrides. Provider CAS, remote/untyped lookup-error/absence handling, retry/replay
       preconditions and content-hash verification remain separate work.
   - [x] Manual cloud-backup conflicts now expose an explicit local preview
     action when the queued path is an absolute filesystem path; provider and

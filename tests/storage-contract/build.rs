@@ -46,8 +46,8 @@ fn main() {
         &["SyncPairMode", "SyncPair", "SyncPlanEntry", "SyncRemoteEntry", "SyncComparisonAction", "SyncComparisonEntry", "compare_plans", "local_push_plan",
           "plan_local", "plan_local_since", "visit_local", "filter_matches", "glob_matches", "glob_segments", "segment_matches"])).unwrap();
     fs::write(output.join("mutation_conflicts.rs"), production_items(&root.join("drives/tauri_commands.rs"),
-        "use crate::sync::conflict::ConflictPolicy; use std::path::{Path,PathBuf};",
-        &["MutationResolution", "mutation_destination", "mutation_conflict_tests"])).unwrap();
+        "use crate::sync::conflict::ConflictPolicy; use crate::drives::DriveType; use std::path::{Path,PathBuf};",
+        &["MutationResolution", "mutation_destination", "resolve_mutation_path", "mutation_path_exists", "mutation_conflict_tests", "destination_lookup_tests"])).unwrap();
 }
 
 /// Compile the real pure conflict decisions and their mutation regressions,

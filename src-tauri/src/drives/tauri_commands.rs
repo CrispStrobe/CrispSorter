@@ -210,16 +210,35 @@ async fn configured_conflict_policy(state: &AppState) -> ConflictPolicy {
     state.index.lock().await.config.conflict_policy
 }
 
+/// Preserve typed local lookup failures rather than authorizing an overwrite.
+/// Remote providers do not expose portable absence errors. Keep their legacy
+/// behavior here; transport-level io errors cannot identify a missing path.
+fn mutation_path_exists(drive: &dyn super::CloudDrive, path: &Path) -> Result<bool, String> {
+    match drive.stat(path) {
+        Ok(_) => Ok(true),
+        Err(error) => {
+            if drive.drive_type() == DriveType::Local {
+                if let Some(io_error) = error.downcast_ref::<std::io::Error>() {
+                    if io_error.kind() != std::io::ErrorKind::NotFound {
+                        return Err(error.to_string());
+                    }
+                }
+            }
+            Ok(false)
+        }
+    }
+}
+
 /// Resolve an existing destination and return the effective mutation path.
-/// Providers do not expose a portable "not found" error, so a failed stat is
-/// treated as an absent destination; the actual mutation remains authoritative.
+/// Local typed NotFound and ambiguous provider errors retain legacy behavior.
+/// This does not protect against dangling symlinks or changes after lookup.
 fn resolve_mutation_path(
     drive: &dyn super::CloudDrive,
     source: &Path,
     destination: &Path,
     policy: ConflictPolicy,
 ) -> Result<Option<PathBuf>, String> {
-    if source == destination || drive.stat(destination).is_err() {
+    if source == destination || !mutation_path_exists(drive, destination)? {
         return Ok(Some(destination.to_owned()));
     }
     let source_mtime = drive.stat(source).map_err(|e| e.to_string())?.mtime_unix;
@@ -232,7 +251,7 @@ fn resolve_mutation_path(
         MutationResolution::Skip => Ok(None),
         MutationResolution::KeepBoth(mut candidate) => {
             for index in 2..=1000 {
-                if drive.stat(&candidate).is_err() {
+                if !mutation_path_exists(drive, &candidate)? {
                     return Ok(Some(candidate));
                 }
                 let name = candidate
@@ -1863,6 +1882,68 @@ mod drive_search_tests {
             let raw = OsString::from_vec(vec![b'/', 0xff, b'.', b't', b'x', b't']);
             let path = Path::new(&raw);
             assert!(!drive_search_path_matches(path, "txt"));
+        }
+    }
+}
+
+#[cfg(test)]
+mod destination_lookup_tests {
+    use super::*;
+    use crate::drives::{CloudDrive, LocalDrive, DriveType, DirEntry, FileStat};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct LookupFault {
+        local: LocalDrive,
+        error: Option<std::io::ErrorKind>,
+        mutations: AtomicUsize,
+    }
+    impl CloudDrive for LookupFault {
+        fn label(&self) -> &str { "lookup-fault" }
+        fn drive_type(&self) -> DriveType { DriveType::Local }
+        fn list_dir(&self, path: &Path) -> anyhow::Result<Vec<DirEntry>> { self.local.list_dir(path) }
+        fn read_file(&self, path: &Path) -> anyhow::Result<Vec<u8>> { self.local.read_file(path) }
+        fn write_file(&self, path: &Path, data: &[u8]) -> anyhow::Result<()> { self.local.write_file(path, data) }
+        fn delete(&self, path: &Path) -> anyhow::Result<()> { self.local.delete(path) }
+        fn stat(&self, path: &Path) -> anyhow::Result<FileStat> {
+            if path == Path::new("destination") {
+                return match self.error {
+                    Some(kind) => Err(std::io::Error::new(kind, "lookup failed").into()),
+                    None => Err(anyhow::anyhow!("HTTP lookup failed: not found or unauthorized")),
+                };
+            }
+            self.local.stat(path)
+        }
+        fn copy_path(&self, source: &Path, destination: &Path) -> anyhow::Result<()> {
+            self.mutations.fetch_add(1, Ordering::Relaxed);
+            self.local.copy_path(source, destination)
+        }
+        fn move_path(&self, source: &Path, destination: &Path) -> anyhow::Result<()> {
+            self.mutations.fetch_add(1, Ordering::Relaxed);
+            self.local.move_path(source, destination)
+        }
+    }
+    #[test]
+    fn newest_destination_lookup_failure_preserves_bytes_before_copy_or_move() {
+        for kind in [Some(std::io::ErrorKind::PermissionDenied), Some(std::io::ErrorKind::TimedOut), Some(std::io::ErrorKind::NotADirectory)] {
+            for moving in [false, true] {
+                let root = tempfile::tempdir().unwrap();
+                std::fs::write(root.path().join("source"), b"incoming").unwrap();
+                std::fs::write(root.path().join("destination"), b"existing").unwrap();
+                let drive = LookupFault { local: LocalDrive::new("local", root.path()), error: kind, mutations: AtomicUsize::new(0) };
+                // Same resolver and dispatch as drive_copy_path/drive_move_path;
+                // the real LocalDrive performs any mutation admitted by it.
+                let result = (|| -> Result<(), String> {
+                    if let Some(destination) = resolve_mutation_path(&drive, Path::new("source"), Path::new("destination"), ConflictPolicy::NewestWins)? {
+                        let operation = if moving { drive.move_path(Path::new("source"), &destination) } else { drive.copy_path(Path::new("source"), &destination) };
+                        operation.map_err(|error| error.to_string())?;
+                    }
+                    Ok(())
+                })();
+                assert_eq!(std::fs::read(root.path().join("destination")).unwrap(), b"existing", "lookup={kind:?}, moving={moving}, result={result:?}");
+                assert_eq!(std::fs::read(root.path().join("source")).unwrap(), b"incoming");
+                assert!(result.is_err());
+                assert_eq!(drive.mutations.load(Ordering::Relaxed), 0);
+            }
         }
     }
 }
