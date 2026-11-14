@@ -5,7 +5,15 @@ quick-xml 0.38.4, the app's locked version. Regressions cover XML named/numeric
 references, split text, CDATA, Unicode, significant displayname whitespace,
 invalid references, ignored vendor properties, rejected truncated listings,
 complete empty multistatus responses, and rejection of missing, unrelated,
-nested or multiple document roots. Propstat regressions cover status before/after
+nested or multiple document roots. Character content outside the document root
+is rejected, including leading/trailing junk, Unicode whitespace outside XML S,
+CDATA (even empty), and entity/reference events (even whitespace references).
+This prevents complete entries or empty listings from being returned for malformed
+response bodies. Literal XML whitespace, an initial BOM, normal declarations,
+comments and processing instructions remain compatible; declaration/doctype
+placement is not validated. Production regressions cover empty and nonempty
+listings, split outside-root text, legacy/namespaced roots, and unchanged interior
+entity/vendor-property behavior. Propstat regressions cover status before/after
 properties, mixed success/failure blocks in either order, rejected malformed or
 duplicate status, ignored nested vendor propstats/status/types, failed resource types,
 and conflicting available type declarations across separate blocks. Response-level

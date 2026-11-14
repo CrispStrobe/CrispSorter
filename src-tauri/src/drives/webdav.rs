@@ -460,7 +460,8 @@ struct DavResponse {
 
 /// Parse a multi-status PROPFIND XML body into a flat list of responses.
 /// Resilient to unfamiliar properties (we only read what we ask for).
-/// Require one multistatus document root. Resolve DAV: namespaces with any
+/// Require one multistatus document root, with only XML whitespace as character
+/// content outside it. Resolve DAV: namespaces with any
 /// prefix or default declaration; accept unprefixed/no-namespace legacy elements
 /// even in mixed server replies. Explicit foreign URIs and unknown prefixes are
 /// opaque, including DAV-looking descendants outside recognized property paths.
@@ -636,6 +637,24 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
                 {
                     resource_type_collection = true;
                 }
+            }
+            Event::Text(e) if path_stack.is_empty() => {
+                // Outside the root XML permits only literal S whitespace.
+                // Unicode whitespace and references to whitespace are not S.
+                if !e
+                    .as_ref()
+                    .iter()
+                    .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
+                {
+                    return Err(anyhow!(
+                        "propfind parse error: character content outside multistatus root"
+                    ));
+                }
+            }
+            Event::CData(_) | Event::GeneralRef(_) if path_stack.is_empty() => {
+                return Err(anyhow!(
+                    "propfind parse error: character content outside multistatus root"
+                ));
             }
             Event::Text(e) if collecting_text => {
                 text_buf.push_str(
@@ -1988,6 +2007,63 @@ mod tests {
             "<multistatus/>",
         ] {
             assert!(parse_propfind(body).unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn parse_propfind_rejects_character_content_outside_document_root() {
+        let mut accepted = Vec::new();
+        for root in [
+            "<multistatus/>",
+            "<multistatus><response><href>/dav/report</href></response></multistatus>",
+        ] {
+            for content in [
+                "upstream error",
+                " \n<!-- split -->junk<?vendor split?> \t",
+                "\u{85}",
+                "\u{a0}",
+                "\u{2028}",
+                "<![CDATA[ ]]>",
+                "<![CDATA[]]>",
+                "&amp;",
+                "&#32;",
+                "&unknown;",
+            ] {
+                for body in [format!("{content}{root}"), format!("{root}{content}")] {
+                    if parse_propfind(&body).is_ok() {
+                        accepted.push(body);
+                    }
+                }
+            }
+            let trailing_bom = format!("{root}\u{feff}");
+            if parse_propfind(&trailing_bom).is_ok() {
+                accepted.push(trailing_bom);
+            }
+        }
+        assert!(accepted.is_empty(), "accepted non-listings: {accepted:?}");
+    }
+
+    #[test]
+    fn parse_propfind_preserves_legal_document_padding() {
+        for root in [
+            "<multistatus/>",
+            "<multistatus xmlns='DAV:'></multistatus>",
+            "<d:multistatus xmlns:d='DAV:'><d:response><d:href>/dav/report</d:href><d:prop><d:displayname>A &amp; B</d:displayname><d:vendor>&unknown;</d:vendor></d:prop></d:response></d:multistatus>",
+        ] {
+            let expected = parse_propfind(root).unwrap();
+            for prefix in [
+                "",
+                "\u{feff}<?xml version=\"1.0\"?>",
+                "<?xml version=\"1.0\"?><!DOCTYPE multistatus>",
+            ] {
+                let body = format!("{prefix} \t\r\n<!-- before --><?vendor before?>{root}\r\n\t <!-- after --><?vendor after?>");
+                let parsed = parse_propfind(&body).unwrap();
+                assert_eq!(parsed.len(), expected.len());
+                if let Some(entry) = parsed.first() {
+                    assert_eq!(entry.href, "/dav/report");
+                    assert_eq!(entry.displayname.as_deref(), Some("A & B"));
+                }
+            }
         }
     }
 

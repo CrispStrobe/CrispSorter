@@ -13,6 +13,8 @@ fn main() {
         "parse_propfind_preserves_spaces_around_escaped_ampersand",
         "parse_propfind_rejects_truncation_after_complete_response",
         "parse_propfind_requires_a_multistatus_document_root",
+        "parse_propfind_rejects_character_content_outside_document_root",
+        "parse_propfind_preserves_legal_document_padding",
         "parse_propfind_honors_response_status",
         "parse_propfind_keeps_response_and_propstat_status_separate",
         "parse_propfind_rejects_invalid_response_status",

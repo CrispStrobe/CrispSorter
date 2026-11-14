@@ -3656,6 +3656,17 @@ a transfer without leaving the search/catalog workflow.
     offline/locked with one build job, debug info and incremental disabled.
     This verifies parsing only; HTTP transport, live provider parity and full
     application builds were not exercised in this follow-up.
+  - [x] Bounded WebDAV PROPFIND document-text follow-up (2026-11-14).
+    Non-whitespace text, CDATA and references outside the multistatus root now
+    reject the whole listing, preventing malformed server bodies from returning
+    successful empty or populated listings. Literal XML whitespace, initial BOM,
+    declarations, comments, processing instructions and legacy namespaces remain
+    compatible; interior entity and ignored vendor-property behavior is unchanged.
+    A production-path regression first reproduced the false successes. All 34
+    lightweight production-parser tests then passed offline/locked with one build
+    job, debug info and incremental disabled. This is a bounded parser guard;
+    declaration/doctype ordering, full XML validation, HTTP transport, live provider
+    parity and full application builds were not exercised in this follow-up.
   - [x] Nextcloud / ownCloud WebDAV boundary. Both providers are usable
     through WebDavDrive (remote.php DAV roots, Basic/app-password auth,
     PROPFIND, MKCOL, MOVE, COPY, and OCS sharing). The actual CrispCloud
