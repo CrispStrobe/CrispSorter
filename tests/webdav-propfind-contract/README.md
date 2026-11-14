@@ -8,7 +8,10 @@ complete empty multistatus responses, and rejection of missing, unrelated,
 nested or multiple document roots. Propstat regressions cover status before/after
 properties, mixed success/failure blocks in either order, rejected malformed or
 duplicate status, ignored nested vendor propstats/status/types, failed resource types,
-and conflicting available type declarations across separate blocks.
+and conflicting available type declarations across separate blocks. Response-level
+regressions cover failed resources in either listing order, 2xx status-only
+responses, malformed/empty/duplicate statuses, ignored vendor subtrees (including
+nested responses), and independent response/propstat outcomes.
 
 Properties are buffered until propstat closes: only 2xx or legacy statusless
 blocks contribute values. A failed explicit resourcetype (including an empty
@@ -17,9 +20,13 @@ than classifying an unknown directory as a file. Conflicting available types
 across separate blocks also fail clearly. Optional failed metadata stays absent. Missing status, omitted resourcetype, and direct properties without
 propstat (both response/prop/resourcetype and response/resourcetype) retain
 legacy behavior; a statusless block cannot be distinguished from
-a successful legacy server reply. Namespace URIs and response-level status are
-not validated. This target does not exercise HTTP transport or compile the full
-application.
+a successful legacy server reply. Direct response statuses are read only at
+multistatus/response/status and must be valid 2xx status lines. A failed resource
+fails the whole listing rather than silently returning incomplete results. For
+compatibility, a 2xx direct status may coexist with propstats; it does not override
+a failed property status or unavailable resource type. Structural matching still
+uses local names, without namespace URI validation or full XML/schema validation.
+This target does not exercise HTTP transport or compile the full application.
 
 Run from the repository root, reusing an inactive lightweight target directory:
 

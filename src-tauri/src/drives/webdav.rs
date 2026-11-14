@@ -464,8 +464,9 @@ struct DavResponse {
 /// Require one multistatus document root, retaining local-name matching for
 /// prefixed, default-namespace and plain unprefixed server compatibility.
 /// Buffer propstat properties until their status is known. Statusless blocks
-/// retain legacy server compatibility; namespace URIs and response-level status
-/// are not validated here.
+/// retain legacy server compatibility. A direct response status must be 2xx;
+/// failed responses fail the whole listing to avoid returning incomplete results.
+/// Namespace URIs are not validated here.
 fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
     let mut reader = Reader::from_str(body);
     // References, CDATA and comments split text events. Trim only complete
@@ -478,6 +479,7 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
     let mut current: Option<DavResponse> = None;
     let mut propstat: Option<DavResponse> = None;
     let mut propstat_status: Option<u16> = None;
+    let mut response_status: Option<u16> = None;
     let mut propstat_has_type = false;
     let mut type_available = false;
     let mut type_failed = false;
@@ -492,10 +494,11 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
                 name.as_str(),
                 "href" | "displayname" | "getcontentlength" | "getlastmodified"
             ) || (name == "status"
-                && dav_path_is(
-                    &path_stack,
-                    &["multistatus", "response", "propstat", "status"],
-                ))
+                && (dav_path_is(&path_stack, &["multistatus", "response", "status"])
+                    || dav_path_is(
+                        &path_stack,
+                        &["multistatus", "response", "propstat", "status"],
+                    )))
         });
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
@@ -508,7 +511,11 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
                     }
                     root_seen = true;
                 }
-                if local == "response" {
+                if dav_path_is(&path_stack, &["multistatus", "response", "status"]) {
+                    return Err(anyhow!("propfind parse error: invalid response status"));
+                }
+                if local == "response" && dav_path_is(&path_stack, &["multistatus"]) {
+                    response_status = None;
                     current = Some(DavResponse::default());
                     type_available = false;
                     type_failed = false;
@@ -577,6 +584,12 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
                         ));
                     }
                     root_seen = true;
+                }
+                if dav_path_is(&path_stack, &["multistatus", "response", "status"])
+                    || (local == "status"
+                        && dav_path_is(&path_stack, &["multistatus", "response"]))
+                {
+                    return Err(anyhow!("propfind parse error: invalid response status"));
                 }
                 if local == "status"
                     && dav_path_is(&path_stack, &["multistatus", "response", "propstat"])
@@ -669,6 +682,22 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
             Ok(Event::End(e)) => {
                 let local = local_name(&e.name().as_ref());
                 if local == "status"
+                    && dav_path_is(&path_stack, &["multistatus", "response", "status"])
+                {
+                    if response_status.is_some() {
+                        return Err(anyhow!("propfind parse error: duplicate response status"));
+                    }
+                    response_status = Some(parse_dav_status(&text_buf, "response")?);
+                }
+                if local == "response"
+                    && dav_path_is(&path_stack, &["multistatus", "response"])
+                    && response_status.is_some_and(|status| !(200..300).contains(&status))
+                {
+                    // Omitting a failed resource would make an incomplete listing
+                    // look successful to both listing and stat callers.
+                    return Err(anyhow!("propfind parse error: failed response status"));
+                }
+                if local == "status"
                     && dav_path_is(
                         &path_stack,
                         &["multistatus", "response", "propstat", "status"],
@@ -677,7 +706,7 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
                     if propstat_status.is_some() {
                         return Err(anyhow!("propfind parse error: duplicate propstat status"));
                     }
-                    propstat_status = Some(parse_propstat_status(&text_buf)?);
+                    propstat_status = Some(parse_dav_status(&text_buf, "propstat")?);
                 }
                 if local == "propstat"
                     && dav_path_is(&path_stack, &["multistatus", "response", "propstat"])
@@ -733,7 +762,7 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
                         "getlastmodified" if !text_buf.trim().is_empty() => {
                             r.lastmodified = Some(text_buf.trim().to_owned())
                         }
-                        "response" => {
+                        "response" if dav_path_is(&path_stack, &["multistatus", "response"]) => {
                             if type_failed && !type_available {
                                 return Err(anyhow!(
                                     "propfind parse error: unavailable resourcetype"
@@ -788,7 +817,7 @@ fn merge_resource_type(
 }
 
 // DAV:status contains an HTTP status line. Keep the reason phrase opaque.
-fn parse_propstat_status(text: &str) -> Result<u16> {
+fn parse_dav_status(text: &str, scope: &str) -> Result<u16> {
     let mut parts = text.split_ascii_whitespace();
     let version = parts.next().unwrap_or("");
     let code = parts.next().unwrap_or("");
@@ -808,9 +837,9 @@ fn parse_propstat_status(text: &str) -> Result<u16> {
         .ok()
         .filter(|status| (100..600).contains(status));
     if !valid_version || code.len() != 3 || !code.bytes().all(|c| c.is_ascii_digit()) {
-        return Err(anyhow!("propfind parse error: invalid propstat status"));
+        return Err(anyhow!("propfind parse error: invalid {scope} status"));
     }
-    status.ok_or_else(|| anyhow!("propfind parse error: invalid propstat status"))
+    status.ok_or_else(|| anyhow!("propfind parse error: invalid {scope} status"))
 }
 
 fn local_name(qname: &[u8]) -> String {
@@ -1991,6 +2020,110 @@ mod tests {
         assert!(!parse_propfind(vendor).unwrap()[0].is_collection);
         let vendor = "<multistatus><response><vendor><propstat><status/></propstat></vendor><resourcetype><collection/></resourcetype></response></multistatus>";
         assert!(parse_propfind(vendor).unwrap()[0].is_collection);
+    }
+
+    #[test]
+    fn parse_propfind_honors_response_status() {
+        let good = "<response><href>/dav/good</href><status>HTTP/1.1 200 OK</status></response>";
+        for code in [
+            "301 Moved Permanently",
+            "403 Forbidden",
+            "404 Not Found",
+            "500 Server Error",
+        ] {
+            let failed = format!(
+                "<response><href>/dav/failed</href><status>HTTP/1.1 {code}</status></response>"
+            );
+            for responses in [format!("{good}{failed}"), format!("{failed}{good}")] {
+                let xml = format!("<multistatus>{responses}</multistatus>");
+                assert!(
+                    parse_propfind(&xml).is_err(),
+                    "accepted failed response: {code}"
+                );
+            }
+        }
+        for (prefix, namespace) in [
+            ("d:", " xmlns:d=\"DAV:\""),
+            ("", " xmlns=\"DAV:\""),
+            ("", ""),
+        ] {
+            let xml = format!("<{prefix}multistatus{namespace}><{prefix}response><{prefix}href>/dav/good</{prefix}href><{prefix}status>HTTP/1.1 200 OK</{prefix}status></{prefix}response></{prefix}multistatus>");
+            let parsed = parse_propfind(&xml).unwrap();
+            assert_eq!(parsed.len(), 1);
+            assert_eq!(parsed[0].href, "/dav/good");
+        }
+        for status in [
+            "HTTP/1.1 204 No Content",
+            "HTTP/2 299 Custom",
+            "HTTP/1.1 2<!-- split -->00 OK",
+        ] {
+            let xml = format!("<multistatus><response><href>/dav/good</href><status>{status}</status></response></multistatus>");
+            assert_eq!(parse_propfind(&xml).unwrap().len(), 1);
+        }
+        let xml = "<multistatus><response><href>/dav/one</href><status>HTTP/1.1 200 OK</status></response><response><href>/dav/two</href><vendor><status>HTTP/1.1 404 Not Found</status><status/></vendor></response></multistatus>";
+        assert_eq!(parse_propfind(xml).unwrap().len(), 2);
+        let vendor = "<vendor><response><status>HTTP/1.1 200 OK</status></response></vendor>";
+        for status in [
+            "<status>HTTP/1.1 404 Not Found</status>",
+            "<status>HTTP/1.1 200 OK</status><status>HTTP/1.1 200 OK</status>",
+        ] {
+            for content in [format!("{status}{vendor}"), format!("{vendor}{status}")] {
+                let xml = format!("<multistatus><response><href>/dav/file</href>{content}</response></multistatus>");
+                assert!(
+                    parse_propfind(&xml).is_err(),
+                    "vendor response masked status"
+                );
+            }
+        }
+        let xml = format!("<multistatus><response><href>/dav/file</href>{vendor}<status>HTTP/1.1 200 OK</status></response>{vendor}</multistatus>");
+        assert_eq!(parse_propfind(&xml).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn parse_propfind_rejects_invalid_response_status() {
+        for status in [
+            "<status/>",
+            "<status></status>",
+            "<status>404 Not Found</status>",
+            "<status>HTTP/1.1 999 Invalid</status>",
+            "<status>HTTP/1.1 200 OK</status><status>HTTP/1.1 200 OK</status>",
+            "<status>HTTP/1.1 200 OK</status><status/>",
+            "<status><vendor/>HTTP/1.1 200 OK</status>",
+        ] {
+            let xml = format!(
+                "<multistatus><response><href>/dav/file</href>{status}</response></multistatus>"
+            );
+            assert!(
+                parse_propfind(&xml).is_err(),
+                "accepted invalid status: {status}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_propfind_keeps_response_and_propstat_status_separate() {
+        for response_status in ["", "<status>HTTP/1.1 200 OK</status>"] {
+            let props = "<propstat><prop><displayname>ignored</displayname></prop><status>HTTP/1.1 404 Not Found</status></propstat><propstat><prop><displayname>available</displayname><resourcetype/></prop><status>HTTP/1.1 200 OK</status></propstat>";
+            for content in [
+                format!("{response_status}{props}"),
+                format!("{props}{response_status}"),
+            ] {
+                let xml = format!("<multistatus><response><href>/dav/file</href>{content}</response></multistatus>");
+                let parsed = parse_propfind(&xml).unwrap();
+                assert_eq!(parsed[0].displayname.as_deref(), Some("available"));
+            }
+        }
+        let success = "<status>HTTP/1.1 200 OK</status>";
+        let failed_type = "<propstat><prop><resourcetype/></prop><status>HTTP/1.1 403 Forbidden</status></propstat>";
+        let failed_response = "<status>HTTP/1.1 404 Not Found</status>";
+        let available_type =
+            "<propstat><prop><resourcetype/></prop><status>HTTP/1.1 200 OK</status></propstat>";
+        for (status, props) in [(success, failed_type), (failed_response, available_type)] {
+            for content in [format!("{status}{props}"), format!("{props}{status}")] {
+                let xml = format!("<multistatus><response><href>/dav/file</href>{content}</response></multistatus>");
+                assert!(parse_propfind(&xml).is_err());
+            }
+        }
     }
 
     #[test]
