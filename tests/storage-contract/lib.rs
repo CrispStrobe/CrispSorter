@@ -29,6 +29,7 @@ pub mod sync {
         include!(concat!(env!("OUT_DIR"), "/pair_conflicts.rs"));
     }
 }
+use drives::CloudDrive;
 mod file_conflicts {
     include!(concat!(env!("OUT_DIR"), "/mutation_conflicts.rs"));
 }

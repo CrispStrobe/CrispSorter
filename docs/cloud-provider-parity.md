@@ -211,11 +211,23 @@ For file-manager move/copy against an existing destination, newest-wins permits
 replacement only when both timestamps are known and the source is strictly
 newer. Unknown, zero or equal timestamps preserve the destination. These checks do
 not add provider conditional writes: source or destination changes after a
-comparison, failed destination lookups, retry/offline replay, and provider cache
+comparison, ambiguous remote/untyped destination lookups, retry/offline replay, and provider cache
 freshness remain separate transaction/CAS work. Equal size and timestamp still
 mean metadata-unchanged, not verified content equality; timestamp precision and
 clock skew can also hide differences. Keep-both and durable per-file manual
 resolution remain open.
+
+File-manager destination and keep-both candidate probes now reject typed local
+I/O failures other than `NotFound` before invoking copy/move, across all policies.
+Context-wrapped permission, timeout and `NotADirectory` errors cannot authorize
+an overwrite. Local typed `NotFound` retains the new-destination behavior.
+This is a partial boundary: remote and untyped errors retain their old behavior
+because their missing-path and transport/authentication errors cannot be safely
+distinguished here. Remote transport `NotFound` is not distinguished from a missing path; these
+legacy errors can still admit mutation.
+Local stat follows symlinks, so dangling destination symlinks remain unresolved;
+`NotFound` does not prove that no directory entry exists. Conditional mutation,
+provider cache freshness and lookup-to-write races also remain open.
 
 Sync inventory prefers a nonzero file-stat size over an omitted or stale listing
 size. Some adapters represent both missing size and an empty file as zero; when

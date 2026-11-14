@@ -65,3 +65,17 @@ UNC directory set in `CRISPSORTER_TEST_MOUNT_ROOT`, run the same command with
 `-- --ignored unc_or_verbatim_root`. An unavailable share means UNC remains
 unrun, not passed. Cross-compilation checks APIs only; native Windows execution
 is required before merging the held-destination candidate.
+
+For a dependency-build-free check of destination lookup handling, supply an
+existing compatible anyhow rlib:
+
+```sh
+python3 tests/storage-contract/check_destination_lookup.py --anyhow /path/to/libanyhow-HASH.rlib
+```
+
+This extracts the actual mutation resolver/decision from production source and
+uses a filesystem-backed fake provider; it does not compile LocalDrive or Tauri.
+`--source /path/to/tauri_commands.rs --filter actual_resolver_blocks` can reproduce
+the pre-fix byte overwrite from an exported baseline source. The regular harness
+also extracts the resolver and has LocalDrive-backed regressions, but those
+additional tests were not run for this change due to the build resource limit.
