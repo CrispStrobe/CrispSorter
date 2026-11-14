@@ -19,6 +19,7 @@ repository  = "https://github.com/CrispStrobe/CrispSorter"
 [lib]
 
 [dependencies]
+crispcat-format = { path = "../crispcat-format" }
 serde       = { version = "1", features = ["derive"] }
 anyhow      = "1"
 rayon       = "1.10"

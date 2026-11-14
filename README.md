@@ -1057,3 +1057,5 @@ articles already present in the index. The import is read-only: articles
 removed from Wallabag are not automatically removed locally. The account is not
 continuously synchronised, and each run requires credentials to be entered or explicitly loaded again. Large
 libraries take longer when vector embeddings are enabled.
+
+The standalone `crates/crispcat-format` library exposes the CAF codec and metadata types with only serde at runtime. It builds outside the application workspace and can be consumed as a pinned Git dependency; `crispcat` keeps compatible re-exports. Existing MIT notices are retained. Registry publication is a separate step.

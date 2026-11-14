@@ -2272,6 +2272,7 @@ version = "0.8.32"
 name = "crispcat"
 version = "0.1.0"
 dependencies = [
+ "crispcat-format",
  "anyhow",
  "arrow-array",
  "arrow-schema",
@@ -2287,6 +2288,13 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "crispcat-format"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

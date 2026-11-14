@@ -11,9 +11,9 @@
 //! * [`dedup`] — duplicate detection across folders / `.caf` files
 //! * [`lance`] — *(feature `lance`)* LanceDB-backed materialisation
 
-pub mod caf;
+pub use crispcat_format::caf;
 pub mod dedup;
-pub mod index;
+pub use crispcat_format::index;
 pub mod scan;
 
 #[cfg(feature = "lance")]

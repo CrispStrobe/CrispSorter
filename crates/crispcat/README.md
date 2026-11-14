@@ -18,3 +18,5 @@ its Rust/SQLite API. CAF exports are portable snapshots; they do not replace the
 working database or carry its scan-completeness diagnostics. The upstream
 Unicode extension uses heuristic UTF-8 detection; classic Cathy/Python readers
 need Latin-1 compatibility exports.
+
+The CAF codec and metadata types now live in the independently buildable `../crispcat-format` crate. This crate re-exports `crispcat::caf` and `crispcat::index`, preserving existing imports and type identity. Scanning, hashing and optional database materialization remain here.

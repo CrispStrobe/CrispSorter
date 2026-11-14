@@ -1,0 +1,22 @@
+[package]
+name = "crispcat-format"
+version = "0.1.0"
+edition = "2021"
+description = "Portable Cathy/Catfish CAF catalogue codec and metadata types"
+license = "MIT"
+repository = "https://github.com/CrispStrobe/CrispSorter"
+readme = "README.md"
+keywords = ["cathy", "caf", "catalog", "filesystem"]
+categories = ["filesystem", "parser-implementations"]
+
+# Keep this format-only library independently buildable. Git consumers do not
+# need CrispSorter's application workspace or its sibling ML/Office repos.
+[workspace]
+resolver = "2"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3"
+serde_json = "1"

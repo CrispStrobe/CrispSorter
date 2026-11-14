@@ -47,7 +47,7 @@ members  = [
 # rust-version. Excluding `_sibling` stops that walk at crisp-docx's
 # workspace root, which is what we want. No-op in dev where _sibling/
 # doesn't exist.
-exclude = ["_sibling", "crates/crisp-smb-source"]
+exclude = ["_sibling", "crates/crisp-smb-source", "crates/crispcat-format"]
 
 # Lockfile lives at the workspace root (`Cargo.lock`). The previous
 # `src-tauri/Cargo.lock` is removed in the same change that introduces
