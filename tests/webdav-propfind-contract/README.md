@@ -17,7 +17,12 @@ Properties are buffered until propstat closes: only 2xx or legacy statusless
 blocks contribute values. A failed explicit resourcetype (including an empty
 one) requires an available type from another block, or the listing fails rather
 than classifying an unknown directory as a file. Conflicting available types
-across separate blocks also fail clearly. Optional failed metadata stays absent. Missing status, omitted resourcetype, and direct properties without
+within a successful or legacy statusless propstat, as well as across separate
+blocks, also fail clearly. Each declaration is classified independently;
+consistent duplicates remain accepted, while conflicts inside failed propstats
+are ignored if an available type exists. The focused production parser tests
+cover both declaration orders, empty/paired tags, split prop elements, status
+position, foreign subtrees, and state reset between blocks/responses. Optional failed metadata stays absent. Missing status, omitted resourcetype, and direct properties without
 propstat (both response/prop/resourcetype and response/resourcetype) retain
 legacy behavior; a statusless block cannot be distinguished from
 a successful legacy server reply. Direct response statuses are read only at
