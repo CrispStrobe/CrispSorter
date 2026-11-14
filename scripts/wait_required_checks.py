@@ -14,7 +14,10 @@ statuses for exactly that SHA, keeps the newest run per check name, and
 requires the branch-protection required contexts to be present when the API
 exposes them.
 
-Green means: at least one check exists, and every check is success or skipped.
+Green means: at least one check exists, and every check run, commit status and
+GitHub Actions workflow run for that SHA is success or skipped. Workflow runs
+count because a run can stay queued or pending without having created any
+check run yet.
 queued / in_progress / pending / waiting keep it waiting. cancelled, failure,
 timed_out, action_required, neutral, stale and startup_failure fail at once.
 Once everything is green it waits --settle seconds and checks again, so late
@@ -81,9 +84,28 @@ def checks_for(repo: str, sha: str) -> dict[str, str]:
         for run in page.get("check_runs", []):
             key = run.get("started_at") or "", run.get("id") or 0
             state = run.get("conclusion") if run.get("status") == "completed" else run.get("status")
+            # Several workflows may each have a job with the same name; keep them apart
+            # by check suite, and keep only the newest run (re-runs) within a suite.
             name = run["name"]
-            if name not in out or key > out[name][0]:
-                out[name] = (key, state)
+            suite = (run.get("check_suite") or {}).get("id")
+            ident = name if suite is None else f"{name} [suite {suite}]"
+            if ident not in out or key > out[ident][0]:
+                out[ident] = (key, state)
+    # A workflow run can sit in queued/pending (runner queue, concurrency group)
+    # before it has created any check run, so check runs alone can look green
+    # while whole workflows have not started. Count every Actions run for the SHA.
+    runs = gh_api(f"repos/{repo}/actions/runs?head_sha={sha}&per_page=100", paginate=True)
+    newest: dict[str, tuple] = {}
+    for page in runs:
+        for wr in page.get("workflow_runs", []):
+            key = wr.get("created_at") or "", wr.get("id") or 0, wr.get("run_attempt") or 0
+            workflow_id = wr.get("workflow_id") or wr.get("path") or wr.get("name")
+            wf = f"workflow {wr.get('name') or workflow_id} [{wr.get('event')}; id {workflow_id}]"
+            if wf not in newest or key > newest[wf][0]:
+                state = wr.get("conclusion") if wr.get("status") == "completed" else wr.get("status")
+                newest[wf] = (key, state)
+    for wf, (_, state) in newest.items():
+        out[wf] = (("", 0), state)
     status = gh_api(f"repos/{repo}/commits/{sha}/status?per_page=100")
     for st in status.get("statuses", []):  # newest first per the API
         name = st["context"]
@@ -125,11 +147,15 @@ def main(argv=None) -> int:
         except RuntimeError as e:
             print(e, file=sys.stderr)
             return 4
+        present = {k.split(" [suite ")[0] for k in states}
         for name in required:
-            states.setdefault(name, "expected")
+            if name not in present:
+                states[name] = "expected"
         bad = {n: s for n, s in states.items() if s not in GREEN and s not in PENDING}
-        pending = {n: s for n, s in states.items() if s in PENDING and n not in a.allow_stalled}
-        stalled = sorted(n for n, s in states.items() if s in PENDING and n in a.allow_stalled)
+        def allowed(n):
+            return n.split(" [suite ")[0] in a.allow_stalled
+        pending = {n: s for n, s in states.items() if s in PENDING and not allowed(n)}
+        stalled = sorted(n for n, s in states.items() if s in PENDING and allowed(n))
         el = time.time() - t0
         if bad:
             print("NOT GREEN:", json.dumps(bad, sort_keys=True))
