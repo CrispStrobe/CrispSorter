@@ -4,8 +4,10 @@ Tauri or HTTP dependencies. It uses
 quick-xml 0.38.4, the app's locked version. Regressions cover XML named/numeric
 references, split text, CDATA, Unicode, significant displayname whitespace,
 invalid references, ignored vendor properties, rejected truncated listings,
-and complete empty multistatus responses. It does not exercise HTTP
-transport or compile the full application.
+complete empty multistatus responses, and rejection of missing, unrelated,
+nested or multiple document roots. The root check retains local-name matching:
+namespace URI and propstat status validation remain outside its scope. It does
+not exercise HTTP transport or compile the full application.
 
 Run from the repository root, reusing an inactive lightweight target directory:
 

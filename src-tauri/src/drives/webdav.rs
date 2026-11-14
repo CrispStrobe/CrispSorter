@@ -461,6 +461,9 @@ struct DavResponse {
 
 /// Parse a multi-status PROPFIND XML body into a flat list of responses.
 /// Resilient to unfamiliar properties (we only read what we ask for).
+/// Require one multistatus document root, retaining local-name matching for
+/// prefixed, default-namespace and plain unprefixed server compatibility.
+/// This root check does not validate namespace URIs or propstat status codes.
 fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
     let mut reader = Reader::from_str(body);
     // References, CDATA and comments split text events. Trim only complete
@@ -471,6 +474,7 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
     let mut buf = Vec::new();
 
     let mut current: Option<DavResponse> = None;
+    let mut root_seen = false;
     let mut path_stack: Vec<String> = Vec::new();
     let mut text_buf = String::new();
 
@@ -484,6 +488,12 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
                 let local = local_name(&e.name().as_ref());
+                if path_stack.is_empty() {
+                    if root_seen || local != "multistatus" {
+                        return Err(anyhow!("propfind parse error: expected one multistatus root"));
+                    }
+                    root_seen = true;
+                }
                 if local == "response" {
                     current = Some(DavResponse::default());
                 }
@@ -492,6 +502,12 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
             }
             Ok(Event::Empty(e)) => {
                 let local = local_name(&e.name().as_ref());
+                if path_stack.is_empty() {
+                    if root_seen || local != "multistatus" {
+                        return Err(anyhow!("propfind parse error: expected one multistatus root"));
+                    }
+                    root_seen = true;
+                }
                 // <D:collection/> inside resourcetype → it's a folder.
                 if local == "collection" && path_stack.iter().any(|p| p == "resourcetype") {
                     if let Some(ref mut r) = current {
@@ -566,6 +582,9 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
                 // return parsed entries when EOF leaves an element open.
                 if !path_stack.is_empty() {
                     return Err(anyhow!("propfind parse error: unexpected EOF in XML element"));
+                }
+                if !root_seen {
+                    return Err(anyhow!("propfind parse error: missing multistatus root"));
                 }
                 break;
             }
@@ -1626,6 +1645,32 @@ mod tests {
         assert!(parse_propfind(truncated).is_err());
         let complete = format!("{truncated}</d:multistatus>");
         assert_eq!(parse_propfind(&complete).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn parse_propfind_requires_a_multistatus_document_root() {
+        let mut accepted = Vec::new();
+        for body in [
+            "",
+            " \n\t",
+            "<?xml version=\"1.0\"?><!-- no document -->",
+            "<html><body>Sign in</body></html>",
+            "<error/>",
+            "<wrapper><multistatus/></wrapper>",
+            "<multistatus/><multistatus/>",
+        ] {
+            if parse_propfind(body).is_ok() {
+                accepted.push(body);
+            }
+        }
+        assert!(accepted.is_empty(), "accepted non-listings: {accepted:?}");
+        for body in [
+            r#"<d:multistatus xmlns:d="DAV:"/>"#,
+            r#"<multistatus xmlns="DAV:"></multistatus>"#,
+            "<multistatus/>",
+        ] {
+            assert!(parse_propfind(body).unwrap().is_empty());
+        }
     }
 
     #[test]
