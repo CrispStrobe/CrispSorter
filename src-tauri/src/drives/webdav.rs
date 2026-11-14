@@ -463,7 +463,9 @@ struct DavResponse {
 /// Resilient to unfamiliar properties (we only read what we ask for).
 /// Require one multistatus document root, retaining local-name matching for
 /// prefixed, default-namespace and plain unprefixed server compatibility.
-/// This root check does not validate namespace URIs or propstat status codes.
+/// Buffer propstat properties until their status is known. Statusless blocks
+/// retain legacy server compatibility; namespace URIs and response-level status
+/// are not validated here.
 fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
     let mut reader = Reader::from_str(body);
     // References, CDATA and comments split text events. Trim only complete
@@ -474,6 +476,12 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
     let mut buf = Vec::new();
 
     let mut current: Option<DavResponse> = None;
+    let mut propstat: Option<DavResponse> = None;
+    let mut propstat_status: Option<u16> = None;
+    let mut propstat_has_type = false;
+    let mut type_available = false;
+    let mut type_failed = false;
+    let mut direct_type_collection = false;
     let mut root_seen = false;
     let mut path_stack: Vec<String> = Vec::new();
     let mut text_buf = String::new();
@@ -483,19 +491,79 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
             matches!(
                 name.as_str(),
                 "href" | "displayname" | "getcontentlength" | "getlastmodified"
-            )
+            ) || (name == "status"
+                && dav_path_is(
+                    &path_stack,
+                    &["multistatus", "response", "propstat", "status"],
+                ))
         });
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
                 let local = local_name(&e.name().as_ref());
                 if path_stack.is_empty() {
                     if root_seen || local != "multistatus" {
-                        return Err(anyhow!("propfind parse error: expected one multistatus root"));
+                        return Err(anyhow!(
+                            "propfind parse error: expected one multistatus root"
+                        ));
                     }
                     root_seen = true;
                 }
                 if local == "response" {
                     current = Some(DavResponse::default());
+                    type_available = false;
+                    type_failed = false;
+                }
+                if local == "propstat" && dav_path_is(&path_stack, &["multistatus", "response"]) {
+                    if propstat.is_some() {
+                        return Err(anyhow!("propfind parse error: nested propstat"));
+                    }
+                    propstat = Some(DavResponse::default());
+                    propstat_status = None;
+                    propstat_has_type = false;
+                }
+                if local == "resourcetype"
+                    && propstat.is_some()
+                    && dav_path_is(
+                        &path_stack,
+                        &["multistatus", "response", "propstat", "prop"],
+                    )
+                {
+                    propstat_has_type = true;
+                }
+                if local == "resourcetype"
+                    && propstat.is_none()
+                    && (dav_path_is(&path_stack, &["multistatus", "response", "prop"])
+                        || dav_path_is(&path_stack, &["multistatus", "response"]))
+                {
+                    direct_type_collection = false;
+                }
+                // Accept both <collection/> and <collection></collection>.
+                if local == "collection"
+                    && path_stack.last().is_some_and(|p| p == "resourcetype")
+                    && ((propstat.is_none()
+                        && (dav_path_is(
+                            &path_stack,
+                            &["multistatus", "response", "prop", "resourcetype"],
+                        ) || dav_path_is(
+                            &path_stack,
+                            &["multistatus", "response", "resourcetype"],
+                        )))
+                        || dav_path_is(
+                            &path_stack,
+                            &[
+                                "multistatus",
+                                "response",
+                                "propstat",
+                                "prop",
+                                "resourcetype",
+                            ],
+                        ))
+                {
+                    if let Some(r) = propstat.as_mut() {
+                        r.is_collection = true;
+                    } else {
+                        direct_type_collection = true;
+                    }
                 }
                 path_stack.push(local);
                 text_buf.clear();
@@ -504,14 +572,61 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
                 let local = local_name(&e.name().as_ref());
                 if path_stack.is_empty() {
                     if root_seen || local != "multistatus" {
-                        return Err(anyhow!("propfind parse error: expected one multistatus root"));
+                        return Err(anyhow!(
+                            "propfind parse error: expected one multistatus root"
+                        ));
                     }
                     root_seen = true;
                 }
+                if local == "status"
+                    && dav_path_is(&path_stack, &["multistatus", "response", "propstat"])
+                {
+                    return Err(anyhow!("propfind parse error: invalid propstat status"));
+                }
+                if local == "resourcetype"
+                    && propstat.is_some()
+                    && dav_path_is(
+                        &path_stack,
+                        &["multistatus", "response", "propstat", "prop"],
+                    )
+                {
+                    propstat_has_type = true;
+                }
+                if local == "resourcetype"
+                    && propstat.is_none()
+                    && (dav_path_is(&path_stack, &["multistatus", "response", "prop"])
+                        || dav_path_is(&path_stack, &["multistatus", "response"]))
+                {
+                    if let Some(r) = current.as_mut() {
+                        merge_resource_type(r, &mut type_available, false)?;
+                    }
+                }
                 // <D:collection/> inside resourcetype → it's a folder.
-                if local == "collection" && path_stack.iter().any(|p| p == "resourcetype") {
-                    if let Some(ref mut r) = current {
+                if local == "collection"
+                    && path_stack.last().is_some_and(|p| p == "resourcetype")
+                    && ((propstat.is_none()
+                        && (dav_path_is(
+                            &path_stack,
+                            &["multistatus", "response", "prop", "resourcetype"],
+                        ) || dav_path_is(
+                            &path_stack,
+                            &["multistatus", "response", "resourcetype"],
+                        )))
+                        || dav_path_is(
+                            &path_stack,
+                            &[
+                                "multistatus",
+                                "response",
+                                "propstat",
+                                "prop",
+                                "resourcetype",
+                            ],
+                        ))
+                {
+                    if let Some(r) = propstat.as_mut() {
                         r.is_collection = true;
+                    } else {
+                        direct_type_collection = true;
                     }
                 }
             }
@@ -553,9 +668,61 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
             }
             Ok(Event::End(e)) => {
                 let local = local_name(&e.name().as_ref());
-                if let Some(ref mut r) = current {
+                if local == "status"
+                    && dav_path_is(
+                        &path_stack,
+                        &["multistatus", "response", "propstat", "status"],
+                    )
+                {
+                    if propstat_status.is_some() {
+                        return Err(anyhow!("propfind parse error: duplicate propstat status"));
+                    }
+                    propstat_status = Some(parse_propstat_status(&text_buf)?);
+                }
+                if local == "propstat"
+                    && dav_path_is(&path_stack, &["multistatus", "response", "propstat"])
+                {
+                    if let (Some(properties), Some(r)) = (propstat.take(), current.as_mut()) {
+                        if propstat_status.is_none_or(|status| (200..300).contains(&status)) {
+                            if properties.displayname.is_some() {
+                                r.displayname = properties.displayname;
+                            }
+                            if properties.contentlength.is_some() {
+                                r.contentlength = properties.contentlength;
+                            }
+                            if properties.lastmodified.is_some() {
+                                r.lastmodified = properties.lastmodified;
+                            }
+                            if propstat_has_type {
+                                merge_resource_type(
+                                    r,
+                                    &mut type_available,
+                                    properties.is_collection,
+                                )?;
+                            }
+                        } else if propstat_has_type {
+                            type_failed = true;
+                        }
+                    }
+                }
+                if local == "resourcetype"
+                    && propstat.is_none()
+                    && (dav_path_is(
+                        &path_stack,
+                        &["multistatus", "response", "prop", "resourcetype"],
+                    ) || dav_path_is(&path_stack, &["multistatus", "response", "resourcetype"]))
+                {
+                    if let Some(r) = current.as_mut() {
+                        merge_resource_type(r, &mut type_available, direct_type_collection)?;
+                    }
+                }
+                if local == "href" {
+                    if let Some(r) = current.as_mut() {
+                        r.href = text_buf.trim().to_owned();
+                    }
+                }
+                if let Some(r) = propstat.as_mut().or(current.as_mut()) {
                     match local.as_str() {
-                        "href" => r.href = text_buf.trim().to_owned(),
                         "displayname" if !text_buf.is_empty() => {
                             // A display name is a filename: edge spaces are significant.
                             r.displayname = Some(text_buf.clone())
@@ -567,6 +734,11 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
                             r.lastmodified = Some(text_buf.trim().to_owned())
                         }
                         "response" => {
+                            if type_failed && !type_available {
+                                return Err(anyhow!(
+                                    "propfind parse error: unavailable resourcetype"
+                                ));
+                            }
                             if let Some(done) = current.take() {
                                 out.push(done);
                             }
@@ -581,7 +753,9 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
                 // quick-xml can reach EOF with unclosed elements. Do not
                 // return parsed entries when EOF leaves an element open.
                 if !path_stack.is_empty() {
-                    return Err(anyhow!("propfind parse error: unexpected EOF in XML element"));
+                    return Err(anyhow!(
+                        "propfind parse error: unexpected EOF in XML element"
+                    ));
                 }
                 if !root_seen {
                     return Err(anyhow!("propfind parse error: missing multistatus root"));
@@ -594,6 +768,49 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
         buf.clear();
     }
     Ok(out)
+}
+
+fn dav_path_is(path: &[String], expected: &[&str]) -> bool {
+    path.iter().map(String::as_str).eq(expected.iter().copied())
+}
+
+fn merge_resource_type(
+    response: &mut DavResponse,
+    available: &mut bool,
+    collection: bool,
+) -> Result<()> {
+    if *available && response.is_collection != collection {
+        return Err(anyhow!("propfind parse error: conflicting resourcetype"));
+    }
+    response.is_collection = collection;
+    *available = true;
+    Ok(())
+}
+
+// DAV:status contains an HTTP status line. Keep the reason phrase opaque.
+fn parse_propstat_status(text: &str) -> Result<u16> {
+    let mut parts = text.split_ascii_whitespace();
+    let version = parts.next().unwrap_or("");
+    let code = parts.next().unwrap_or("");
+    // Tolerate HTTP/2 and HTTP/3 forms for compatibility with newer servers.
+    // The protocol name remains case-sensitive, as in an HTTP status line.
+    let valid_version = matches!(version, "HTTP/2" | "HTTP/3")
+        || version.strip_prefix("HTTP/").is_some_and(|version| {
+            version.split_once('.').is_some_and(|(major, minor)| {
+                major.len() == 1
+                    && minor.len() == 1
+                    && major.as_bytes()[0].is_ascii_digit()
+                    && minor.as_bytes()[0].is_ascii_digit()
+            })
+        });
+    let status = code
+        .parse::<u16>()
+        .ok()
+        .filter(|status| (100..600).contains(status));
+    if !valid_version || code.len() != 3 || !code.bytes().all(|c| c.is_ascii_digit()) {
+        return Err(anyhow!("propfind parse error: invalid propstat status"));
+    }
+    status.ok_or_else(|| anyhow!("propfind parse error: invalid propstat status"))
 }
 
 fn local_name(qname: &[u8]) -> String {
@@ -1671,6 +1888,109 @@ mod tests {
         ] {
             assert!(parse_propfind(body).unwrap().is_empty());
         }
+    }
+
+    #[test]
+    fn parse_propfind_honors_propstat_outcomes() {
+        let success = "<prop><displayname>real.txt</displayname><getcontentlength>42</getcontentlength><getlastmodified>real date</getlastmodified><resourcetype/></prop>";
+        let failed = "<prop><displayname>unavailable</displayname><getcontentlength>999</getcontentlength><getlastmodified>bad date</getlastmodified><resourcetype><collection/></resourcetype></prop>";
+        for status_first in [false, true] {
+            let block = |props: &str, status: &str| {
+                if status_first {
+                    format!("<propstat><status>{status}</status>{props}</propstat>")
+                } else {
+                    format!("<propstat>{props}<status>{status}</status></propstat>")
+                }
+            };
+            let good = block(success, "HTTP/1.1 200 OK");
+            let bad = block(failed, "HTTP/1.1 404 Not Found");
+            for blocks in [format!("{good}{bad}"), format!("{bad}{good}")] {
+                let xml = format!("<multistatus><response><href>/dav/real.txt</href>{blocks}</response></multistatus>");
+                let parsed = parse_propfind(&xml).unwrap();
+                assert_eq!(parsed[0].displayname.as_deref(), Some("real.txt"));
+                assert_eq!(parsed[0].contentlength, Some(42));
+                assert_eq!(parsed[0].lastmodified.as_deref(), Some("real date"));
+                assert!(!parsed[0].is_collection);
+            }
+        }
+        // An unrelated nested vendor status must not set the propstat outcome.
+        let xml = "<multistatus><response><propstat><prop><resourcetype><collection></collection></resourcetype><vendor><status>&vendor;</status></vendor></prop><status>HTTP/1.1 200 OK</status></propstat></response></multistatus>";
+        assert!(parse_propfind(xml).unwrap()[0].is_collection);
+        let xml = "<multistatus><response><propstat><prop><resourcetype/><vendor><resourcetype><collection/></resourcetype></vendor></prop><status>HTTP/1.1 200 OK</status></propstat><propstat><prop><vendor><resourcetype/></vendor></prop><status>HTTP/1.1 404 Not Found</status></propstat></response></multistatus>";
+        assert!(!parse_propfind(xml).unwrap()[0].is_collection);
+        for version in ["HTTP/1.0", "HTTP/2", "HTTP/3"] {
+            let xml = format!("<multistatus><response><propstat><prop><resourcetype/></prop><status>{version} 200 OK</status></propstat></response></multistatus>");
+            assert!(!parse_propfind(&xml).unwrap()[0].is_collection);
+        }
+        // A failed optional property stays absent, with successful type retained.
+        let xml = "<multistatus><response><href>/dav/folder/</href><propstat><prop><resourcetype><collection/></resourcetype></prop><status>HTTP/1.1 200 OK</status></propstat><propstat><prop><getcontentlength>999</getcontentlength></prop><status>HTTP/1.1 403 Forbidden</status></propstat></response></multistatus>";
+        let parsed = parse_propfind(xml).unwrap();
+        assert!(parsed[0].is_collection);
+        assert_eq!(parsed[0].contentlength, None);
+    }
+
+    #[test]
+    fn parse_propfind_rejects_unavailable_type_and_bad_status() {
+        for resource_type in [
+            "<resourcetype/>",
+            "<resourcetype></resourcetype>",
+            "<resourcetype><collection/></resourcetype>",
+        ] {
+            let xml = format!("<multistatus><response><href>/dav/item</href><propstat><prop>{resource_type}</prop><status>HTTP/1.1 404 Not Found</status></propstat></response></multistatus>");
+            assert!(parse_propfind(&xml).is_err(), "{resource_type}");
+        }
+        for status in [
+            "",
+            "200",
+            "HTTP/1.1 garbage",
+            "HTTP/1.1 2000 OK",
+            "garbage 200 OK",
+            "HTTP/1.1 099 Invalid",
+            "HTTP/1.1 600 Invalid",
+            "http/1.1 200 OK",
+            "HTTP/x 200 OK",
+            "HTTP/1.1 200 OK</status><status>HTTP/1.1 404 Not Found",
+        ] {
+            let xml = format!("<multistatus><response><propstat><prop><resourcetype/></prop><status>{status}</status></propstat></response></multistatus>");
+            assert!(parse_propfind(&xml).is_err(), "{status}");
+        }
+        assert!(parse_propfind("<multistatus><response><propstat><prop><resourcetype/></prop><status/></propstat></response></multistatus>").is_err());
+        let xml = "<multistatus><response><vendor><resourcetype><collection/></resourcetype></vendor><propstat><prop><resourcetype/></prop><status>HTTP/1.1 404 Not Found</status></propstat></response></multistatus>";
+        assert!(parse_propfind(xml).is_err());
+        for status in ["", "<status>HTTP/1.1 200 OK</status>"] {
+            let file = format!("<propstat><prop><resourcetype/></prop>{status}</propstat>");
+            let folder = "<propstat><prop><resourcetype><collection/></resourcetype></prop><status>HTTP/1.1 200 OK</status></propstat>";
+            for props in [format!("{file}{folder}"), format!("{folder}{file}")] {
+                let xml = format!("<multistatus><response>{props}</response></multistatus>");
+                assert!(parse_propfind(&xml).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn parse_propfind_preserves_statusless_legacy_properties() {
+        for props in ["<propstat><prop><displayname>legacy</displayname><resourcetype><collection/></resourcetype></prop></propstat>", "<prop><displayname>legacy</displayname><resourcetype><collection/></resourcetype></prop>"] {
+            let xml = format!("<multistatus><response><href>/dav/legacy/</href>{props}</response></multistatus>");
+            let parsed = parse_propfind(&xml).unwrap();
+            assert_eq!(parsed[0].displayname.as_deref(), Some("legacy"));
+            assert!(parsed[0].is_collection);
+        }
+        let direct = "<prop><resourcetype><collection/></resourcetype></prop>";
+        let failed = "<propstat><prop><resourcetype/></prop><status>HTTP/1.1 404 Not Found</status></propstat>";
+        for props in [format!("{direct}{failed}"), format!("{failed}{direct}")] {
+            let xml = format!("<multistatus><response>{props}</response></multistatus>");
+            assert!(parse_propfind(&xml).unwrap()[0].is_collection);
+        }
+    }
+
+    #[test]
+    fn parse_propfind_preserves_direct_type_and_ignores_vendor_propstat() {
+        let direct = "<multistatus><response><href>/dav/legacy/</href><displayname>legacy</displayname><resourcetype><collection/></resourcetype></response></multistatus>";
+        assert!(parse_propfind(direct).unwrap()[0].is_collection);
+        let vendor = "<multistatus><response><propstat><prop><resourcetype/><vendor><propstat><status>opaque vendor data</status></propstat></vendor></prop><status>HTTP/1.1 200 OK</status></propstat></response></multistatus>";
+        assert!(!parse_propfind(vendor).unwrap()[0].is_collection);
+        let vendor = "<multistatus><response><vendor><propstat><status/></propstat></vendor><resourcetype><collection/></resourcetype></response></multistatus>";
+        assert!(parse_propfind(vendor).unwrap()[0].is_collection);
     }
 
     #[test]

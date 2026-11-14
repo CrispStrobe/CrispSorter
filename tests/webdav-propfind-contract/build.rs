@@ -12,6 +12,10 @@ fn main() {
         "parse_propfind_preserves_spaces_around_escaped_ampersand",
         "parse_propfind_rejects_truncation_after_complete_response",
         "parse_propfind_requires_a_multistatus_document_root",
+        "parse_propfind_honors_propstat_outcomes",
+        "parse_propfind_rejects_unavailable_type_and_bad_status",
+        "parse_propfind_preserves_statusless_legacy_properties",
+        "parse_propfind_preserves_direct_type_and_ignores_vendor_propstat",
     ] {
         let start = text.find(&format!("    fn {name}()")).unwrap();
         let end = start + text[start..].find("\n    #[test]").unwrap();
