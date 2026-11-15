@@ -1,0 +1,45 @@
+name: Image PDF CLI contracts
+on:
+  workflow_dispatch:
+  push:
+    branches: [fix/worksheet-black-white-20261115]
+    paths: ['src-tauri/src/image_pdf.rs', 'tests/images-pdf-contract/**', '.github/workflows/images-pdf-cli.yml']
+  pull_request:
+    paths: ['src-tauri/src/image_pdf.rs', 'src-tauri/src/cli/mod.rs', 'tests/images-pdf-contract/**', '.github/workflows/images-pdf-cli.yml']
+permissions:
+  contents: read
+jobs:
+  native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: CrispSorter
+      - uses: actions/checkout@v4
+        with:
+          repository: CrispStrobe/CrispEmbed
+          ref: 0eca8e35d5d675d6fef106a6316db38355c6841a
+          submodules: true
+          path: CrispEmbed
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: CrispSorter/tests/images-pdf-contract
+      - name: Build matching native runtime
+        run: |
+          cmake -S CrispEmbed -B native -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DCRISPEMBED_NATIVE=OFF -DGGML_METAL=OFF -DGGML_BLAS=OFF
+          cmake --build native --parallel 3 --target crispembed-shared
+      - name: Test actual production modules with native renderer
+        working-directory: CrispSorter
+        run: |
+          export CRISPEMBED_SYS_LIB_DIR="$GITHUB_WORKSPACE/native"
+          export LD_LIBRARY_PATH="$GITHUB_WORKSPACE/native:$GITHUB_WORKSPACE/native/ggml/src:$GITHUB_WORKSPACE/native/ggml/src/ggml-cpu"
+          cargo test --locked --manifest-path tests/images-pdf-contract/Cargo.toml -- --test-threads=1
+          cargo check --locked --manifest-path tests/images-pdf-contract/Cargo.toml --no-default-features
+          cargo build --locked --manifest-path tests/images-pdf-contract/Cargo.toml
+          python -m pip install 'Pillow==12.0.0' 'pypdf==6.2.0'
+          python tests/images-pdf-contract/check_cli.py tests/images-pdf-contract/target/debug/crispsorter-images-pdf

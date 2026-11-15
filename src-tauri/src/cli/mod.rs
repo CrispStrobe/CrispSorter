@@ -1243,6 +1243,8 @@ enum AdminSubCmd {
 
 #[derive(Subcommand, Debug)]
 enum ImagesCmd {
+    /// Prepare images and combine them into one PDF without OCR or model downloads.
+    Pdf(crate::image_pdf::ImagePdfArgs),
     /// Print the canonical image-extension list (jpg, jpeg, png, webp,
     /// heic, heif, tiff, bmp).  Same list `images list` filters on by
     /// default; mirrors the `images_default_extensions` Tauri command.
@@ -8770,6 +8772,15 @@ fn cmd_images(
     data_dir: Option<PathBuf>,
     cmd: ImagesCmd,
 ) -> Result<(), String> {
+    if let ImagesCmd::Pdf(options) = &cmd {
+        let report = crate::image_pdf::run(options, |done, total| eprintln!("Preparing images: {done}/{total}"))?;
+        match out {
+            OutFormat::Json => println!("{}", serde_json::to_string(&report).map_err(|e| e.to_string())?),
+            OutFormat::Text => println!("Saved {} pages to {} ({} bytes) in {:.3}s", report.pages, report.saved_path,
+                report.bytes, report.timings.total_ms / 1000.0),
+        }
+        return Ok(());
+    }
     // Subcommands that don't need the index: extensions / thumbnail / exif.
     // They get short-circuited here so a missing data dir is never an
     // obstacle for the file-mode operations.  Borrow patterns so `cmd`
@@ -8826,7 +8837,8 @@ async fn cmd_images_async(
     let folder_to_prefix = |p: Option<PathBuf>| p.map(|f| f.to_string_lossy().into_owned());
 
     match cmd {
-        ImagesCmd::Extensions
+        ImagesCmd::Pdf(_)
+        | ImagesCmd::Extensions
         | ImagesCmd::Thumbnail { .. }
         | ImagesCmd::Exif { .. } => {
             unreachable!("file-mode subcommand handled in cmd_images before runtime")
@@ -13727,6 +13739,15 @@ fn cmd_intended_purpose(out: OutFormat, cmd: IntendedPurposeCmd) -> Result<(), S
 mod ocr_shared_cli_tests {
     use super::{Cli, Command};
     use clap::Parser;
+
+    #[test]
+    fn images_pdf_parses_without_an_index_or_ocr_command() {
+        let cli = Cli::try_parse_from(["crispsorter", "images", "pdf", "second.jpg", "first.jpg",
+            "--out", "homework.pdf", "--black-and-white", "--perspective"]).unwrap();
+        let Command::Images { cmd: super::ImagesCmd::Pdf(options), .. } = cli.command else { panic!("expected image PDF"); };
+        assert_eq!(options.inputs, vec![std::path::PathBuf::from("second.jpg"), std::path::PathBuf::from("first.jpg")]);
+        assert!(options.black_and_white && options.perspective);
+    }
 
     #[test]
     fn every_shared_ocr_engine_accepts_language_and_cpu_options() {

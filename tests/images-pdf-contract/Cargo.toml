@@ -1,0 +1,30 @@
+[package]
+name = "crispsorter-images-pdf-contract"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[features]
+default = ["crispembed", "ocr-reviewed-pdf"]
+crispembed = ["dep:crispembed", "dep:crispembed-sys"]
+ocr-reviewed-pdf = []
+pdf-render = []
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+image = { version = "=0.25.10", default-features = false, features = ["jpeg", "png", "bmp", "tiff"] }
+tiff = "=0.11.3"
+kamadak-exif = "0.6"
+tempfile = "3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+crispembed = { path = "../../../CrispEmbed/crispembed", optional = true }
+crispembed-sys = { path = "../../../CrispEmbed/crispembed-sys", optional = true }
+
+[[bin]]
+name = "crispsorter-images-pdf"
+path = "main.rs"
