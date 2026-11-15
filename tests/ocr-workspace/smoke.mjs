@@ -650,6 +650,51 @@ if (process.argv.includes('--serve')) {
             assert.equal(await page.getByRole('button', { name: /^Page 1:/ }).getAttribute('aria-current'), 'page');
         });
 
+        await test('black and white prepares only selected pages without OCR or model downloads and undoes the whole batch', 'review', async page => {
+            await page.getByRole('checkbox', { name: 'Select page 1', exact: true }).check();
+            await page.getByRole('checkbox', { name: 'Select page 3', exact: true }).check();
+            const before = await page.evaluate(() => window.ocrSmoke.initialProject.pages);
+            await page.getByRole('tab', { name: 'Recognize', exact: true }).click();
+            await page.getByRole('button', { name: /^Pure black & white/ }).click();
+            await page.locator('.status-message').filter({ hasText: '2 of 2 pages made black and white' }).waitFor();
+            const evidence = await page.evaluate(() => ({ calls: window.ocrSmoke.calls, saved: window.ocrSmoke.lastSaved }));
+            const calls = evidence.calls.filter(call => call.method === 'prepare');
+            assert.deepEqual(calls.map(call => call.data.path), [before[0].imagePath, before[2].imagePath]);
+            assert.equal(calls[0].data.config.stages[0].cleanup.binarize, true);
+            assert.equal(calls[0].data.config.stages[0].cleanup.despeckle, false);
+            assert.equal(evidence.calls.some(call => ['recognize', 'installMobileModels'].includes(call.method)), false);
+            assert.equal(evidence.saved.pages[1].imagePath, before[1].imagePath);
+            await page.getByRole('button', { name: 'Undo', exact: true }).click();
+            const restored = await saveSnapshot(page);
+            assert.deepEqual(restored.pages, before);
+        });
+
+        await test('black and white cancellation waits for the current page and skips the remaining selection', 'prepare-batch-control', async page => {
+            await page.getByRole('checkbox', { name: 'Select page 1', exact: true }).check();
+            await page.getByRole('checkbox', { name: 'Select page 2', exact: true }).check();
+            await page.getByRole('tab', { name: 'Recognize', exact: true }).click();
+            await page.getByRole('button', { name: /^Pure black & white/ }).click();
+            await page.waitForFunction(() => window.ocrSmoke.activeNative === 1);
+            await page.getByRole('button', { name: 'Stop after this page', exact: true }).click();
+            await page.evaluate(() => window.ocrSmoke.releaseNext());
+            await page.locator('.status-message').filter({ hasText: '1 of 2 pages made black and white' }).waitFor();
+            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'prepare').length), 1);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.maxNative), 1);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.lastSaved.pages[1].imagePath),
+                await page.evaluate(() => window.ocrSmoke.initialProject.pages[1].imagePath));
+        });
+
+        await test('black and white stops before the next page when its checkpoint cannot be saved', 'prepare-batch-control', async page => {
+            await page.getByRole('checkbox', { name: 'Select page 1', exact: true }).check();
+            await page.getByRole('checkbox', { name: 'Select page 2', exact: true }).check();
+            await page.getByRole('tab', { name: 'Recognize', exact: true }).click();
+            await page.getByRole('button', { name: /^Pure black & white/ }).click();
+            await page.waitForFunction(() => window.ocrSmoke.activeNative === 1);
+            await page.evaluate(() => { window.ocrSmoke.failSaves = true; window.ocrSmoke.releaseNext(); });
+            await page.getByText(/Black and white preparation stopped after 1 of 2 pages/).waitFor();
+            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'prepare').length), 1);
+        });
+
         await test('unchanged preparation preserves corrections and approval while showing its warning', 'prepare-unchanged', async page => {
             await page.getByRole('button', { name: /^Page 3:/ }).click();
             const corrected = 'Invoice NS-2026-1042 · confirmed';

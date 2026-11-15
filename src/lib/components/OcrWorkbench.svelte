@@ -124,6 +124,7 @@
   import { i18n } from "$lib/i18n.svelte";
   import { checkExportText, resolveExportFormat } from "$lib/ocr/export";
   import { SequentialQueue, type QueueState } from "$lib/ocr/queue";
+  import { blackAndWhiteConfig, preparationPages, applyPreparation } from "$lib/ocr/preparation";
   import {
     captureZoneReview,
     prepareZoneReview,
@@ -1848,12 +1849,60 @@
   let queueBarDismissedFor = $state<unknown>(null);
   /** Undo of the last preparation stays offered until another edit. */
   let undoPreparationDepth = $state<number | null>(null);
+  let preparationRunning = $state(false);
+  let preparationStopRequested = $state(false);
+  const blackAndWhitePages = $derived(preparationPages(project, checkedPages, activePage?.id));
   const canUndoPreparation = $derived(undoPreparationDepth !== null && history.past.length === undoPreparationDepth);
   function undoPreparation() {
     if (!canUndoPreparation || locked) return;
     undo();
     undoPreparationDepth = null;
     notice = "Preparation undone. The previous page image, text and approval were restored.";
+  }
+  async function prepareBlackAndWhite(confirmed = false) {
+    if (locked || !capabilities.crispembed || !blackAndWhitePages.length) return;
+    const pages = blackAndWhitePages.map(page => ({ ...page }));
+    if (!confirmed && pages.some(page => page.structure?.blocks.length)) {
+      confirmation("Prepare structured pages?",
+        "Changed images need their recognition, formatting, and links rebuilt and reviewed. Undo restores the previous pages.",
+        "Make black and white", () => prepareBlackAndWhite(true));
+      return;
+    }
+    const projectId = project.id;
+    const operation = beginOperation("ocr.prepare", { pages: pages.length, preset: "black_and_white" });
+    let completed = 0;
+    let recorded = false;
+    preparationRunning = true;
+    preparationStopRequested = false;
+    busy = `Black and white: 0 of ${pages.length}`;
+    error = "";
+    try {
+      for (const page of pages) {
+        if (!mounted || preparationStopRequested || project.id !== projectId) break;
+        busy = `Black and white: ${completed + 1} of ${pages.length}`;
+        const result = await client.prepare(page.imagePath, blackAndWhiteConfig(), page.widthPoints, page.heightPoints,
+          { allowDownloads: false });
+        if (!mounted || project.id !== projectId) break;
+        change(applyPreparation(project, page, result), !recorded);
+        recorded = true;
+        completed += 1;
+        showOriginal = false;
+        if (selectedPageId === page.id) selectedRegionId = null;
+        undoPreparationDepth = history.past.length;
+        // A failed checkpoint stops the batch before another native call.
+        await autosave?.flush();
+        operation.stage("page_completed", { completed, saved: true });
+      }
+      notice = `${completed} of ${pages.length} pages made black and white. ${completed ? "Use Original to compare, or Undo to restore the batch." : ""}`;
+      if (completed === pages.length) operation.complete({ completed });
+      else operation.cancel();
+    } catch (e) {
+      operation.fail(e, { completed });
+      error = `Black and white preparation stopped after ${completed} of ${pages.length} pages. Completed results remain available. ${message(e)}`;
+    } finally {
+      preparationRunning = false;
+      busy = "";
+    }
   }
   async function prepareImage(override?: Record<string, unknown>, confirmed = false, pageId = activePage?.id, allowDownloads = false) {
     if (!pageId || locked || !capabilities.crispembed) return;
@@ -3939,6 +3988,13 @@
                 disabled={locked || !activePage || !capabilities.crispembed}
                 ><WandSparkles size={15} /> Apply preparation to this page</button
               >
+              <button class="button full" onclick={() => prepareBlackAndWhite()}
+                disabled={locked || !blackAndWhitePages.length || !capabilities.crispembed}>
+                <WandSparkles size={15} /> Pure black & white{checkedPages.length ? ` · ${blackAndWhitePages.length} selected` : " · this page"}
+              </button>
+              {#if preparationRunning}<button class="button full" disabled={preparationStopRequested}
+                onclick={() => { preparationStopRequested = true; }}>Stop after this page</button>{/if}
+              <p class="field-hint">Straighten pages and make the paper white while preserving thin worksheet lines. Uses selected pages, or the current page. No recognition or model download is needed.</p>
               <p class="field-hint">
                 Recognition also applies enabled preparation. The prepared image
                 becomes the review and export image. Undo restores the previous
