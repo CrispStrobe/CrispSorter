@@ -17,6 +17,9 @@ const outputArg = process.argv.find(arg => arg.startsWith('--output='));
 const output = path.resolve(outputArg?.slice('--output='.length) ?? path.join(here, 'artifacts'));
 const portArg = process.argv.find(arg => arg.startsWith('--port='));
 const onlyArg = process.argv.find(arg => arg.startsWith('--only='))?.slice('--only='.length);
+const scenarioTimeout = Number(process.env.OCR_SMOKE_TIMEOUT_MS ?? 10_000);
+if (!Number.isFinite(scenarioTimeout) || scenarioTimeout < 1000 || scenarioTimeout > 120_000)
+    throw new Error('OCR_SMOKE_TIMEOUT_MS must be between 1000 and 120000 milliseconds.');
 const server = await createServer({
     configFile: false,
     root: here,
@@ -67,7 +70,7 @@ if (process.argv.includes('--serve')) {
         browser = await chromium.launch({ headless: true, ...(browserPath ? { executablePath: browserPath } : {}) });
         async function fixture(scenario, size = { width: 1440, height: 1000 }) {
             const page = await browser.newPage({ viewport: size, deviceScaleFactor: 1 });
-            page.setDefaultTimeout(10_000);
+            page.setDefaultTimeout(scenarioTimeout);
             page.on('pageerror', error => browserErrors.push({ scenario, message: error.message }));
             page.on('dialog', dialog => void dialog.dismiss());
             // These scenarios exercise region-by-region review; the workspace

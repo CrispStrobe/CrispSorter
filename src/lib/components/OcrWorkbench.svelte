@@ -1870,7 +1870,7 @@
       return;
     }
     const projectId = project.id;
-    const operation = beginOperation("ocr.prepare", { pages: pages.length, preset: "black_and_white" });
+    const operation = beginOperation("ocr.prepare", { pages: pages.length, kind: "image" });
     let completed = 0;
     let recorded = false;
     preparationRunning = true;
@@ -4198,7 +4198,7 @@
                 <strong>{formatNames[exportFormat] ?? exportFormat}</strong>
                 <p>
                   {exportFormat === "image-pdf"
-                    ? "Current page images in one PDF. Recognition and a searchable text layer are optional; this export includes images only."
+                    ? "Current page images in one PDF, ready to print or share."
                     : exportFormat === "pdfa"
                     ? "Archival PDF/A-2b with embedded fonts, an sRGB color profile, and your searchable reviewed text."
                     : exportFormat === "pdf"

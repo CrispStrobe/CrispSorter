@@ -40,6 +40,8 @@ node tests/ocr-workspace/smoke.mjs
 Use `--only='black and white'` for the targeted worksheet preparation/export,
 batch cancellation, and failed-checkpoint scenarios. The fixture exercises
 selection and persistence; native image/PDF pixel controls live in CrispEmbed.
+`OCR_SMOKE_TIMEOUT_MS` can raise the normal 10-second scenario timeout when
+running from a slow disk (1000–120000 milliseconds).
 
 `PLAYWRIGHT_MODULE_PATH` is the absolute package directory, for example
 `/path/to/browser-tools/node_modules/playwright`. The workflow installs its pinned

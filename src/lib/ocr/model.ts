@@ -525,15 +525,15 @@ export function prepareExport(project: OcrProject, options: ExportOptions = {}):
             errors.push(`${page.name}: passages share overlapping source areas. Divide their boxes or merge them before a spatial export; text and JSON preserve the exact edited text.`);
         }
         if (regions.some((region) => !hasBox(region,page))) errors.push(`${page.name}: an OCR region lies outside the page image.`);
-        if (!regions.some((r)=>r.text.trim())) warnings.push(docx ? `${page.name}: this page contains no included OCR text.` : `${page.name}: this page contains no text and will be retained as an image page.`);
-        if (!page.approved) warnings.push(`${page.name}: the page has not been approved.`);
+        if (!imageOnly && !regions.some((r)=>r.text.trim())) warnings.push(docx ? `${page.name}: this page contains no included OCR text.` : `${page.name}: this page contains no text and will be retained as an image page.`);
+        if (!imageOnly && !page.approved) warnings.push(`${page.name}: the page has not been approved.`);
         const includedRegions=imageOnly ? [] : page.regions.filter(region=>!region.excluded);
         // A transient structure gives legacy figures their proper reading-order
         // position without changing the saved project or its review status.
         const sourceStructure = imageOnly ? undefined : page.structure ?? (docx ? deriveStructure(page) : undefined);
         const projectedStructure=sourceStructure?projectStructureForRegions(sourceStructure,includedRegions,page.id):undefined;
         if(projectedStructure) warnings.push(...projectedStructure.notices.map(notice=>`${page.name}: ${notice}`));
-        if(page.structure && options.format && !['json','docx'].includes(options.format.toLowerCase())) {
+        if(!imageOnly && page.structure && options.format && !['json','docx'].includes(options.format.toLowerCase())) {
             warnings.push(`${page.name}: this output currently uses the plain-text or source-image projection. Logical formatting is retained in the project and JSON; structured document export is a separate capability.`);
         }
         const provenance = clone(page.provenance);
