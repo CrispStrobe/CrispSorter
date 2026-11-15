@@ -682,6 +682,7 @@ fn cleanup_image(image: DynamicImage, config: &crate::extractors::OcrPipelineCon
     // initialized when the native ABI is extended.
     let mut params = unsafe { crispembed_sys::crispembed_scan_cleanup_defaults() };
     params.deskew = i32::from(classical && recipe.deskew);
+    if recipe.photo_geometry { params.deskew_consensus = 2; }
     params.crop_borders = i32::from(classical && recipe.crop_borders);
     params.whiten_background = i32::from(classical && recipe.whiten_background);
     params.binarize = i32::from(classical && recipe.binarize);

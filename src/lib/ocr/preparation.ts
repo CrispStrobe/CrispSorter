@@ -6,7 +6,7 @@ export function blackAndWhiteConfig(): Record<string, unknown> {
         enabled: true, router: false, denoise: false, dewarp: false, restore: false, sr: false,
         cleanup_enabled: true,
         stages: [{ cleanup: {
-            enabled: true, deskew: true, crop_borders: false, whiten_background: false,
+            enabled: true, deskew: true, photo_geometry: true, crop_borders: false, whiten_background: false,
             binarize: true, binarize_method: 1, sauvola_k: 0.2, sauvola_window: 25,
             denoise: false, despeckle: false, blackfilter: false, auto_crop: false, page_split: false,
         } }],

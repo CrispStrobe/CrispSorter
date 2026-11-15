@@ -1413,6 +1413,7 @@ pub fn cleanup_page_checked(path: &Path, cfg: &super::OcrPipelineConfig) -> std:
             .map_err(|e| format!("Initialize scan cleanup: {e}"))?;
         let mut params = unsafe { crispembed_sys::crispembed_scan_cleanup_defaults() };
         params.deskew = i32::from(classical && recipe.deskew);
+        if recipe.photo_geometry { params.deskew_consensus = 2; }
         params.crop_borders = i32::from(classical && recipe.crop_borders);
         params.whiten_background = i32::from(classical && recipe.whiten_background);
         params.binarize = i32::from(classical && recipe.binarize);

@@ -23,7 +23,7 @@ describe('worksheet preparation', () => {
     it('uses model-free Sauvola without filters that damage thin rules', () => {
         const cfg = blackAndWhiteConfig();
         expect(cfg).toMatchObject({ denoise: false, dewarp: false, restore: false, sr: false });
-        expect(cfg.stages).toEqual([{ cleanup: expect.objectContaining({ deskew: true, binarize: true,
+        expect(cfg.stages).toEqual([{ cleanup: expect.objectContaining({ deskew: true, photo_geometry: true, binarize: true,
             binarize_method: 1, whiten_background: false, despeckle: false, blackfilter: false }) }]);
         (cfg.stages as { cleanup: { binarize: boolean } }[])[0].cleanup.binarize = false;
         expect((blackAndWhiteConfig().stages as { cleanup: { binarize: boolean } }[])[0].cleanup.binarize).toBe(true);

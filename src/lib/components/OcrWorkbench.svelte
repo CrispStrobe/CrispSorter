@@ -3999,7 +3999,7 @@
               </button>
               {#if preparationRunning}<button class="button full" disabled={preparationStopRequested}
                 onclick={() => { preparationStopRequested = true; }}>Stop after this page</button>{/if}
-              <p class="field-hint">Straighten pages and make the paper white while preserving thin worksheet lines. Uses selected pages, or the current page. No recognition or model download is needed.</p>
+              <p class="field-hint">Straighten pages and make the paper white while preserving thin worksheet lines. Perspective correction uses printed rules when supported. Uses selected pages, or the current page. No recognition or model download is needed.</p>
               <p class="field-hint">
                 Recognition also applies enabled preparation. The prepared image
                 becomes the review and export image. Undo restores the previous
