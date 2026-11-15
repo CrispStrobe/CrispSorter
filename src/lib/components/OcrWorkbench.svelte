@@ -367,7 +367,7 @@
   let exportResultNotes = $state<{ path: string; format: string; warnings: string[] } | null>(null);
   let pdfScale = $state("source"),
     pdfDpi = $state(300);
-  const pdfExportSelected = $derived(exportFormat === "pdf" || exportFormat === "pdfa");
+  const pdfExportSelected = $derived(["pdf", "pdfa", "image-pdf"].includes(exportFormat));
   let labels = $state("vendor, invoice number, date, total, tax"),
     fieldThreshold = $state(0.5),
     useLayoutFields = $state(false);
@@ -606,7 +606,7 @@
         : undefined,
   );
   const preflight = $derived(
-    prepareExport(project, { pageIds: exportIds, requireReviewed, format: exportFormat,
+    prepareExport(project, { pageIds: exportIds, requireReviewed: exportFormat === "image-pdf" ? false : requireReviewed, format: exportFormat,
       ...(exportFormat === "docx" && capabilities.structured_docx ? { officeOptions } : {}),
       ...(exportFormat === "xlsx" && capabilities.structured_xlsx ? { workbookOptions } : {}) }),
   );
@@ -624,6 +624,7 @@
       .join("\f"),
   );
   const formatNames: Record<string, string> = {
+    "image-pdf": "Image PDF",
     pdf: "Searchable PDF",
     pdfa: "Archival PDF/A-2b",
     hocr: "hOCR",
@@ -1894,6 +1895,10 @@
         operation.stage("page_completed", { completed, saved: true });
       }
       notice = `${completed} of ${pages.length} pages made black and white. ${completed ? "Use Original to compare, or Undo to restore the batch." : ""}`;
+      if (completed && capabilities.formats.includes("pdf")) {
+        exportFormat = "image-pdf";
+        exportScope = checkedPages.length ? "selected" : "current";
+      }
       if (completed === pages.length) operation.complete({ completed });
       else operation.cancel();
     } catch (e) {
@@ -4184,7 +4189,7 @@
               >Output format<select bind:value={exportFormat} disabled={locked}
                 >{#each capabilities.formats as format}<option value={format}
                     >{formatNames[format] ?? format}</option
-                  >{/each}{#if !capabilities.formats.includes("pdfa")}<option value="pdfa" disabled>Archival PDF/A-2b — unavailable</option>{/if}</select
+                  >{/each}{#if capabilities.formats.includes("pdf")}<option value="image-pdf">Image PDF</option>{/if}{#if !capabilities.formats.includes("pdfa")}<option value="pdfa" disabled>Archival PDF/A-2b — unavailable</option>{/if}</select
               ></label
             >
             <div class="format-card">
@@ -4192,7 +4197,9 @@
               <div>
                 <strong>{formatNames[exportFormat] ?? exportFormat}</strong>
                 <p>
-                  {exportFormat === "pdfa"
+                  {exportFormat === "image-pdf"
+                    ? "Current page images in one PDF. Recognition and a searchable text layer are optional; this export includes images only."
+                    : exportFormat === "pdfa"
                     ? "Archival PDF/A-2b with embedded fonts, an sRGB color profile, and your searchable reviewed text."
                     : exportFormat === "pdf"
                     ? "Page images with a searchable text layer, using your reviewed text."
@@ -4255,7 +4262,7 @@
                 ></select
               ></label
             >
-            <label class="setting-toggle"
+            {#if exportFormat !== "image-pdf"}<label class="setting-toggle"
               ><span
                 ><strong>Require page approval</strong><small
                   >{exportFormat === "xlsx" ? "Block export until the source pages of all selected tables are approved." : "Block export until every included page is approved."}</small
@@ -4265,7 +4272,7 @@
                 bind:checked={requireReviewed}
                 disabled={locked}
               /></label
-            >
+            >{/if}
             {#if exportFormat === "docx" && capabilities.structured_docx}
               <OfficeExportPanel {project} pageIds={exportIds} value={officeOptions} disabled={locked}
                 onchange={(next) => (officeOptions = next)} />
@@ -4302,9 +4309,9 @@
                   <Check size={14} /> Page geometry matches the working image
                 </div>
                 <div class="preflight-check">
-                  <Check size={14} /> Corrections and reading order included
+                  <Check size={14} /> {exportFormat === "image-pdf" ? "Current page images included" : "Corrections and reading order included"}
                 </div>
-                {#if requireReviewed}<div class="preflight-check">
+                {#if requireReviewed && exportFormat !== "image-pdf"}<div class="preflight-check">
                     <Check size={14} /> All selected pages approved
                   </div>{/if}{/if}
               {#if exportTextCheck.affectedPages.length}<p class="field-hint">

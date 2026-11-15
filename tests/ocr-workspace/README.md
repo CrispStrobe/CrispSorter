@@ -37,6 +37,10 @@ Playwright Chromium installation, a system `/usr/bin/chromium`, or set
 node tests/ocr-workspace/smoke.mjs
 ```
 
+Use `--only='black and white'` for the targeted worksheet preparation/export,
+batch cancellation, and failed-checkpoint scenarios. The fixture exercises
+selection and persistence; native image/PDF pixel controls live in CrispEmbed.
+
 `PLAYWRIGHT_MODULE_PATH` is the absolute package directory, for example
 `/path/to/browser-tools/node_modules/playwright`. The workflow installs its pinned
 browser tools outside the repository so they cannot replace locked application

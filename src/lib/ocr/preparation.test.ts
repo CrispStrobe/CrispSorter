@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { addDocument, applyRecognition, approvePage, createProject, updatePage } from './model';
+import { addDocument, applyRecognition, approvePage, createProject, prepareExport, updatePage } from './model';
+import { resolveExportFormat } from './export';
 import { applyPreparation, blackAndWhiteConfig, preparationPages } from './preparation';
 
 function fixture() {
@@ -8,6 +9,17 @@ function fixture() {
 }
 
 describe('worksheet preparation', () => {
+    it('exports unrecognized page images explicitly without relaxing searchable/text exports', () => {
+        const project = fixture();
+        expect(prepareExport(project, { format: 'pdf' }).errors.length).toBeGreaterThan(0);
+        const images = prepareExport(project, { format: 'image-pdf' });
+        expect(images.errors).toEqual([]);
+        expect(images.pages).toHaveLength(3);
+        expect(images.pages.every(page => page.regions.length === 0)).toBe(true);
+        expect(prepareExport(project, { format: 'image-pdf', requireReviewed: true }).errors.length).toBeGreaterThan(0);
+        expect(resolveExportFormat('image-pdf', { formats: ['pdf'] })).toEqual({ format: 'pdf', pdfa: false });
+        expect(() => resolveExportFormat('image-pdf', { formats: ['text'] })).toThrow('unavailable');
+    });
     it('uses model-free Sauvola without filters that damage thin rules', () => {
         const cfg = blackAndWhiteConfig();
         expect(cfg).toMatchObject({ denoise: false, dewarp: false, restore: false, sr: false });

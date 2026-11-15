@@ -16,6 +16,7 @@ const repo = path.resolve(here, '../..');
 const outputArg = process.argv.find(arg => arg.startsWith('--output='));
 const output = path.resolve(outputArg?.slice('--output='.length) ?? path.join(here, 'artifacts'));
 const portArg = process.argv.find(arg => arg.startsWith('--port='));
+const onlyArg = process.argv.find(arg => arg.startsWith('--only='))?.slice('--only='.length);
 const server = await createServer({
     configFile: false,
     root: here,
@@ -80,6 +81,7 @@ if (process.argv.includes('--serve')) {
             return page;
         }
         async function test(name, scenario, action) {
+            if (onlyArg && !name.includes(onlyArg)) return;
             assert.equal(scenarioNames.has(name), false, `Duplicate smoke scenario: ${name}`);
             scenarioNames.add(name);
             const start = performance.now();
@@ -664,6 +666,13 @@ if (process.argv.includes('--serve')) {
             assert.equal(calls[0].data.config.stages[0].cleanup.despeckle, false);
             assert.equal(evidence.calls.some(call => ['recognize', 'installMobileModels'].includes(call.method)), false);
             assert.equal(evidence.saved.pages[1].imagePath, before[1].imagePath);
+            await page.getByRole('tab', { name: 'Export', exact: true }).click();
+            await page.getByRole('button', { name: 'Save Image PDF', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.exports.length === 1);
+            const exported = await page.evaluate(() => window.ocrSmoke.exports[0]);
+            assert.equal(exported.format, 'pdf');
+            assert.equal(exported.pages.length, 2);
+            assert.equal(exported.pages.every(page => page.regions.length === 0), true);
             await page.getByRole('button', { name: 'Undo', exact: true }).click();
             const restored = await saveSnapshot(page);
             assert.deepEqual(restored.pages, before);
