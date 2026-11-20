@@ -1382,10 +1382,10 @@ jobs:
         working-directory: repos/CrispSorter
     permissions:
       contents: write
-    # macos-15 ships Xcode 16, needed because Tauri CLI 2.10's `ios init`
-    # emits an objectVersion-77 project that Xcode 15 (the macos-14 default)
-    # refuses to open ("future Xcode project file format (77)").
-    runs-on: macos-15
+    # ITMS-90725: from April 2027 App Store Connect only accepts builds made
+    # with the iOS 27 SDK (Xcode 27); the macos-15/26 images only ship Xcode
+    # 26.x. (Tauri 2.10's objectVersion-77 projects also need Xcode 16+.)
+    runs-on: xcode-27
     env:
       # Step-level `if:` can't reference `secrets.*` directly on
       # workflow_dispatch — proxy through an env var instead.
@@ -1449,12 +1449,17 @@ jobs:
       - name: Set the iOS deployment target for every toolchain
         run: echo "IPHONEOS_DEPLOYMENT_TARGET=16.0" >> "$GITHUB_ENV"
 
-      - name: Select newest Xcode (Tauri 2.10 emits objectVersion-77 projects)
+      - name: Select the newest Xcode 27 and require the iOS 27 SDK
         run: |
           set -euo pipefail
-          latest=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)
-          [ -n "$latest" ] && sudo xcode-select -s "$latest"
+          XC=$(ls -d /Applications/Xcode_27*.app | sort -V | tail -1)
+          sudo xcode-select -s "$XC/Contents/Developer"
           xcodebuild -version
+          SDK=$(xcrun --sdk iphoneos --show-sdk-version)
+          echo "iphoneos SDK: $SDK"
+          if [ "${SDK%%.*}" -lt 27 ]; then
+            echo "::error::iOS SDK $SDK < 27 (ITMS-90725)"; exit 1
+          fi
 
       - name: Install npm deps
         run: npm ci
@@ -1510,7 +1515,10 @@ jobs:
           # install the explicit App Store profile. NO -allowProvisioningUpdates
           # anywhere (it revokes the shared Distribution cert — see appstore.md).
           KC="$RUNNER_TEMP/cs-signing.keychain-db"
-          KC_PW="ci-$(uuidgen)"
+          # Empty password: on the xcode-27 image unlock-keychain rejects the
+          # password the keychain was just created with (runner-images#14837).
+          # The keychain lives in RUNNER_TEMP on a single-use VM.
+          KC_PW=""
           echo "$IOS_DIST_P12" | base64 --decode > "$RUNNER_TEMP/dist.p12"
           security create-keychain -p "$KC_PW" "$KC"
           security set-keychain-settings -lut 21600 "$KC"
@@ -1899,12 +1907,31 @@ jobs:
             || (github.event_name != 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v')) }}
     permissions:
       contents: write
-    runs-on: macos-15
+    # ITMS-90725: from April 2027 App Store Connect only accepts builds made
+    # with the macOS 27 SDK (Xcode 27); the macos-15/26 images only ship
+    # Xcode 26.x. Fail before signing if the SDK is older.
+    runs-on: xcode-27
     env:
       TEAM_ID: N9XSJ4M3GT
       BUNDLE_ID: com.crispstrobe.crispsorter
     steps:
       - uses: actions/checkout@v4
+      - name: Select the newest Xcode 27 and require the macOS 27 SDK
+        run: |
+          set -euo pipefail
+          XC=$(ls -d /Applications/Xcode_27*.app | sort -V | tail -1)
+          sudo xcode-select -s "$XC/Contents/Developer"
+          xcodebuild -version
+          SDK=$(xcrun --sdk macosx --show-sdk-version)
+          echo "macosx SDK: $SDK"
+          if [ "${SDK%%.*}" -lt 27 ]; then
+            echo "::error::macOS SDK $SDK < 27 (ITMS-90725)"; exit 1
+          fi
+      # The xcode-27 image defaults to Python 3.15; keep the 3.12 the release
+      # scripts are exercised with elsewhere in this workflow.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - name: Check out sibling CrispEmbed
         uses: actions/checkout@v4
         with:
@@ -2026,7 +2053,10 @@ jobs:
           DIST_CERT_PASSWORD: ${{ secrets.DIST_CERT_PASSWORD }}
         run: |
           set -euo pipefail
-          KC="$RUNNER_TEMP/cs-mac.keychain-db"; KP="ci-$(uuidgen)"
+          # Empty password: on the xcode-27 image unlock-keychain rejects the
+          # password the keychain was just created with (runner-images#14837).
+          # The keychain lives in RUNNER_TEMP on a single-use VM.
+          KC="$RUNNER_TEMP/cs-mac.keychain-db"; KP=""
           echo "$DIST_CERT_P12_BASE64" | base64 -d > "$RUNNER_TEMP/dist.p12"
           security create-keychain -p "$KP" "$KC"
           security set-keychain-settings -lut 21600 "$KC"
