@@ -1382,10 +1382,15 @@ jobs:
         working-directory: repos/CrispSorter
     permissions:
       contents: write
-    # ITMS-90725: from April 2027 App Store Connect only accepts builds made
-    # with the iOS 27 SDK (Xcode 27); the macos-15/26 images only ship Xcode
-    # 26.x. (Tauri 2.10's objectVersion-77 projects also need Xcode 16+.)
-    runs-on: xcode-27
+    # macos-15 ships Xcode 16, needed because Tauri CLI 2.10's `ios init`
+    # emits an objectVersion-77 project that Xcode 15 (the macos-14 default)
+    # refuses to open ("future Xcode project file format (77)").
+    # NOT yet on xcode-27 (ITMS-90725 requires the iOS 27 SDK from April
+    # 2027): there swift-rs compiles Tauri's Swift package with the macOS SDK
+    # and target appended after the iOS ones, so the Tauri iOS build fails
+    # (CrispDeck 44795482189, CrispMesh 44795548535, same Tauri 2.11/swift-rs
+    # 1.0.x). Move this job once Tauri/swift-rs builds with Xcode 27.
+    runs-on: macos-15
     env:
       # Step-level `if:` can't reference `secrets.*` directly on
       # workflow_dispatch — proxy through an env var instead.
@@ -1449,17 +1454,12 @@ jobs:
       - name: Set the iOS deployment target for every toolchain
         run: echo "IPHONEOS_DEPLOYMENT_TARGET=16.0" >> "$GITHUB_ENV"
 
-      - name: Select the newest Xcode 27 and require the iOS 27 SDK
+      - name: Select newest Xcode (Tauri 2.10 emits objectVersion-77 projects)
         run: |
           set -euo pipefail
-          XC=$(ls -d /Applications/Xcode_27*.app | sort -V | tail -1)
-          sudo xcode-select -s "$XC/Contents/Developer"
+          latest=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)
+          [ -n "$latest" ] && sudo xcode-select -s "$latest"
           xcodebuild -version
-          SDK=$(xcrun --sdk iphoneos --show-sdk-version)
-          echo "iphoneos SDK: $SDK"
-          if [ "${SDK%%.*}" -lt 27 ]; then
-            echo "::error::iOS SDK $SDK < 27 (ITMS-90725)"; exit 1
-          fi
 
       - name: Install npm deps
         run: npm ci
