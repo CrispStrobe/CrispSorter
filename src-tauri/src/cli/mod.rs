@@ -13742,11 +13742,22 @@ mod ocr_shared_cli_tests {
 
     #[test]
     fn images_pdf_parses_without_an_index_or_ocr_command() {
-        let cli = Cli::try_parse_from(["crispsorter", "images", "pdf", "second.jpg", "first.jpg",
-            "--out", "homework.pdf", "--black-and-white", "--perspective"]).unwrap();
-        let Command::Images { cmd: super::ImagesCmd::Pdf(options), .. } = cli.command else { panic!("expected image PDF"); };
-        assert_eq!(options.inputs, vec![std::path::PathBuf::from("second.jpg"), std::path::PathBuf::from("first.jpg")]);
-        assert!(options.black_and_white && options.perspective);
+        // The full Clap tree overflows libtest's default worker stack in
+        // debug builds; the paired native job runs this without
+        // RUST_MIN_STACK, so size the thread like the other parser tests.
+        std::thread::Builder::new()
+            .name("images-pdf-parse-test".into())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let cli = Cli::try_parse_from(["crispsorter", "images", "pdf", "second.jpg", "first.jpg",
+                    "--out", "homework.pdf", "--black-and-white", "--perspective"]).unwrap();
+                let Command::Images { cmd: super::ImagesCmd::Pdf(options), .. } = cli.command else { panic!("expected image PDF"); };
+                assert_eq!(options.inputs, vec![std::path::PathBuf::from("second.jpg"), std::path::PathBuf::from("first.jpg")]);
+                assert!(options.black_and_white && options.perspective);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]
