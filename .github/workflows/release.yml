@@ -1912,11 +1912,6 @@ jobs:
     # Xcode 26.x. Fail before signing if the SDK is older.
     runs-on: xcode-27
     env:
-      # The xcode-27 image starts jobs without a UTF-8 locale; codesign then
-      # decodes a non-ASCII signing identity name wrongly ("no identity
-      # found", seen in CrispDeck's dry run 44795486899).
-      LANG: en_US.UTF-8
-      LC_ALL: en_US.UTF-8
       TEAM_ID: N9XSJ4M3GT
       BUNDLE_ID: com.crispstrobe.crispsorter
     steps:
@@ -2169,7 +2164,11 @@ jobs:
       - name: Sign .app (App Sandbox) + build signed .pkg
         run: |
           set -euo pipefail
-          APP_CERT="Apple Distribution: Christian Ströbele ($TEAM_ID)"
+          # Sign by SHA-1: on the xcode-27 image (macOS 27) codesign no longer
+          # matches the non-ASCII identity name ("no identity found", CrispChess
+          # dry run 44805278751). productbuild still accepts the name.
+          APP_CERT=$(security find-identity -v -p codesigning "$KC" | awk '/"Apple Distribution:/ {print $2; exit}')
+          [ -n "$APP_CERT" ] || { echo "::error::No Apple Distribution identity"; exit 1; }
           INST_CERT="3rd Party Mac Developer Installer: Christian Ströbele ($TEAM_ID)"
           # Embed the App Store provisioning profile.
           cp "$PROFILE" "$APP/Contents/embedded.provisionprofile"
