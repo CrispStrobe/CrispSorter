@@ -641,8 +641,10 @@ fn parse_propfind(body: &str) -> Result<Vec<DavResponse>> {
             Event::Text(e) if path_stack.is_empty() => {
                 // Outside the root XML permits only literal S whitespace.
                 // Unicode whitespace and references to whitespace are not S.
-                if !e
-                    .as_ref()
+                // Explicit `&[u8]`: newer std adds further `AsRef` impls on
+                // `[u8]`, so a bare `.as_ref()` no longer infers (E0282).
+                let bytes: &[u8] = &e;
+                if !bytes
                     .iter()
                     .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
                 {
