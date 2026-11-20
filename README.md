@@ -413,6 +413,7 @@ crispsorter images extensions                          # print canonical IMAGE_E
 crispsorter images count                               # image-row count in the local index
 crispsorter images list --limit 20                     # newest-first photo rows
 crispsorter images thumbnail /tmp/x.jpg --size 256 --out /tmp/x.png
+crispsorter images pdf *.JPG --out homework.pdf --black-and-white --perspective
 crispsorter images exif /tmp/x.jpg                     # curated EXIF (json/text)
 crispsorter images duplicates                          # SHA-256 dup clusters
 crispsorter images near-duplicates --threshold 8       # pHash near-dup clusters
@@ -421,6 +422,8 @@ crispsorter images near-duplicates --threshold 8       # pHash near-dup clusters
 crispsorter completion zsh > ~/.zsh/completions/_crispsorter
 crispsorter manpage --out /usr/share/man/man1/
 ```
+
+Image-only PDF preparation needs the paired native PDF build and runs without OCR or models; see [CLI options and runtime requirements](docs/images-pdf-cli.md).
 
 The catalog primitives also ship as a tiny standalone binary (`crispcat`) — `cargo install --path crates/crispcat-cli`. No Tauri, no LanceDB, no embedder; just `.caf` I/O, parallel scanner, duplicate engine.
 

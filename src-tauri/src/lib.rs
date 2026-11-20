@@ -8,6 +8,7 @@ mod batch_script;
 pub mod capabilities;
 pub mod bg_ingest;
 pub mod images;
+pub mod image_pdf;
 /// Re-export the extracted crispcat workspace crate as `catalog` so existing
 /// `crate::catalog::…` paths in the rest of the binary keep working unchanged.
 pub use crispcat as catalog;

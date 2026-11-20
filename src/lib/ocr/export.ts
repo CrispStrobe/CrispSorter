@@ -98,6 +98,10 @@ export function resolveExportFormat(
   selection: string,
   capabilities: Pick<WorkspaceCapabilities, "formats" | "archival_pdf_export" | "pdfa_export_reason" | "docx_export" | "docx_export_reason">,
 ): { format: string; pdfa: boolean } {
+  if (selection === "image-pdf") {
+    if (!capabilities.formats.includes("pdf")) throw new Error("PDF image export is unavailable in this build.");
+    return { format: "pdf", pdfa: false };
+  }
   if (selection === "pdfa") {
     if (!capabilities.archival_pdf_export || !capabilities.formats.includes("pdfa")) {
       throw new Error(capabilities.pdfa_export_reason ?? "PDF/A-2b export requires the matching archival renderer.");

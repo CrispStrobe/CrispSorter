@@ -453,6 +453,10 @@ pub struct OcrCleanupSpec {
     pub enabled: bool,
     #[serde(default = "default_true")]
     pub deskew: bool,
+    /// Request ruled-photo perspective correction; old native libraries safely
+    /// fall back to their existing consensus deskew (same parameter ABI).
+    #[serde(default)]
+    pub photo_geometry: bool,
     #[serde(default = "default_true")]
     pub crop_borders: bool,
     #[serde(default = "default_true")]
@@ -498,6 +502,7 @@ impl Default for OcrCleanupSpec {
         Self {
             enabled: true,
             deskew: true,
+            photo_geometry: false,
             crop_borders: true,
             whiten_background: true,
             binarize: false,

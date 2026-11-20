@@ -16,6 +16,10 @@ const repo = path.resolve(here, '../..');
 const outputArg = process.argv.find(arg => arg.startsWith('--output='));
 const output = path.resolve(outputArg?.slice('--output='.length) ?? path.join(here, 'artifacts'));
 const portArg = process.argv.find(arg => arg.startsWith('--port='));
+const onlyArg = process.argv.find(arg => arg.startsWith('--only='))?.slice('--only='.length);
+const scenarioTimeout = Number(process.env.OCR_SMOKE_TIMEOUT_MS ?? 10_000);
+if (!Number.isFinite(scenarioTimeout) || scenarioTimeout < 1000 || scenarioTimeout > 120_000)
+    throw new Error('OCR_SMOKE_TIMEOUT_MS must be between 1000 and 120000 milliseconds.');
 const server = await createServer({
     configFile: false,
     root: here,
@@ -66,7 +70,7 @@ if (process.argv.includes('--serve')) {
         browser = await chromium.launch({ headless: true, ...(browserPath ? { executablePath: browserPath } : {}) });
         async function fixture(scenario, size = { width: 1440, height: 1000 }) {
             const page = await browser.newPage({ viewport: size, deviceScaleFactor: 1 });
-            page.setDefaultTimeout(10_000);
+            page.setDefaultTimeout(scenarioTimeout);
             page.on('pageerror', error => browserErrors.push({ scenario, message: error.message }));
             page.on('dialog', dialog => void dialog.dismiss());
             // These scenarios exercise region-by-region review; the workspace
@@ -80,6 +84,7 @@ if (process.argv.includes('--serve')) {
             return page;
         }
         async function test(name, scenario, action) {
+            if (onlyArg && !name.includes(onlyArg)) return;
             assert.equal(scenarioNames.has(name), false, `Duplicate smoke scenario: ${name}`);
             scenarioNames.add(name);
             const start = performance.now();
@@ -648,6 +653,58 @@ if (process.argv.includes('--serve')) {
             assert.equal(await page.getByRole('button', { name: /^Page 2:/ }).getAttribute('aria-current'), 'page');
             await page.keyboard.press('F8');
             assert.equal(await page.getByRole('button', { name: /^Page 1:/ }).getAttribute('aria-current'), 'page');
+        });
+
+        await test('black and white prepares only selected pages without OCR or model downloads and undoes the whole batch', 'review', async page => {
+            await page.getByRole('checkbox', { name: 'Select page 1', exact: true }).check();
+            await page.getByRole('checkbox', { name: 'Select page 3', exact: true }).check();
+            const before = await page.evaluate(() => window.ocrSmoke.initialProject.pages);
+            await page.getByRole('tab', { name: 'Recognize', exact: true }).click();
+            await page.getByRole('button', { name: /^Pure black & white/ }).click();
+            await page.locator('.status-message').filter({ hasText: '2 of 2 pages made black and white' }).waitFor();
+            const evidence = await page.evaluate(() => ({ calls: window.ocrSmoke.calls, saved: window.ocrSmoke.lastSaved }));
+            const calls = evidence.calls.filter(call => call.method === 'prepare');
+            assert.deepEqual(calls.map(call => call.data.path), [before[0].imagePath, before[2].imagePath]);
+            assert.equal(calls[0].data.config.stages[0].cleanup.binarize, true);
+            assert.equal(calls[0].data.config.stages[0].cleanup.despeckle, false);
+            assert.equal(evidence.calls.some(call => ['recognize', 'installMobileModels'].includes(call.method)), false);
+            assert.equal(evidence.saved.pages[1].imagePath, before[1].imagePath);
+            await page.getByRole('tab', { name: 'Export', exact: true }).click();
+            await page.getByRole('button', { name: 'Save Image PDF', exact: true }).click();
+            await page.waitForFunction(() => window.ocrSmoke.exports.length === 1);
+            const exported = await page.evaluate(() => window.ocrSmoke.exports[0]);
+            assert.equal(exported.format, 'pdf');
+            assert.equal(exported.pages.length, 2);
+            assert.equal(exported.pages.every(page => page.regions.length === 0), true);
+            await page.getByRole('button', { name: 'Undo', exact: true }).click();
+            const restored = await saveSnapshot(page);
+            assert.deepEqual(restored.pages, before);
+        });
+
+        await test('black and white cancellation waits for the current page and skips the remaining selection', 'prepare-batch-control', async page => {
+            await page.getByRole('checkbox', { name: 'Select page 1', exact: true }).check();
+            await page.getByRole('checkbox', { name: 'Select page 2', exact: true }).check();
+            await page.getByRole('tab', { name: 'Recognize', exact: true }).click();
+            await page.getByRole('button', { name: /^Pure black & white/ }).click();
+            await page.waitForFunction(() => window.ocrSmoke.activeNative === 1);
+            await page.getByRole('button', { name: 'Stop after this page', exact: true }).click();
+            await page.evaluate(() => window.ocrSmoke.releaseNext());
+            await page.locator('.status-message').filter({ hasText: '1 of 2 pages made black and white' }).waitFor();
+            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'prepare').length), 1);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.maxNative), 1);
+            assert.equal(await page.evaluate(() => window.ocrSmoke.lastSaved.pages[1].imagePath),
+                await page.evaluate(() => window.ocrSmoke.initialProject.pages[1].imagePath));
+        });
+
+        await test('black and white stops before the next page when its checkpoint cannot be saved', 'prepare-batch-control', async page => {
+            await page.getByRole('checkbox', { name: 'Select page 1', exact: true }).check();
+            await page.getByRole('checkbox', { name: 'Select page 2', exact: true }).check();
+            await page.getByRole('tab', { name: 'Recognize', exact: true }).click();
+            await page.getByRole('button', { name: /^Pure black & white/ }).click();
+            await page.waitForFunction(() => window.ocrSmoke.activeNative === 1);
+            await page.evaluate(() => { window.ocrSmoke.failSaves = true; window.ocrSmoke.releaseNext(); });
+            await page.getByText(/Black and white preparation stopped after 1 of 2 pages/).waitFor();
+            assert.equal(await page.evaluate(() => window.ocrSmoke.calls.filter(call => call.method === 'prepare').length), 1);
         });
 
         await test('unchanged preparation preserves corrections and approval while showing its warning', 'prepare-unchanged', async page => {

@@ -504,6 +504,7 @@ export function prepareExport(project: OcrProject, options: ExportOptions = {}):
     }
     const errors: string[] = [], warnings: string[] = [];
     const docx = options.format?.toLowerCase() === 'docx';
+    const imageOnly = options.format === 'image-pdf';
     const selectedIds = options.pageIds ? new Set(options.pageIds) : null;
     if (selectedIds && [...selectedIds].some((pageId) => !project.pages.some((page) => page.id===pageId))) errors.push('One or more selected pages no longer exist.');
     const pages = project.pages.filter((p)=>(!p.excluded || options.includeExcluded) && (!selectedIds || selectedIds.has(p.id)));
@@ -514,25 +515,25 @@ export function prepareExport(project: OcrProject, options: ExportOptions = {}):
     const sources = new Map(project.documents.map(document => [document.id, document.sourceUri]));
     for (const page of pages) {
         const physicalSize = pagePhysicalSize(page);
-        if (page.status!=='recognized') errors.push(`${page.name}: recognition is ${page.status}. Recognize or explicitly exclude this page.`);
+        if (!imageOnly && page.status!=='recognized') errors.push(`${page.name}: recognition is ${page.status}. Recognize or explicitly exclude this page.`);
         if (!page.imagePath || !validDimension(page.width) || !validDimension(page.height)) errors.push(`${page.name}: page image or dimensions are missing.`);
         if (!validPagePoints(physicalSize.widthPoints) || !validPagePoints(physicalSize.heightPoints)) errors.push(`${page.name}: physical page dimensions must be positive and no greater than ${MAX_PAGE_POINTS} points.`);
         if (docx && (physicalSize.widthPoints > MAX_DOCX_PAGE_POINTS || physicalSize.heightPoints > MAX_DOCX_PAGE_POINTS)) errors.push(`${page.name}: Word pages cannot exceed 1584 points (22 inches) in either dimension. Split or crop this page, or export it as PDF.`);
         if (options.requireReviewed && !page.approved) errors.push(`${page.name}: page review is required.`);
-        const regions = activeRegions(page);
+        const regions = imageOnly ? [] : activeRegions(page);
         if (options.format && ['pdf','hocr','alto','xml'].includes(options.format.toLowerCase()) && hasUnresolvedSharedGeometry(regions)) {
             errors.push(`${page.name}: passages share overlapping source areas. Divide their boxes or merge them before a spatial export; text and JSON preserve the exact edited text.`);
         }
         if (regions.some((region) => !hasBox(region,page))) errors.push(`${page.name}: an OCR region lies outside the page image.`);
-        if (!regions.some((r)=>r.text.trim())) warnings.push(docx ? `${page.name}: this page contains no included OCR text.` : `${page.name}: this page contains no text and will be retained as an image page.`);
-        if (!page.approved) warnings.push(`${page.name}: the page has not been approved.`);
-        const includedRegions=page.regions.filter(region=>!region.excluded);
+        if (!imageOnly && !regions.some((r)=>r.text.trim())) warnings.push(docx ? `${page.name}: this page contains no included OCR text.` : `${page.name}: this page contains no text and will be retained as an image page.`);
+        if (!imageOnly && !page.approved) warnings.push(`${page.name}: the page has not been approved.`);
+        const includedRegions=imageOnly ? [] : page.regions.filter(region=>!region.excluded);
         // A transient structure gives legacy figures their proper reading-order
         // position without changing the saved project or its review status.
-        const sourceStructure = page.structure ?? (docx ? deriveStructure(page) : undefined);
+        const sourceStructure = imageOnly ? undefined : page.structure ?? (docx ? deriveStructure(page) : undefined);
         const projectedStructure=sourceStructure?projectStructureForRegions(sourceStructure,includedRegions,page.id):undefined;
         if(projectedStructure) warnings.push(...projectedStructure.notices.map(notice=>`${page.name}: ${notice}`));
-        if(page.structure && options.format && !['json','docx'].includes(options.format.toLowerCase())) {
+        if(!imageOnly && page.structure && options.format && !['json','docx'].includes(options.format.toLowerCase())) {
             warnings.push(`${page.name}: this output currently uses the plain-text or source-image projection. Logical formatting is retained in the project and JSON; structured document export is a separate capability.`);
         }
         const provenance = clone(page.provenance);
@@ -553,7 +554,7 @@ export function prepareExport(project: OcrProject, options: ExportOptions = {}):
                 figure_regions:includedRegions.filter(region=>region.kind==='picture').map(exportRegion)}:{}),
         });
     }
-    return {pages:errors.length?[]:payload,errors,warnings:[...new Set(warnings)],text:errors.length?'':pages.map((p)=>joinRegionText(activeRegions(p))).join('\f'),...(office ? {officeOptions:office.options} : {})};
+    return {pages:errors.length?[]:payload,errors,warnings:[...new Set(warnings)],text:errors.length || imageOnly?'':pages.map((p)=>joinRegionText(activeRegions(p))).join('\f'),...(office ? {officeOptions:office.options} : {})};
 }
 
 const historyEncoder = new TextEncoder();

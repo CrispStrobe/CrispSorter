@@ -510,6 +510,11 @@ export function createFixtureClient(scenario:string): {client:WorkspaceClient;in
         },
         async prepare(path,config,pageWidthPoints,pageHeightPoints){
             note('prepare',{path,config,pageWidthPoints,pageHeightPoints});
+            if(scenario==='prepare-batch-control') {
+                control.activeNative++;control.maxNative=Math.max(control.maxNative,control.activeNative);
+                try { await new Promise<void>(release=>pending.push({path,release})); }
+                finally { control.activeNative--; }
+            }
             if(scenario==='prepare-unchanged')return {
                 image_path:path,width:1000,height:1400,
                 page_width_points:pageWidthPoints,page_height_points:pageHeightPoints,
