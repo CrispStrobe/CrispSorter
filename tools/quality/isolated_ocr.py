@@ -31,6 +31,14 @@ def declared_block(source, declaration):
     return block(source, r'^(?:#\[[^\n]+\]\n)*' + declaration)
 
 
+def line(source, pattern):
+    """One complete single-line production item."""
+    match = re.search(pattern + r'[^\n]*\n', source, re.MULTILINE)
+    if not match:
+        raise ValueError('Production source no longer matches: ' + pattern)
+    return match.group(0)
+
+
 def generate(app, embed, destination, panel=False, worker=False):
     app, embed, destination = app.resolve(), embed.resolve(), destination.resolve()
     if destination.parent != app:
@@ -64,12 +72,36 @@ def generate(app, embed, destination, panel=False, worker=False):
     fragments['AudioMetadata'] = declared_block(read('src-tauri/src/audio/probe.rs'), r'pub struct AudioMetadata\b')
     fragments['ExifSummary'] = declared_block(read('src-tauri/src/images/exif.rs'), r'pub struct ExifSummary\b')
     fragments['OcrRegion'] = declared_block(read('src-tauri/src/extractors/ocr_render.rs'), r'pub struct OcrRegion\b')
-    fragments['resolve_model'] = '#[cfg(feature = "crispembed")]\n' + block(read('src-tauri/src/model_provisioning.rs'), r'^pub fn resolve_model\b')
+    provisioning = read('src-tauri/src/model_provisioning.rs')
+    fragments['resolve_model'] = '#[cfg(feature = "crispembed")]\n' + block(provisioning, r'^pub fn resolve_model\b')
+    fragments['provisioning_enabled'] = line(provisioning, r'^pub fn enabled\(\)')
+    # The OCR engines gate missing pinned models through the model manager.
+    # Keep its real plan/gate logic; the downloader itself needs the GUI
+    # runtime (Tauri/reqwest), so the probe reports it as unavailable.
+    models = read('src-tauri/src/ocr_models.rs')
+    fragments['MODEL_DOWNLOAD_REQUIRED'] = line(read('src-tauri/src/ocr_workspace.rs'), r'^pub const MODEL_DOWNLOAD_REQUIRED\b')
+    fragments['PlannedModel'] = declared_block(models, r'pub struct PlannedModel\b')
+    fragments['builtins_managed'] = line(models, r'^fn builtins_managed\(\)')
+    fragments['planned_builtin'] = block(models, r'^pub\(crate\) fn planned_builtin\b')
+    fragments['needs_download'] = line(models, r'^fn needs_download\(')
+    fragments['gate'] = block(models, r'^pub fn gate\(')
+    fragments['InstallProgress'] = declared_block(models, r'pub struct InstallProgress\b')
 
     rust = module('operation_log', 'src-tauri/src/operation_log.rs')
     rust += module('ocr_word_evidence', 'src-tauri/src/ocr_word_evidence.rs')
     rust += 'pub mod index {\n' + module('license_consent', 'src-tauri/src/index/license_consent.rs') + '}\n'
-    rust += 'pub mod model_provisioning { use std::path::Path;\n' + fragments['resolve_model'] + '}\n'
+    rust += 'pub mod model_provisioning { use std::path::Path;\n' + fragments['provisioning_enabled'] + fragments['resolve_model'] + '}\n'
+    rust += module('model_cache', 'src-tauri/src/model_cache.rs')
+    rust += module('ocr_builtin_models', 'src-tauri/src/ocr_builtin_models.rs')
+    rust += ('pub mod ocr_models { use serde::Serialize;\n' + fragments['MODEL_DOWNLOAD_REQUIRED']
+             + fragments['PlannedModel'] + fragments['builtins_managed'] + fragments['planned_builtin']
+             + fragments['needs_download'] + fragments['gate'] + fragments['InstallProgress']
+             + '''
+pub fn install_models(_names: &[String], _request_id: Option<&str>, _emit: &(dyn Fn(InstallProgress) + Sync)) -> Result<Vec<String>, String> {
+    Err("the OCR model downloader is not part of the isolated probe; install models with the app".into())
+}
+}
+''')
     # The probe has no GUI/ring buffer. Keep the real verbosity policy and
     # typed worker transport, with diagnostic output restricted to stderr.
     rust += '''pub fn app_log(level: &str, message: String) {
@@ -86,7 +118,7 @@ def generate(app, embed, destination, panel=False, worker=False):
     rust += 'pub mod container { use super::ExtractedDocument; use crisp_index_protocol::container::ContainerEntry;\n' + fragments['ExtractedMember'] + '}\n'
     rust += 'pub mod ocr_render {\n' + fragments['OcrRegion'] + '}\n'
     for name in ['context_cache', 'image_input', 'layout', 'ocr_crispembed', 'ocr_ocrs',
-                 'ocr_paddle', 'ocr_policy', 'ocr_presets', 'ocr_worker', 'page_source']:
+                 'ocr_paddle', 'ocr_policy', 'ocr_presets', 'ocr_worker', 'ovis_input', 'page_source']:
         rust += module(name, 'src-tauri/src/extractors/' + name + '.rs')
     rust += fragments['image_dispatch'] + fragments['operation_logging_tests'] + '}\n'
     (destination / 'lib.rs').write_text(rust)
