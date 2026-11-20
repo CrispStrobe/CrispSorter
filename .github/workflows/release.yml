@@ -1912,6 +1912,11 @@ jobs:
     # Xcode 26.x. Fail before signing if the SDK is older.
     runs-on: xcode-27
     env:
+      # The xcode-27 image starts jobs without a UTF-8 locale; codesign then
+      # decodes a non-ASCII signing identity name wrongly ("no identity
+      # found", seen in CrispDeck's dry run 44795486899).
+      LANG: en_US.UTF-8
+      LC_ALL: en_US.UTF-8
       TEAM_ID: N9XSJ4M3GT
       BUNDLE_ID: com.crispstrobe.crispsorter
     steps:
