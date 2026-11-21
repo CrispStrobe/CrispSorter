@@ -1,9 +1,10 @@
 {
-  "generatedAt": "2026-08-01T11:31:32.576Z",
+  "generatedAt": "2026-11-21T11:00:07.784Z",
   "counts": {
     "frontend": 20,
-    "backend": 1051,
-    "total": 1071
+    "backend": 1152,
+    "native": 1,
+    "total": 1173
   },
   "licenses": [
     {
@@ -40,7 +41,7 @@
     },
     {
       "name": "@tauri-apps/api",
-      "version": "2.11.0",
+      "version": "2.12.5",
       "license": "Apache-2.0 OR MIT",
       "author": "n/a",
       "link": "https://www.npmjs.com/package/@tauri-apps/api",
@@ -103,11 +104,51 @@
       "source": "Backend"
     },
     {
+      "name": "aead",
+      "version": "0.5.2",
+      "license": "Apache-2.0 OR MIT",
+      "author": "RustCrypto Developers",
+      "link": "https://github.com/RustCrypto/traits",
+      "source": "Backend"
+    },
+    {
+      "name": "aead",
+      "version": "0.6.1",
+      "license": "Apache-2.0 OR MIT",
+      "author": "RustCrypto Developers",
+      "link": "https://github.com/RustCrypto/traits",
+      "source": "Backend"
+    },
+    {
       "name": "aes",
       "version": "0.8.4",
       "license": "Apache-2.0 OR MIT",
       "author": "RustCrypto Developers",
       "link": "https://github.com/RustCrypto/block-ciphers",
+      "source": "Backend"
+    },
+    {
+      "name": "aes",
+      "version": "0.9.2",
+      "license": "Apache-2.0 OR MIT",
+      "author": "RustCrypto Developers",
+      "link": "https://github.com/RustCrypto/block-ciphers",
+      "source": "Backend"
+    },
+    {
+      "name": "aes-gcm",
+      "version": "0.10.3",
+      "license": "Apache-2.0 OR MIT",
+      "author": "RustCrypto Developers",
+      "link": "https://github.com/RustCrypto/AEADs",
+      "source": "Backend"
+    },
+    {
+      "name": "aes-gcm",
+      "version": "0.11.0",
+      "license": "Apache-2.0 OR MIT",
+      "author": "RustCrypto Developers",
+      "link": "https://github.com/RustCrypto/AEADs",
       "source": "Backend"
     },
     {
@@ -159,8 +200,24 @@
       "source": "Backend"
     },
     {
+      "name": "alloc-no-stdlib",
+      "version": "3.0.0",
+      "license": "BSD-3-Clause",
+      "author": "Daniel Reiter Horn <danielrh@dropbox.com>",
+      "link": "https://github.com/dropbox/rust-alloc-no-stdlib",
+      "source": "Backend"
+    },
+    {
       "name": "alloc-stdlib",
       "version": "0.2.4",
+      "license": "BSD-3-Clause",
+      "author": "Daniel Reiter Horn <danielrh@dropbox.com>",
+      "link": "https://github.com/dropbox/rust-alloc-no-stdlib",
+      "source": "Backend"
+    },
+    {
+      "name": "alloc-stdlib",
+      "version": "0.3.0",
       "license": "BSD-3-Clause",
       "author": "Daniel Reiter Horn <danielrh@dropbox.com>",
       "link": "https://github.com/dropbox/rust-alloc-no-stdlib",
@@ -172,6 +229,14 @@
       "license": "Apache-2.0 OR MIT",
       "author": "Zakarum <zaq.dev@icloud.com>",
       "link": "https://github.com/zakarumych/allocator-api2",
+      "source": "Backend"
+    },
+    {
+      "name": "ambient-authority",
+      "version": "0.0.2",
+      "license": "Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT",
+      "author": "Dan Gohman <dev@sunfishcode.online>",
+      "link": "https://github.com/sunfishcode/ambient-authority",
       "source": "Backend"
     },
     {
@@ -268,6 +333,14 @@
       "license": "MIT",
       "author": "Luca Barbato <lu_zero@gentoo.org>",
       "link": "https://github.com/lu-zero/arg_enum_proc_macro",
+      "source": "Backend"
+    },
+    {
+      "name": "argon2",
+      "version": "0.5.3",
+      "license": "Apache-2.0 OR MIT",
+      "author": "RustCrypto Developers",
+      "link": "https://github.com/RustCrypto/password-hashes/tree/master/argon2",
       "source": "Backend"
     },
     {
@@ -615,6 +688,14 @@
       "source": "Backend"
     },
     {
+      "name": "base64",
+      "version": "0.23.1",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Marshall Pierce <marshall@mpierce.org>",
+      "link": "https://github.com/marshallpierce/rust-base64",
+      "source": "Backend"
+    },
+    {
       "name": "base64ct",
       "version": "1.8.3",
       "license": "Apache-2.0 OR MIT",
@@ -647,8 +728,24 @@
       "source": "Backend"
     },
     {
+      "name": "bit-set",
+      "version": "0.11.1",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Alexis Beingessner <a.beingessner@gmail.com>",
+      "link": "https://github.com/contain-rs/bit-vec",
+      "source": "Backend"
+    },
+    {
       "name": "bit-vec",
       "version": "0.8.0",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Alexis Beingessner <a.beingessner@gmail.com>",
+      "link": "https://github.com/contain-rs/bit-vec",
+      "source": "Backend"
+    },
+    {
+      "name": "bit-vec",
+      "version": "0.10.2",
       "license": "Apache-2.0 OR MIT",
       "author": "Alexis Beingessner <a.beingessner@gmail.com>",
       "link": "https://github.com/contain-rs/bit-vec",
@@ -719,6 +816,14 @@
       "source": "Backend"
     },
     {
+      "name": "block-buffer",
+      "version": "0.12.1",
+      "license": "Apache-2.0 OR MIT",
+      "author": "RustCrypto Developers",
+      "link": "https://github.com/RustCrypto/utils",
+      "source": "Backend"
+    },
+    {
       "name": "block-padding",
       "version": "0.3.3",
       "license": "Apache-2.0 OR MIT",
@@ -767,8 +872,24 @@
       "source": "Backend"
     },
     {
+      "name": "brotli",
+      "version": "9.1.3",
+      "license": "BSD-3-Clause AND MIT",
+      "author": "Daniel Reiter Horn <danielrh@dropbox.com>, The Brotli Authors",
+      "link": "https://github.com/dropbox/rust-brotli",
+      "source": "Backend"
+    },
+    {
       "name": "brotli-decompressor",
       "version": "5.0.3",
+      "license": "BSD-3-Clause OR MIT",
+      "author": "Daniel Reiter Horn <danielrh@dropbox.com>, The Brotli Authors",
+      "link": "https://github.com/dropbox/rust-brotli-decompressor",
+      "source": "Backend"
+    },
+    {
+      "name": "brotli-decompressor",
+      "version": "6.3.2",
       "license": "BSD-3-Clause OR MIT",
       "author": "Daniel Reiter Horn <danielrh@dropbox.com>, The Brotli Authors",
       "link": "https://github.com/dropbox/rust-brotli-decompressor",
@@ -871,6 +992,30 @@
       "source": "Backend"
     },
     {
+      "name": "cap-fs-ext",
+      "version": "4.0.3",
+      "license": "Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT",
+      "author": "Dan Gohman <dev@sunfishcode.online>, Jakub Konka <kubkon@jakubkonka.com>",
+      "link": "https://github.com/bytecodealliance/cap-std",
+      "source": "Backend"
+    },
+    {
+      "name": "cap-primitives",
+      "version": "4.0.3",
+      "license": "Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT",
+      "author": "Dan Gohman <dev@sunfishcode.online>, Jakub Konka <kubkon@jakubkonka.com>",
+      "link": "https://github.com/bytecodealliance/cap-std",
+      "source": "Backend"
+    },
+    {
+      "name": "cap-std",
+      "version": "4.0.3",
+      "license": "Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT",
+      "author": "Dan Gohman <dev@sunfishcode.online>, Jakub Konka <kubkon@jakubkonka.com>",
+      "link": "https://github.com/bytecodealliance/cap-std",
+      "source": "Backend"
+    },
+    {
       "name": "cargo_metadata",
       "version": "0.19.2",
       "license": "MIT",
@@ -880,7 +1025,7 @@
     },
     {
       "name": "cargo_toml",
-      "version": "0.22.3",
+      "version": "1.0.1",
       "license": "Apache-2.0 OR MIT",
       "author": "Kornel <kornel@geekhood.net>",
       "link": "https://gitlab.com/lib.rs/cargo_toml",
@@ -919,6 +1064,14 @@
       "source": "Backend"
     },
     {
+      "name": "ccm",
+      "version": "0.6.1",
+      "license": "Apache-2.0 OR MIT",
+      "author": "RustCrypto Developers",
+      "link": "https://github.com/RustCrypto/AEADs",
+      "source": "Backend"
+    },
+    {
       "name": "census",
       "version": "0.4.2",
       "license": "MIT",
@@ -936,7 +1089,7 @@
     },
     {
       "name": "cfb",
-      "version": "0.7.3",
+      "version": "0.14.0",
       "license": "MIT",
       "author": "Matthew D. Steele <mdsteele@alum.mit.edu>",
       "link": "https://github.com/mdsteele/rust-cfb",
@@ -999,6 +1152,14 @@
       "source": "Backend"
     },
     {
+      "name": "cipher",
+      "version": "0.5.2",
+      "license": "Apache-2.0 OR MIT",
+      "author": "RustCrypto Developers",
+      "link": "https://github.com/RustCrypto/traits",
+      "source": "Backend"
+    },
+    {
       "name": "clap",
       "version": "4.6.1",
       "license": "Apache-2.0 OR MIT",
@@ -1055,11 +1216,27 @@
       "source": "Backend"
     },
     {
+      "name": "cmac",
+      "version": "0.8.0",
+      "license": "Apache-2.0 OR MIT",
+      "author": "RustCrypto Developers",
+      "link": "https://github.com/RustCrypto/MACs",
+      "source": "Backend"
+    },
+    {
       "name": "cmake",
       "version": "0.1.58",
       "license": "Apache-2.0 OR MIT",
       "author": "Alex Crichton <alex@alexcrichton.com>",
       "link": "https://github.com/rust-lang/cmake-rs",
+      "source": "Backend"
+    },
+    {
+      "name": "cmov",
+      "version": "0.5.4",
+      "license": "Apache-2.0 OR MIT",
+      "author": "RustCrypto Developers",
+      "link": "https://github.com/RustCrypto/utils",
       "source": "Backend"
     },
     {
@@ -1144,10 +1321,10 @@
     },
     {
       "name": "const-oid",
-      "version": "0.9.6",
+      "version": "0.10.2",
       "license": "Apache-2.0 OR MIT",
       "author": "RustCrypto Developers",
-      "link": "https://github.com/RustCrypto/formats/tree/master/const-oid",
+      "link": "https://github.com/RustCrypto/formats",
       "source": "Backend"
     },
     {
@@ -1180,14 +1357,6 @@
       "license": "Apache-2.0 OR CC0-1.0 OR MIT-0",
       "author": "Cesar Eduardo Barros <cesarb@cesarb.eti.br>",
       "link": "https://github.com/cesarb/constant_time_eq",
-      "source": "Backend"
-    },
-    {
-      "name": "convert_case",
-      "version": "0.10.0",
-      "license": "MIT",
-      "author": "rutrum <dave@rutrum.net>",
-      "link": "https://github.com/rutrum/convert-case",
       "source": "Backend"
     },
     {
@@ -1247,6 +1416,14 @@
       "source": "Backend"
     },
     {
+      "name": "cpubits",
+      "version": "0.1.1",
+      "license": "Apache-2.0 OR MIT",
+      "author": "RustCrypto Developers",
+      "link": "https://github.com/RustCrypto/utils",
+      "source": "Backend"
+    },
+    {
       "name": "cpufeatures",
       "version": "0.2.17",
       "license": "Apache-2.0 OR MIT",
@@ -1268,6 +1445,14 @@
       "license": "Apache-2.0 OR MIT",
       "author": "Sam Rijs <srijs@airpost.net>, Alex Crichton <alex@alexcrichton.com>",
       "link": "https://github.com/srijs/rust-crc32fast",
+      "source": "Backend"
+    },
+    {
+      "name": "crisp_smb",
+      "version": "0.1.0",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Various",
+      "link": "https://crates.io/crates/crisp_smb",
       "source": "Backend"
     },
     {
@@ -1295,6 +1480,22 @@
       "source": "Backend"
     },
     {
+      "name": "crisp-search-query",
+      "version": "0.1.0",
+      "license": "AGPL-3.0-or-later",
+      "author": "Various",
+      "link": "https://crates.io/crates/crisp-search-query",
+      "source": "Backend"
+    },
+    {
+      "name": "crisp-smb-source",
+      "version": "0.1.0",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Various",
+      "link": "https://crates.io/crates/crisp-smb-source",
+      "source": "Backend"
+    },
+    {
       "name": "crispcat",
       "version": "0.1.0",
       "license": "MIT",
@@ -1303,16 +1504,16 @@
       "source": "Backend"
     },
     {
-      "name": "crisplens-protocol",
+      "name": "crispcat-format",
       "version": "0.1.0",
-      "license": "AGPL-3.0-or-later",
-      "author": "CrispSorter contributors",
+      "license": "MIT",
+      "author": "Various",
       "link": "https://github.com/CrispStrobe/CrispSorter",
       "source": "Backend"
     },
     {
       "name": "crispsorter",
-      "version": "0.11.0",
+      "version": "0.15.4",
       "license": "AGPL-3.0-or-later",
       "author": "CrispSorter contributors",
       "link": "https://crates.io/crates/crispsorter",
@@ -1383,6 +1584,14 @@
       "source": "Backend"
     },
     {
+      "name": "crypto-common",
+      "version": "0.2.2",
+      "license": "Apache-2.0 OR MIT",
+      "author": "RustCrypto Developers",
+      "link": "https://github.com/RustCrypto/traits",
+      "source": "Backend"
+    },
+    {
       "name": "cssparser",
       "version": "0.36.0",
       "license": "MPL-2.0",
@@ -1391,8 +1600,32 @@
       "source": "Backend"
     },
     {
+      "name": "cssparser",
+      "version": "0.37.0",
+      "license": "MPL-2.0",
+      "author": "Simon Sapin <simon.sapin@exyr.org>",
+      "link": "https://github.com/servo/rust-cssparser",
+      "source": "Backend"
+    },
+    {
+      "name": "cssparser",
+      "version": "0.38.0",
+      "license": "MPL-2.0",
+      "author": "Simon Sapin <simon.sapin@exyr.org>",
+      "link": "https://github.com/servo/rust-cssparser",
+      "source": "Backend"
+    },
+    {
       "name": "cssparser-macros",
       "version": "0.6.1",
+      "license": "MPL-2.0",
+      "author": "Simon Sapin <simon.sapin@exyr.org>",
+      "link": "https://github.com/servo/rust-cssparser",
+      "source": "Backend"
+    },
+    {
+      "name": "cssparser-macros",
+      "version": "0.7.1",
       "license": "MPL-2.0",
       "author": "Simon Sapin <simon.sapin@exyr.org>",
       "link": "https://github.com/servo/rust-cssparser",
@@ -1416,18 +1649,34 @@
     },
     {
       "name": "ctor",
-      "version": "0.8.0",
+      "version": "1.0.14",
       "license": "Apache-2.0 OR MIT",
       "author": "Matt Mastracci <matthew@mastracci.com>",
-      "link": "https://github.com/mmastrac/rust-ctor",
+      "link": "https://github.com/mmastrac/linktime",
       "source": "Backend"
     },
     {
-      "name": "ctor-proc-macro",
-      "version": "0.0.7",
+      "name": "ctr",
+      "version": "0.9.2",
       "license": "Apache-2.0 OR MIT",
-      "author": "Matt Mastracci <matthew@mastracci.com>",
-      "link": "https://github.com/mmastrac/rust-ctor",
+      "author": "RustCrypto Developers",
+      "link": "https://github.com/RustCrypto/block-modes",
+      "source": "Backend"
+    },
+    {
+      "name": "ctr",
+      "version": "0.10.1",
+      "license": "Apache-2.0 OR MIT",
+      "author": "RustCrypto Developers",
+      "link": "https://github.com/RustCrypto/block-modes",
+      "source": "Backend"
+    },
+    {
+      "name": "ctutils",
+      "version": "0.4.8",
+      "license": "Apache-2.0 OR MIT",
+      "author": "RustCrypto Developers",
+      "link": "https://github.com/RustCrypto/utils",
       "source": "Backend"
     },
     {
@@ -1743,6 +1992,14 @@
       "source": "Backend"
     },
     {
+      "name": "dbl",
+      "version": "0.5.0",
+      "license": "Apache-2.0 OR MIT",
+      "author": "RustCrypto Developers",
+      "link": "https://github.com/RustCrypto/utils",
+      "source": "Backend"
+    },
+    {
       "name": "dbus",
       "version": "0.9.11",
       "license": "Apache-2.0 OR MIT",
@@ -1871,11 +2128,27 @@
       "source": "Backend"
     },
     {
+      "name": "digest",
+      "version": "0.11.3",
+      "license": "Apache-2.0 OR MIT",
+      "author": "RustCrypto Developers",
+      "link": "https://github.com/RustCrypto/traits",
+      "source": "Backend"
+    },
+    {
       "name": "dirs",
       "version": "6.0.0",
       "license": "Apache-2.0 OR MIT",
       "author": "Simon Ochsenreither <simon@ochsenreither.de>",
       "link": "https://github.com/soc/dirs-rs",
+      "source": "Backend"
+    },
+    {
+      "name": "dirs",
+      "version": "7.0.0",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Simon Ochsenreither <simon@ochsenreither.de>",
+      "link": "https://codeberg.org/dirs/dirs-rs",
       "source": "Backend"
     },
     {
@@ -1928,7 +2201,15 @@
     },
     {
       "name": "dom_query",
-      "version": "0.27.0",
+      "version": "0.28.0",
+      "license": "MIT",
+      "author": "niklak <morgenpurple@gmail.com>, importcjj <importcjj@gmail.com>",
+      "link": "https://github.com/niklak/dom_query",
+      "source": "Backend"
+    },
+    {
+      "name": "dom_query",
+      "version": "0.29.0",
       "license": "MIT",
       "author": "niklak <morgenpurple@gmail.com>, importcjj <importcjj@gmail.com>",
       "link": "https://github.com/niklak/dom_query",
@@ -1975,22 +2256,6 @@
       "source": "Backend"
     },
     {
-      "name": "dtor",
-      "version": "0.3.0",
-      "license": "Apache-2.0 OR MIT",
-      "author": "Matt Mastracci <matthew@mastracci.com>",
-      "link": "https://github.com/mmastrac/rust-ctor",
-      "source": "Backend"
-    },
-    {
-      "name": "dtor-proc-macro",
-      "version": "0.0.6",
-      "license": "Apache-2.0 OR MIT",
-      "author": "Matt Mastracci <matthew@mastracci.com>",
-      "link": "https://github.com/mmastrac/rust-ctor",
-      "source": "Backend"
-    },
-    {
       "name": "dunce",
       "version": "1.0.5",
       "license": "Apache-2.0 OR CC0-1.0 OR MIT-0",
@@ -2020,6 +2285,14 @@
       "license": "MIT",
       "author": "RustCrypto Developers, magic-akari",
       "link": "https://github.com/magic-akari/ecb",
+      "source": "Backend"
+    },
+    {
+      "name": "ego-tree",
+      "version": "0.10.0",
+      "license": "ISC",
+      "author": "June McEnroe <june@causal.agency>, Carlo Federico Vescovo <vescovocarlofederico@gmail.com>",
+      "link": "https://github.com/rust-scraper/ego-tree",
       "source": "Backend"
     },
     {
@@ -2055,6 +2328,14 @@
       "source": "Backend"
     },
     {
+      "name": "encodify",
+      "version": "1.0.2",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Stalwart Labs LLC <hello@stalw.art>",
+      "link": "https://github.com/stalwartlabs/encodify",
+      "source": "Backend"
+    },
+    {
       "name": "encoding_rs",
       "version": "0.8.35",
       "license": "(Apache-2.0 OR MIT) AND BSD-3-Clause",
@@ -2069,14 +2350,6 @@
       "author": "Zeeshan Ali Khan <zeenix@gmail.com>",
       "link": "https://github.com/zeenix/endi",
       "source": "Backend"
-    },
-    {
-      "name": "entities",
-      "version": "9.0.0",
-      "license": "BSD-2-Clause",
-      "author": "Felix Boehm <me@feedic.com>",
-      "link": "https://www.npmjs.com/package/entities",
-      "source": "Frontend"
     },
     {
       "name": "enumflags2",
@@ -2263,6 +2536,14 @@
       "source": "Backend"
     },
     {
+      "name": "filetime",
+      "version": "0.2.29",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Alex Crichton <alex@alexcrichton.com>",
+      "link": "https://github.com/alexcrichton/filetime",
+      "source": "Backend"
+    },
+    {
       "name": "find-msvc-tools",
       "version": "0.1.9",
       "license": "Apache-2.0 OR MIT",
@@ -2391,6 +2672,14 @@
       "source": "Backend"
     },
     {
+      "name": "fs-set-times",
+      "version": "0.20.3",
+      "license": "Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT",
+      "author": "Dan Gohman <dev@sunfishcode.online>",
+      "link": "https://github.com/bytecodealliance/fs-set-times",
+      "source": "Backend"
+    },
+    {
       "name": "fs4",
       "version": "0.8.4",
       "license": "Apache-2.0 OR MIT",
@@ -2420,6 +2709,14 @@
       "license": "MIT",
       "author": "myrrlyn <self@myrrlyn.dev>",
       "link": "https://github.com/myrrlyn/funty",
+      "source": "Backend"
+    },
+    {
+      "name": "futf",
+      "version": "0.1.5",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Keegan McAllister <kmcallister@mozilla.com>",
+      "link": "https://github.com/servo/futf",
       "source": "Backend"
     },
     {
@@ -2687,6 +2984,22 @@
       "source": "Backend"
     },
     {
+      "name": "ghash",
+      "version": "0.5.1",
+      "license": "Apache-2.0 OR MIT",
+      "author": "RustCrypto Developers",
+      "link": "https://github.com/RustCrypto/universal-hashes",
+      "source": "Backend"
+    },
+    {
+      "name": "ghash",
+      "version": "0.6.0",
+      "license": "Apache-2.0 OR MIT",
+      "author": "RustCrypto Developers",
+      "link": "https://github.com/RustCrypto/universal-hashes",
+      "source": "Backend"
+    },
+    {
       "name": "gif",
       "version": "0.14.2",
       "license": "Apache-2.0 OR MIT",
@@ -2839,6 +3152,14 @@
       "source": "Backend"
     },
     {
+      "name": "hashify",
+      "version": "0.3.2",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Stalwart Labs <hello@stalw.art>",
+      "link": "https://github.com/stalwartlabs/hashify",
+      "source": "Backend"
+    },
+    {
       "name": "hashlink",
       "version": "0.11.1",
       "license": "Apache-2.0 OR MIT",
@@ -2911,6 +3232,14 @@
       "source": "Backend"
     },
     {
+      "name": "hmac",
+      "version": "0.13.0",
+      "license": "Apache-2.0 OR MIT",
+      "author": "RustCrypto Developers",
+      "link": "https://github.com/RustCrypto/MACs",
+      "source": "Backend"
+    },
+    {
       "name": "hmac-sha256",
       "version": "1.1.14",
       "license": "ISC",
@@ -2927,8 +3256,40 @@
       "source": "Backend"
     },
     {
+      "name": "html2text",
+      "version": "0.16.7",
+      "license": "MIT",
+      "author": "Chris Emerson <github@mail.nosreme.org>",
+      "link": "https://github.com/jugglerchris/rust-html2text/",
+      "source": "Backend"
+    },
+    {
+      "name": "html5ever",
+      "version": "0.36.1",
+      "license": "Apache-2.0 OR MIT",
+      "author": "The html5ever Project Developers",
+      "link": "https://github.com/servo/html5ever",
+      "source": "Backend"
+    },
+    {
       "name": "html5ever",
       "version": "0.38.0",
+      "license": "Apache-2.0 OR MIT",
+      "author": "The html5ever Project Developers",
+      "link": "https://github.com/servo/html5ever",
+      "source": "Backend"
+    },
+    {
+      "name": "html5ever",
+      "version": "0.39.0",
+      "license": "Apache-2.0 OR MIT",
+      "author": "The html5ever Project Developers",
+      "link": "https://github.com/servo/html5ever",
+      "source": "Backend"
+    },
+    {
+      "name": "html5ever",
+      "version": "0.40.1",
       "license": "Apache-2.0 OR MIT",
       "author": "The html5ever Project Developers",
       "link": "https://github.com/servo/html5ever",
@@ -2967,6 +3328,14 @@
       "source": "Backend"
     },
     {
+      "name": "http-range",
+      "version": "0.1.6",
+      "license": "MIT",
+      "author": "Luka Zakrajšek <luka@bancek.net>",
+      "link": "https://github.com/bancek/rust-http-range.git",
+      "source": "Backend"
+    },
+    {
       "name": "httparse",
       "version": "1.10.1",
       "license": "Apache-2.0 OR MIT",
@@ -2988,6 +3357,14 @@
       "license": "Apache-2.0 OR MIT",
       "author": "Various",
       "link": "https://github.com/chronotope/humantime",
+      "source": "Backend"
+    },
+    {
+      "name": "hybrid-array",
+      "version": "0.4.14",
+      "license": "Apache-2.0 OR MIT",
+      "author": "RustCrypto Developers",
+      "link": "https://github.com/RustCrypto/hybrid-array",
       "source": "Backend"
     },
     {
@@ -3088,7 +3465,7 @@
     },
     {
       "name": "ico",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "license": "MIT",
       "author": "Matthew D. Steele <mdsteele@alum.mit.edu>",
       "link": "https://github.com/mdsteele/rust-ico",
@@ -3232,7 +3609,7 @@
     },
     {
       "name": "infer",
-      "version": "0.19.0",
+      "version": "0.22.0",
       "license": "MIT",
       "author": "Bojan <dbojan@gmail.com>",
       "link": "https://github.com/bojand/infer",
@@ -3241,6 +3618,14 @@
     {
       "name": "inout",
       "version": "0.1.4",
+      "license": "Apache-2.0 OR MIT",
+      "author": "RustCrypto Developers",
+      "link": "https://github.com/RustCrypto/utils",
+      "source": "Backend"
+    },
+    {
+      "name": "inout",
+      "version": "0.2.2",
       "license": "Apache-2.0 OR MIT",
       "author": "RustCrypto Developers",
       "link": "https://github.com/RustCrypto/utils",
@@ -3260,6 +3645,30 @@
       "license": "MIT",
       "author": "Luca Barbato <lu_zero@gentoo.org>",
       "link": "https://github.com/lu-zero/interpolate_name",
+      "source": "Backend"
+    },
+    {
+      "name": "io-extras",
+      "version": "0.19.0",
+      "license": "Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT",
+      "author": "Dan Gohman <dev@sunfishcode.online>",
+      "link": "https://github.com/sunfishcode/io-extras",
+      "source": "Backend"
+    },
+    {
+      "name": "io-lifetimes",
+      "version": "2.0.4",
+      "license": "Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT",
+      "author": "Dan Gohman <dev@sunfishcode.online>",
+      "link": "https://github.com/sunfishcode/io-lifetimes",
+      "source": "Backend"
+    },
+    {
+      "name": "io-lifetimes",
+      "version": "3.0.1",
+      "license": "Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT",
+      "author": "Dan Gohman <dev@sunfishcode.online>",
+      "link": "https://github.com/sunfishcode/io-lifetimes",
       "source": "Backend"
     },
     {
@@ -3439,14 +3848,6 @@
       "source": "Backend"
     },
     {
-      "name": "jpeg-decoder",
-      "version": "0.3.2",
-      "license": "Apache-2.0 OR MIT",
-      "author": "The image-rs Developers",
-      "link": "https://github.com/image-rs/jpeg-decoder",
-      "source": "Backend"
-    },
-    {
       "name": "js-sys",
       "version": "0.3.102",
       "license": "Apache-2.0 OR MIT",
@@ -3455,8 +3856,16 @@
       "source": "Backend"
     },
     {
+      "name": "js-tiktoken",
+      "version": "1.0.21",
+      "license": "MIT",
+      "author": "n/a",
+      "link": "https://www.npmjs.com/package/js-tiktoken",
+      "source": "Frontend"
+    },
+    {
       "name": "json-patch",
-      "version": "3.0.1",
+      "version": "4.2.0",
       "license": "Apache-2.0 OR MIT",
       "author": "Ivan Dubrov <dubrov.ivan@gmail.com>",
       "link": "https://github.com/idubrov/json-patch",
@@ -3472,9 +3881,9 @@
     },
     {
       "name": "jsonptr",
-      "version": "0.6.3",
+      "version": "0.7.1",
       "license": "Apache-2.0 OR MIT",
-      "author": "chance dinkins, André Sá de Mello <codasm@pm.me>",
+      "author": "chance dinkins, André Sá de Mello <codasm@pm.me>, Oliver Wangler <oliver@wngr.de>",
       "link": "https://github.com/chanced/jsonptr",
       "source": "Backend"
     },
@@ -3504,10 +3913,10 @@
     },
     {
       "name": "keyboard-types",
-      "version": "0.7.0",
+      "version": "0.8.3",
       "license": "Apache-2.0 OR MIT",
       "author": "Pyfisch <pyfisch@posteo.org>",
-      "link": "https://github.com/pyfisch/keyboard-types",
+      "link": "https://github.com/rust-windowing/keyboard-types",
       "source": "Backend"
     },
     {
@@ -3815,6 +4224,14 @@
       "source": "Backend"
     },
     {
+      "name": "link-section",
+      "version": "0.19.4",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Matt Mastracci <matthew@mastracci.com>",
+      "link": "https://github.com/mmastrac/linktime",
+      "source": "Backend"
+    },
+    {
       "name": "linux-raw-sys",
       "version": "0.4.15",
       "license": "Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT",
@@ -3935,6 +4352,14 @@
       "source": "Backend"
     },
     {
+      "name": "lz4_flex",
+      "version": "0.14.0",
+      "license": "MIT",
+      "author": "Pascal Seitz <pascal.seitz@gmail.com>, Arthur Silva <arthurprs@gmail.com>, ticki <Ticki@users.noreply.github.com>",
+      "link": "https://github.com/pseitz/lz4_flex",
+      "source": "Backend"
+    },
+    {
       "name": "lz4-sys",
       "version": "1.11.1+lz4-1.10.0",
       "license": "MIT",
@@ -3951,6 +4376,22 @@
       "source": "Backend"
     },
     {
+      "name": "lzma-rust2",
+      "version": "0.25.0",
+      "license": "Apache-2.0",
+      "author": "Various",
+      "link": "https://github.com/hasenbanck/lzma-rust2/",
+      "source": "Backend"
+    },
+    {
+      "name": "mac",
+      "version": "0.1.1",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Jonathan Reem <jonathan.reem@gmail.com>",
+      "link": "https://github.com/reem/rust-mac.git",
+      "source": "Backend"
+    },
+    {
       "name": "macro_rules_attribute",
       "version": "0.2.2",
       "license": "Apache-2.0 OR MIT OR Zlib",
@@ -3964,6 +4405,14 @@
       "license": "Apache-2.0 OR MIT OR Zlib",
       "author": "Daniel Henry-Mantilla <daniel.henry.mantilla@gmail.com>",
       "link": "https://github.com/danielhenrymantilla/macro_rules_attribute-rs",
+      "source": "Backend"
+    },
+    {
+      "name": "mail-parser",
+      "version": "1.0.1",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Stalwart Labs <hello@stalw.art>",
+      "link": "https://github.com/stalwartlabs/mail-parser",
       "source": "Backend"
     },
     {
@@ -3984,7 +4433,31 @@
     },
     {
       "name": "markup5ever",
+      "version": "0.36.1",
+      "license": "Apache-2.0 OR MIT",
+      "author": "The html5ever Project Developers",
+      "link": "https://github.com/servo/html5ever",
+      "source": "Backend"
+    },
+    {
+      "name": "markup5ever",
       "version": "0.38.0",
+      "license": "Apache-2.0 OR MIT",
+      "author": "The html5ever Project Developers",
+      "link": "https://github.com/servo/html5ever",
+      "source": "Backend"
+    },
+    {
+      "name": "markup5ever",
+      "version": "0.39.0",
+      "license": "Apache-2.0 OR MIT",
+      "author": "The html5ever Project Developers",
+      "link": "https://github.com/servo/html5ever",
+      "source": "Backend"
+    },
+    {
+      "name": "markup5ever",
+      "version": "0.40.0",
       "license": "Apache-2.0 OR MIT",
       "author": "The html5ever Project Developers",
       "link": "https://github.com/servo/html5ever",
@@ -4007,6 +4480,14 @@
       "source": "Backend"
     },
     {
+      "name": "maybe-owned",
+      "version": "0.3.4",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Philipp korber <philippkorber@gmail.com>, darkstalker <slayerbeast@gmail.com>, daboross <daboross@daboross.net>, Zac Burns (That3Percent) <that3percent@gmail.com>",
+      "link": "https://github.com/rustonaut/maybe-owned",
+      "source": "Backend"
+    },
+    {
       "name": "maybe-rayon",
       "version": "0.1.1",
       "license": "MIT",
@@ -4017,6 +4498,22 @@
     {
       "name": "md-5",
       "version": "0.10.6",
+      "license": "Apache-2.0 OR MIT",
+      "author": "RustCrypto Developers",
+      "link": "https://github.com/RustCrypto/hashes",
+      "source": "Backend"
+    },
+    {
+      "name": "md-5",
+      "version": "0.11.0",
+      "license": "Apache-2.0 OR MIT",
+      "author": "RustCrypto Developers",
+      "link": "https://github.com/RustCrypto/hashes",
+      "source": "Backend"
+    },
+    {
+      "name": "md4",
+      "version": "0.11.0",
       "license": "Apache-2.0 OR MIT",
       "author": "RustCrypto Developers",
       "link": "https://github.com/RustCrypto/hashes",
@@ -4152,7 +4649,7 @@
     },
     {
       "name": "muda",
-      "version": "0.19.3",
+      "version": "0.20.0",
       "license": "Apache-2.0 OR MIT",
       "author": "Various",
       "link": "https://github.com/tauri-apps/muda",
@@ -4212,6 +4709,14 @@
       "license": "Apache-2.0 OR MIT",
       "author": "The Rust Mobile contributors",
       "link": "https://github.com/rust-mobile/ndk",
+      "source": "Backend"
+    },
+    {
+      "name": "ndk-context",
+      "version": "0.1.1",
+      "license": "Apache-2.0 OR MIT",
+      "author": "The Rust Windowing contributors",
+      "link": "https://github.com/rust-windowing/android-ndk-rs",
       "source": "Backend"
     },
     {
@@ -4599,6 +5104,14 @@
       "source": "Backend"
     },
     {
+      "name": "opaque-debug",
+      "version": "0.3.1",
+      "license": "Apache-2.0 OR MIT",
+      "author": "RustCrypto Developers",
+      "link": "https://github.com/RustCrypto/utils",
+      "source": "Backend"
+    },
+    {
       "name": "open",
       "version": "5.3.5",
       "license": "MIT",
@@ -4751,6 +5264,14 @@
       "source": "Frontend"
     },
     {
+      "name": "password-hash",
+      "version": "0.5.0",
+      "license": "Apache-2.0 OR MIT",
+      "author": "RustCrypto Developers",
+      "link": "https://github.com/RustCrypto/traits/tree/master/password-hash",
+      "source": "Backend"
+    },
+    {
       "name": "paste",
       "version": "1.0.15",
       "license": "Apache-2.0 OR MIT",
@@ -4788,6 +5309,14 @@
       "license": "Apache-2.0 OR MIT",
       "author": "RustCrypto Developers",
       "link": "https://github.com/RustCrypto/password-hashes/tree/master/pbkdf2",
+      "source": "Backend"
+    },
+    {
+      "name": "pbkdf2",
+      "version": "0.13.0",
+      "license": "Apache-2.0 OR MIT",
+      "author": "RustCrypto Developers",
+      "link": "https://github.com/RustCrypto/password-hashes",
       "source": "Backend"
     },
     {
@@ -4855,8 +5384,24 @@
       "source": "Backend"
     },
     {
+      "name": "phf",
+      "version": "0.14.0",
+      "license": "MIT",
+      "author": "Steven Fackler <sfackler@gmail.com>",
+      "link": "https://github.com/rust-phf/rust-phf",
+      "source": "Backend"
+    },
+    {
       "name": "phf_codegen",
       "version": "0.13.1",
+      "license": "MIT",
+      "author": "Steven Fackler <sfackler@gmail.com>",
+      "link": "https://github.com/rust-phf/rust-phf",
+      "source": "Backend"
+    },
+    {
+      "name": "phf_codegen",
+      "version": "0.14.0",
       "license": "MIT",
       "author": "Steven Fackler <sfackler@gmail.com>",
       "link": "https://github.com/rust-phf/rust-phf",
@@ -4871,8 +5416,24 @@
       "source": "Backend"
     },
     {
+      "name": "phf_generator",
+      "version": "0.14.0",
+      "license": "MIT",
+      "author": "Steven Fackler <sfackler@gmail.com>",
+      "link": "https://github.com/rust-phf/rust-phf",
+      "source": "Backend"
+    },
+    {
       "name": "phf_macros",
       "version": "0.13.1",
+      "license": "MIT",
+      "author": "Steven Fackler <sfackler@gmail.com>",
+      "link": "https://github.com/rust-phf/rust-phf",
+      "source": "Backend"
+    },
+    {
+      "name": "phf_macros",
+      "version": "0.14.0",
       "license": "MIT",
       "author": "Steven Fackler <sfackler@gmail.com>",
       "link": "https://github.com/rust-phf/rust-phf",
@@ -4889,6 +5450,14 @@
     {
       "name": "phf_shared",
       "version": "0.13.1",
+      "license": "MIT",
+      "author": "Steven Fackler <sfackler@gmail.com>",
+      "link": "https://github.com/rust-phf/rust-phf",
+      "source": "Backend"
+    },
+    {
+      "name": "phf_shared",
+      "version": "0.14.0",
       "license": "MIT",
       "author": "Steven Fackler <sfackler@gmail.com>",
       "link": "https://github.com/rust-phf/rust-phf",
@@ -4944,14 +5513,6 @@
     },
     {
       "name": "png",
-      "version": "0.17.16",
-      "license": "Apache-2.0 OR MIT",
-      "author": "The image-rs Developers",
-      "link": "https://github.com/image-rs/image-png",
-      "source": "Backend"
-    },
-    {
-      "name": "png",
       "version": "0.18.1",
       "license": "Apache-2.0 OR MIT",
       "author": "The image-rs Developers",
@@ -4964,6 +5525,22 @@
       "license": "Apache-2.0 OR MIT",
       "author": "Stjepan Glavina <stjepang@gmail.com>, John Nunley <dev@notgull.net>",
       "link": "https://github.com/smol-rs/polling",
+      "source": "Backend"
+    },
+    {
+      "name": "polyval",
+      "version": "0.6.2",
+      "license": "Apache-2.0 OR MIT",
+      "author": "RustCrypto Developers",
+      "link": "https://github.com/RustCrypto/universal-hashes",
+      "source": "Backend"
+    },
+    {
+      "name": "polyval",
+      "version": "0.7.3",
+      "license": "Apache-2.0 OR MIT",
+      "author": "RustCrypto Developers",
+      "link": "https://github.com/RustCrypto/universal-hashes",
       "source": "Backend"
     },
     {
@@ -5807,6 +6384,14 @@
       "source": "Backend"
     },
     {
+      "name": "rustix-linux-procfs",
+      "version": "0.1.1",
+      "license": "Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT",
+      "author": "Dan Gohman <dev@sunfishcode.online>",
+      "link": "https://github.com/sunfishcode/rustix-linux-procfs",
+      "source": "Backend"
+    },
+    {
       "name": "rustls",
       "version": "0.23.40",
       "license": "Apache-2.0 OR ISC OR MIT",
@@ -5943,6 +6528,14 @@
       "source": "Backend"
     },
     {
+      "name": "scraper",
+      "version": "0.25.0",
+      "license": "ISC",
+      "author": "June McEnroe <june@causal.agency>",
+      "link": "https://github.com/rust-scraper/scraper",
+      "source": "Backend"
+    },
+    {
       "name": "secret-service",
       "version": "4.0.0",
       "license": "Apache-2.0 OR MIT",
@@ -5976,7 +6569,23 @@
     },
     {
       "name": "selectors",
-      "version": "0.36.1",
+      "version": "0.33.0",
+      "license": "MPL-2.0",
+      "author": "The Servo Project Developers",
+      "link": "https://github.com/servo/stylo",
+      "source": "Backend"
+    },
+    {
+      "name": "selectors",
+      "version": "0.38.0",
+      "license": "MPL-2.0",
+      "author": "The Servo Project Developers",
+      "link": "https://github.com/servo/stylo",
+      "source": "Backend"
+    },
+    {
+      "name": "selectors",
+      "version": "0.41.0",
       "license": "MPL-2.0",
       "author": "The Servo Project Developers",
       "link": "https://github.com/servo/stylo",
@@ -6119,8 +6728,32 @@
       "source": "Backend"
     },
     {
+      "name": "servo_arc",
+      "version": "0.5.0",
+      "license": "Apache-2.0 OR MIT",
+      "author": "The Servo Project Developers",
+      "link": "https://github.com/servo/stylo",
+      "source": "Backend"
+    },
+    {
+      "name": "sevenz-rust2",
+      "version": "0.25.0",
+      "license": "Apache-2.0",
+      "author": "Various",
+      "link": "https://github.com/hasenbanck/sevenz-rust",
+      "source": "Backend"
+    },
+    {
       "name": "sha1",
       "version": "0.10.6",
+      "license": "Apache-2.0 OR MIT",
+      "author": "RustCrypto Developers",
+      "link": "https://github.com/RustCrypto/hashes",
+      "source": "Backend"
+    },
+    {
+      "name": "sha1",
+      "version": "0.11.0",
       "license": "Apache-2.0 OR MIT",
       "author": "RustCrypto Developers",
       "link": "https://github.com/RustCrypto/hashes",
@@ -6135,12 +6768,28 @@
       "source": "Backend"
     },
     {
+      "name": "sha2",
+      "version": "0.11.0",
+      "license": "Apache-2.0 OR MIT",
+      "author": "RustCrypto Developers",
+      "link": "https://github.com/RustCrypto/hashes",
+      "source": "Backend"
+    },
+    {
       "name": "sharded-slab",
       "version": "0.1.7",
       "license": "MIT",
       "author": "Eliza Weisman <eliza@buoyant.io>",
       "link": "https://github.com/hawkw/sharded-slab",
       "source": "Backend"
+    },
+    {
+      "name": "SheenBidi (CrispEmbed OCR text layout)",
+      "version": "3.0.0",
+      "license": "Apache-2.0",
+      "author": "Muhammad Tayyab Akram",
+      "source": "Native",
+      "link": "https://github.com/Tehreer/SheenBidi"
     },
     {
       "name": "shellexpand",
@@ -6247,6 +6896,14 @@
       "source": "Backend"
     },
     {
+      "name": "smb2",
+      "version": "0.43.0",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Various",
+      "link": "https://github.com/vdavid/smb2",
+      "source": "Backend"
+    },
+    {
       "name": "snafu",
       "version": "0.8.9",
       "license": "Apache-2.0 OR MIT",
@@ -6311,14 +6968,6 @@
       "source": "Backend"
     },
     {
-      "name": "spin",
-      "version": "0.9.9",
-      "license": "MIT",
-      "author": "Mathijs van de Nes <git@mathijs.vd-nes.nl>, John Ericson <git@JohnEricson.me>, Joshua Barretto <joshua.s.barretto@gmail.com>",
-      "link": "https://github.com/mvdnes/spin-rs.git",
-      "source": "Backend"
-    },
-    {
       "name": "spm_precompiled",
       "version": "0.1.4",
       "license": "Apache-2.0",
@@ -6367,6 +7016,14 @@
       "source": "Backend"
     },
     {
+      "name": "static_vcruntime",
+      "version": "3.0.0",
+      "license": "Apache-2.0 OR MIT OR Zlib",
+      "author": "Various",
+      "link": "https://github.com/ChrisDenton/static_vcruntime",
+      "source": "Backend"
+    },
+    {
       "name": "std_prelude",
       "version": "0.2.12",
       "license": "MIT",
@@ -6399,8 +7056,24 @@
       "source": "Backend"
     },
     {
+      "name": "string_cache",
+      "version": "0.11.0",
+      "license": "Apache-2.0 OR MIT",
+      "author": "The Servo Project Developers",
+      "link": "https://github.com/servo/string-cache",
+      "source": "Backend"
+    },
+    {
       "name": "string_cache_codegen",
       "version": "0.6.1",
+      "license": "Apache-2.0 OR MIT",
+      "author": "The Servo Project Developers",
+      "link": "https://github.com/servo/string-cache",
+      "source": "Backend"
+    },
+    {
+      "name": "string_cache_codegen",
+      "version": "0.11.2",
       "license": "Apache-2.0 OR MIT",
       "author": "The Servo Project Developers",
       "link": "https://github.com/servo/string-cache",
@@ -6448,7 +7121,7 @@
     },
     {
       "name": "swift-rs",
-      "version": "1.0.7",
+      "version": "1.0.9",
       "license": "Apache-2.0 OR MIT",
       "author": "The swift-rs contributors",
       "link": "https://github.com/Brendonovich/swift-rs",
@@ -6465,6 +7138,14 @@
     {
       "name": "syn",
       "version": "2.0.118",
+      "license": "Apache-2.0 OR MIT",
+      "author": "David Tolnay <dtolnay@gmail.com>",
+      "link": "https://github.com/dtolnay/syn",
+      "source": "Backend"
+    },
+    {
+      "name": "syn",
+      "version": "3.0.10",
       "license": "Apache-2.0 OR MIT",
       "author": "David Tolnay <dtolnay@gmail.com>",
       "link": "https://github.com/dtolnay/syn",
@@ -6664,7 +7345,7 @@
     },
     {
       "name": "tao",
-      "version": "0.35.3",
+      "version": "0.37.3",
       "license": "Apache-2.0",
       "author": "Tauri Programme within The Commons Conservancy, The winit contributors",
       "link": "https://github.com/tauri-apps/tao",
@@ -6672,7 +7353,7 @@
     },
     {
       "name": "tao-macros",
-      "version": "0.1.3",
+      "version": "0.1.4",
       "license": "Apache-2.0 OR MIT",
       "author": "Tauri Programme within The Commons Conservancy",
       "link": "https://github.com/tauri-apps/tao",
@@ -6687,6 +7368,14 @@
       "source": "Backend"
     },
     {
+      "name": "tar",
+      "version": "0.4.46",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Alex Crichton <alex@alexcrichton.com>",
+      "link": "https://github.com/composefs/tar-rs",
+      "source": "Backend"
+    },
+    {
       "name": "target-lexicon",
       "version": "0.12.16",
       "license": "Apache-2.0 WITH LLVM-exception",
@@ -6696,7 +7385,7 @@
     },
     {
       "name": "tauri",
-      "version": "2.11.3",
+      "version": "2.12.7",
       "license": "Apache-2.0 OR MIT",
       "author": "Tauri Programme within The Commons Conservancy",
       "link": "https://github.com/tauri-apps/tauri",
@@ -6704,7 +7393,7 @@
     },
     {
       "name": "tauri-build",
-      "version": "2.6.3",
+      "version": "2.7.6",
       "license": "Apache-2.0 OR MIT",
       "author": "Tauri Programme within The Commons Conservancy",
       "link": "https://github.com/tauri-apps/tauri",
@@ -6712,7 +7401,7 @@
     },
     {
       "name": "tauri-codegen",
-      "version": "2.6.3",
+      "version": "2.7.6",
       "license": "Apache-2.0 OR MIT",
       "author": "Tauri Programme within The Commons Conservancy",
       "link": "https://github.com/tauri-apps/tauri",
@@ -6720,7 +7409,7 @@
     },
     {
       "name": "tauri-macros",
-      "version": "2.6.3",
+      "version": "2.7.6",
       "license": "Apache-2.0 OR MIT",
       "author": "Tauri Programme within The Commons Conservancy",
       "link": "https://github.com/tauri-apps/tauri",
@@ -6759,6 +7448,14 @@
       "source": "Backend"
     },
     {
+      "name": "tauri-plugin-mobile-provider",
+      "version": "0.1.0",
+      "license": "AGPL-3.0-or-later",
+      "author": "Various",
+      "link": "https://crates.io/crates/tauri-plugin-mobile-provider",
+      "source": "Backend"
+    },
+    {
       "name": "tauri-plugin-opener",
       "version": "2.5.4",
       "license": "Apache-2.0 OR MIT",
@@ -6776,7 +7473,7 @@
     },
     {
       "name": "tauri-runtime",
-      "version": "2.11.3",
+      "version": "2.12.4",
       "license": "Apache-2.0 OR MIT",
       "author": "Tauri Programme within The Commons Conservancy",
       "link": "https://github.com/tauri-apps/tauri",
@@ -6784,7 +7481,7 @@
     },
     {
       "name": "tauri-runtime-wry",
-      "version": "2.11.3",
+      "version": "2.12.5",
       "license": "Apache-2.0 OR MIT",
       "author": "Tauri Programme within The Commons Conservancy",
       "link": "https://github.com/tauri-apps/tauri",
@@ -6792,7 +7489,7 @@
     },
     {
       "name": "tauri-utils",
-      "version": "2.9.3",
+      "version": "2.10.4",
       "license": "Apache-2.0 OR MIT",
       "author": "Tauri Programme within The Commons Conservancy",
       "link": "https://github.com/tauri-apps/tauri",
@@ -6812,6 +7509,14 @@
       "license": "Apache-2.0 OR MIT",
       "author": "Steven Allen <steven@stebalien.com>, The Rust Project Developers, Ashley Mannix <ashleymannix@live.com.au>, Jason White <me@jasonwhite.io>",
       "link": "https://github.com/Stebalien/tempfile",
+      "source": "Backend"
+    },
+    {
+      "name": "tendril",
+      "version": "0.4.3",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Keegan McAllister <mcallister.keegan@gmail.com>, Simon Sapin <simon.sapin@exyr.org>, Chris Morgan <me@chrismorgan.info>",
+      "link": "https://github.com/servo/tendril",
       "source": "Backend"
     },
     {
@@ -6876,14 +7581,6 @@
       "license": "Apache-2.0 OR MIT",
       "author": "bluss <>",
       "link": "https://github.com/bluss/thread-tree",
-      "source": "Backend"
-    },
-    {
-      "name": "tiff",
-      "version": "0.9.1",
-      "license": "MIT",
-      "author": "The image-rs Developers",
-      "link": "https://github.com/image-rs/image-tiff",
       "source": "Backend"
     },
     {
@@ -7016,14 +7713,6 @@
     },
     {
       "name": "toml",
-      "version": "0.9.12+spec-1.1.0",
-      "license": "Apache-2.0 OR MIT",
-      "author": "Various",
-      "link": "https://github.com/toml-rs/toml",
-      "source": "Backend"
-    },
-    {
-      "name": "toml",
       "version": "1.1.2+spec-1.1.0",
       "license": "Apache-2.0 OR MIT",
       "author": "Various",
@@ -7035,14 +7724,6 @@
       "version": "0.6.3",
       "license": "Apache-2.0 OR MIT",
       "author": "Alex Crichton <alex@alexcrichton.com>",
-      "link": "https://github.com/toml-rs/toml",
-      "source": "Backend"
-    },
-    {
-      "name": "toml_datetime",
-      "version": "0.7.5+spec-1.1.0",
-      "license": "Apache-2.0 OR MIT",
-      "author": "Various",
       "link": "https://github.com/toml-rs/toml",
       "source": "Backend"
     },
@@ -7176,7 +7857,7 @@
     },
     {
       "name": "tray-icon",
-      "version": "0.24.1",
+      "version": "0.25.1",
       "license": "Apache-2.0 OR MIT",
       "author": "Various",
       "link": "https://github.com/tauri-apps/tray-icon",
@@ -7359,11 +8040,19 @@
       "source": "Backend"
     },
     {
-      "name": "unicode-xid",
-      "version": "0.2.6",
+      "name": "universal-hash",
+      "version": "0.5.1",
       "license": "Apache-2.0 OR MIT",
-      "author": "erick.tryzelaar <erick.tryzelaar@gmail.com>, kwantam <kwantam@gmail.com>, Manish Goregaokar <manishsmail@gmail.com>",
-      "link": "https://github.com/unicode-rs/unicode-xid",
+      "author": "RustCrypto Developers",
+      "link": "https://github.com/RustCrypto/traits",
+      "source": "Backend"
+    },
+    {
+      "name": "universal-hash",
+      "version": "0.6.1",
+      "license": "Apache-2.0 OR MIT",
+      "author": "RustCrypto Developers",
+      "link": "https://github.com/RustCrypto/traits",
       "source": "Backend"
     },
     {
@@ -7409,6 +8098,14 @@
     {
       "name": "urlpattern",
       "version": "0.3.0",
+      "license": "MIT",
+      "author": "the Deno authors, crowlKats <crowlkats@toaxl.com>",
+      "link": "https://github.com/denoland/rust-urlpattern",
+      "source": "Backend"
+    },
+    {
+      "name": "urlpattern",
+      "version": "0.6.0",
       "license": "MIT",
       "author": "the Deno authors, crowlKats <crowlkats@toaxl.com>",
       "link": "https://github.com/denoland/rust-urlpattern",
@@ -7615,6 +8312,14 @@
       "source": "Backend"
     },
     {
+      "name": "web_atoms",
+      "version": "0.3.0",
+      "license": "Apache-2.0 OR MIT",
+      "author": "The html5ever Project Developers",
+      "link": "https://github.com/servo/html5ever",
+      "source": "Backend"
+    },
+    {
       "name": "web-sys",
       "version": "0.3.102",
       "license": "Apache-2.0 OR MIT",
@@ -7672,7 +8377,7 @@
     },
     {
       "name": "webview2-com",
-      "version": "0.38.2",
+      "version": "0.39.1",
       "license": "MIT",
       "author": "Various",
       "link": "https://github.com/wravery/webview2-rs",
@@ -7688,7 +8393,7 @@
     },
     {
       "name": "webview2-com-sys",
-      "version": "0.38.2",
+      "version": "0.39.1",
       "license": "MIT",
       "author": "Various",
       "link": "https://github.com/wravery/webview2-rs",
@@ -7736,7 +8441,7 @@
     },
     {
       "name": "window-vibrancy",
-      "version": "0.6.0",
+      "version": "0.8.1",
       "license": "Apache-2.0 OR MIT",
       "author": "Tauri Programme within The Commons Conservancy",
       "link": "https://github.com/tauri-apps/tauri-plugin-vibrancy",
@@ -7759,8 +8464,24 @@
       "source": "Backend"
     },
     {
+      "name": "windows",
+      "version": "0.62.2",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Various",
+      "link": "https://github.com/microsoft/windows-rs",
+      "source": "Backend"
+    },
+    {
       "name": "windows_aarch64_gnullvm",
       "version": "0.42.2",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Microsoft",
+      "link": "https://github.com/microsoft/windows-rs",
+      "source": "Backend"
+    },
+    {
+      "name": "windows_aarch64_gnullvm",
+      "version": "0.48.5",
       "license": "Apache-2.0 OR MIT",
       "author": "Microsoft",
       "link": "https://github.com/microsoft/windows-rs",
@@ -7785,6 +8506,14 @@
     {
       "name": "windows_aarch64_msvc",
       "version": "0.42.2",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Microsoft",
+      "link": "https://github.com/microsoft/windows-rs",
+      "source": "Backend"
+    },
+    {
+      "name": "windows_aarch64_msvc",
+      "version": "0.48.5",
       "license": "Apache-2.0 OR MIT",
       "author": "Microsoft",
       "link": "https://github.com/microsoft/windows-rs",
@@ -7809,6 +8538,14 @@
     {
       "name": "windows_i686_gnu",
       "version": "0.42.2",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Microsoft",
+      "link": "https://github.com/microsoft/windows-rs",
+      "source": "Backend"
+    },
+    {
+      "name": "windows_i686_gnu",
+      "version": "0.48.5",
       "license": "Apache-2.0 OR MIT",
       "author": "Microsoft",
       "link": "https://github.com/microsoft/windows-rs",
@@ -7849,6 +8586,14 @@
     {
       "name": "windows_i686_msvc",
       "version": "0.42.2",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Microsoft",
+      "link": "https://github.com/microsoft/windows-rs",
+      "source": "Backend"
+    },
+    {
+      "name": "windows_i686_msvc",
+      "version": "0.48.5",
       "license": "Apache-2.0 OR MIT",
       "author": "Microsoft",
       "link": "https://github.com/microsoft/windows-rs",
@@ -7873,6 +8618,14 @@
     {
       "name": "windows_x86_64_gnu",
       "version": "0.42.2",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Microsoft",
+      "link": "https://github.com/microsoft/windows-rs",
+      "source": "Backend"
+    },
+    {
+      "name": "windows_x86_64_gnu",
+      "version": "0.48.5",
       "license": "Apache-2.0 OR MIT",
       "author": "Microsoft",
       "link": "https://github.com/microsoft/windows-rs",
@@ -7897,6 +8650,14 @@
     {
       "name": "windows_x86_64_gnullvm",
       "version": "0.42.2",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Microsoft",
+      "link": "https://github.com/microsoft/windows-rs",
+      "source": "Backend"
+    },
+    {
+      "name": "windows_x86_64_gnullvm",
+      "version": "0.48.5",
       "license": "Apache-2.0 OR MIT",
       "author": "Microsoft",
       "link": "https://github.com/microsoft/windows-rs",
@@ -7921,6 +8682,14 @@
     {
       "name": "windows_x86_64_msvc",
       "version": "0.42.2",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Microsoft",
+      "link": "https://github.com/microsoft/windows-rs",
+      "source": "Backend"
+    },
+    {
+      "name": "windows_x86_64_msvc",
+      "version": "0.48.5",
       "license": "Apache-2.0 OR MIT",
       "author": "Microsoft",
       "link": "https://github.com/microsoft/windows-rs",
@@ -7945,6 +8714,14 @@
     {
       "name": "windows-collections",
       "version": "0.2.0",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Various",
+      "link": "https://github.com/microsoft/windows-rs",
+      "source": "Backend"
+    },
+    {
+      "name": "windows-collections",
+      "version": "0.3.2",
       "license": "Apache-2.0 OR MIT",
       "author": "Various",
       "link": "https://github.com/microsoft/windows-rs",
@@ -7977,6 +8754,14 @@
     {
       "name": "windows-future",
       "version": "0.2.1",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Various",
+      "link": "https://github.com/microsoft/windows-rs",
+      "source": "Backend"
+    },
+    {
+      "name": "windows-future",
+      "version": "0.3.2",
       "license": "Apache-2.0 OR MIT",
       "author": "Various",
       "link": "https://github.com/microsoft/windows-rs",
@@ -8033,6 +8818,14 @@
     {
       "name": "windows-numerics",
       "version": "0.2.0",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Various",
+      "link": "https://github.com/microsoft/windows-rs",
+      "source": "Backend"
+    },
+    {
+      "name": "windows-numerics",
+      "version": "0.3.1",
       "license": "Apache-2.0 OR MIT",
       "author": "Various",
       "link": "https://github.com/microsoft/windows-rs",
@@ -8096,6 +8889,14 @@
     },
     {
       "name": "windows-sys",
+      "version": "0.48.0",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Microsoft",
+      "link": "https://github.com/microsoft/windows-rs",
+      "source": "Backend"
+    },
+    {
+      "name": "windows-sys",
       "version": "0.52.0",
       "license": "Apache-2.0 OR MIT",
       "author": "Microsoft",
@@ -8136,6 +8937,14 @@
     },
     {
       "name": "windows-targets",
+      "version": "0.48.5",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Microsoft",
+      "link": "https://github.com/microsoft/windows-rs",
+      "source": "Backend"
+    },
+    {
+      "name": "windows-targets",
       "version": "0.52.6",
       "license": "Apache-2.0 OR MIT",
       "author": "Microsoft",
@@ -8159,6 +8968,14 @@
       "source": "Backend"
     },
     {
+      "name": "windows-threading",
+      "version": "0.2.1",
+      "license": "Apache-2.0 OR MIT",
+      "author": "Various",
+      "link": "https://github.com/microsoft/windows-rs",
+      "source": "Backend"
+    },
+    {
       "name": "windows-version",
       "version": "0.1.7",
       "license": "Apache-2.0 OR MIT",
@@ -8169,14 +8986,6 @@
     {
       "name": "winnow",
       "version": "0.5.40",
-      "license": "MIT",
-      "author": "Various",
-      "link": "https://github.com/winnow-rs/winnow",
-      "source": "Backend"
-    },
-    {
-      "name": "winnow",
-      "version": "0.7.15",
       "license": "MIT",
       "author": "Various",
       "link": "https://github.com/winnow-rs/winnow",
@@ -8196,6 +9005,14 @@
       "license": "MIT",
       "author": "Igor Shaula <gentoo90@gmail.com>",
       "link": "https://github.com/gentoo90/winreg-rs",
+      "source": "Backend"
+    },
+    {
+      "name": "winx",
+      "version": "0.36.4",
+      "license": "Apache-2.0 WITH LLVM-exception",
+      "author": "Jakub Konka <kubkon@jakubkonka.com>, Dan Gohman <dev@sunfishcode.online>",
+      "link": "https://github.com/sunfishcode/winx",
       "source": "Backend"
     },
     {
@@ -8232,7 +9049,7 @@
     },
     {
       "name": "wry",
-      "version": "0.55.1",
+      "version": "0.57.3",
       "license": "Apache-2.0 OR MIT",
       "author": "Tauri Programme within The Commons Conservancy",
       "link": "https://github.com/tauri-apps/wry",

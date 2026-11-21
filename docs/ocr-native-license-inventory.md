@@ -14,8 +14,8 @@ snapshot records the source commit, lock and manifest hashes, Cargo version,
 target, features, and the complete metadata digest.
 
 The mobile profile includes `tauri/custom-protocol` as well as `ocr-mobile`:
-the pinned Tauri CLI 2.10.1 adds that dependency feature in its
-[packaged build options](https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.10.1/crates/tauri-cli/src/interface/rust.rs).
+the pinned Tauri CLI 2.12.6 adds that dependency feature in its
+[packaged build options](https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.12.6/crates/tauri-cli/src/interface/rust.rs).
 The direct Cargo desktop gate uses `desktop,ocr-workspace`. The application's
 default feature list is empty in both cases.
 
