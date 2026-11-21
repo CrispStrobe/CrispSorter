@@ -1382,16 +1382,17 @@ jobs:
         working-directory: repos/CrispSorter
     permissions:
       contents: write
-    # macos-15 ships Xcode 16, needed because Tauri CLI 2.10's `ios init`
-    # emits an objectVersion-77 project that Xcode 15 (the macos-14 default)
-    # refuses to open ("future Xcode project file format (77)").
-    # NOT yet on xcode-27 (ITMS-90725 requires the iOS 27 SDK from April
-    # 2027): there swift-rs compiles Tauri's Swift package with the macOS SDK
-    # and target appended after the iOS ones, so the Tauri iOS build fails
-    # (CrispDeck 44795482189, CrispMesh 44795548535, same Tauri 2.11/swift-rs
-    # 1.0.x). Move this job once Tauri/swift-rs builds with Xcode 27.
-    runs-on: macos-15
+    # ITMS-90725: from April 2027 App Store Connect only accepts builds made
+    # with the 27 SDKs (Xcode 27). The standard macOS images only ship Xcode
+    # 26.x, so build on the xcode-27 image and fail early if the SDK is older.
+    # (Tauri CLI 2.10's `ios init` emits objectVersion-77 projects, which
+    # Xcode 16+ opens.) swift-rs needs a CI-only patch there (step "Pin
+    # swift-rs ..." below).
+    runs-on: xcode-27
+    timeout-minutes: 120
     env:
+      LANG: en_US.UTF-8
+      LC_ALL: en_US.UTF-8
       # Step-level `if:` can't reference `secrets.*` directly on
       # workflow_dispatch — proxy through an env var instead.
       HAS_SIGNING_KEY: ${{ secrets.APPSTORE_API_KEY_P8 != '' && 'true' || '' }}
@@ -1454,12 +1455,17 @@ jobs:
       - name: Set the iOS deployment target for every toolchain
         run: echo "IPHONEOS_DEPLOYMENT_TARGET=16.0" >> "$GITHUB_ENV"
 
-      - name: Select newest Xcode (Tauri 2.10 emits objectVersion-77 projects)
+      - name: Select the newest Xcode 27 and require the iOS 27 SDK
         run: |
           set -euo pipefail
-          latest=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)
-          [ -n "$latest" ] && sudo xcode-select -s "$latest"
+          XC=$(ls -d /Applications/Xcode_27*.app | sort -V | tail -1)
+          sudo xcode-select -s "$XC/Contents/Developer"
           xcodebuild -version
+          SDK=$(xcrun --sdk iphoneos --show-sdk-version)
+          echo "iphoneos SDK: $SDK"
+          if [ "${SDK%%.*}" -lt 27 ]; then
+            echo "::error::iOS SDK $SDK < 27 (ITMS-90725)"; exit 1
+          fi
 
       - name: Install npm deps
         run: npm ci
@@ -1521,7 +1527,8 @@ jobs:
           KC_PW=""
           echo "$IOS_DIST_P12" | base64 --decode > "$RUNNER_TEMP/dist.p12"
           security create-keychain -p "$KC_PW" "$KC"
-          security set-keychain-settings -lut 21600 "$KC"
+          # No -t: never auto-lock during the long archive build.
+          security set-keychain-settings "$KC"
           security unlock-keychain -p "$KC_PW" "$KC"
           security import "$RUNNER_TEMP/dist.p12" -k "$KC" -P "$IOS_DIST_P12_PASSWORD" \
             -T /usr/bin/codesign -T /usr/bin/security
@@ -1608,6 +1615,23 @@ jobs:
           else
             echo "⚠ Info.plist not found at $PLIST — will set via API after upload"
           fi
+
+      # Xcode 27's SwiftPM defaults to the "swiftbuild" engine, which ignores the
+      # -Xswiftc/-Xcc iOS target overrides swift-rs passes and links Tauri's Swift
+      # package for macOS. Patch the locked swift-rs (CI only) to request the
+      # native build system, the Xcode 26 default that honours those overrides.
+      - name: Pin swift-rs to SwiftPM's native build system (Xcode 27)
+        run: |
+          set -euo pipefail
+          V=$(awk '/^name = "swift-rs"$/{getline; gsub(/"/,"",$3); print $3}' Cargo.lock)
+          [ -n "$V" ] || { echo "::error::swift-rs not in Cargo.lock"; exit 1; }
+          curl -sSfL "https://static.crates.io/crates/swift-rs/swift-rs-$V.crate" | tar xz -C "$RUNNER_TEMP"
+          D="$RUNNER_TEMP/swift-rs-$V"
+          perl -0pi -e 's/\.arg\("build"\)/.arg("build").args(["--build-system", "native"])/' "$D/src-rs/build.rs"
+          grep -q -- '"--build-system", "native"' "$D/src-rs/build.rs"
+          mkdir -p "$HOME/.cargo"
+          printf '\n[patch.crates-io]\nswift-rs = { path = "%s" }\n' "$D" >> "$HOME/.cargo/config.toml"
+          cat "$HOME/.cargo/config.toml"
 
       - name: Create bin placeholder
         run: mkdir -p src-tauri/bin && touch src-tauri/bin/.gitkeep
@@ -1708,6 +1732,7 @@ jobs:
           ARCHIVE=$(find src-tauri/gen/apple build -name "*.xcarchive" -type d 2>/dev/null | head -1)
           [ -n "$ARCHIVE" ] || { echo "::error::no .xcarchive found after tauri ios build"; exit 1; }
           echo "archive: $ARCHIVE"
+          security unlock-keychain -p "" "$RUNNER_TEMP/cs-signing.keychain-db"
           # Manual export — NO -allowProvisioningUpdates / auth flags.
           PATH="/usr/bin:$PATH" xcodebuild -exportArchive \
             -archivePath "$ARCHIVE" \
