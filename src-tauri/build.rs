@@ -54,7 +54,32 @@ fn main() {
         }
     }
 
-    tauri_build::build()
+    tauri_build::try_build(tauri_build::Attributes::new().windows_attributes(windows_attributes()))
+        .expect("failed to run tauri-build");
+}
+
+/// The Common Controls v6 manifest (Tauri's default app manifest), embedded by
+/// the MSVC linker into *every* linked target instead of through Tauri's
+/// resource file, which only reaches `[[bin]]` targets.
+///
+/// Since Tauri 2.12 the lib unit-test binary (`cargo test --lib`) imports
+/// `TaskDialogIndirect` from comctl32, which only v6 exports; without the
+/// manifest Windows loads v5 and the test binary dies before `main` with
+/// 0xc0000139 STATUS_ENTRYPOINT_NOT_FOUND. `cargo:rustc-link-arg-tests` would
+/// not help: Cargo applies it to integration tests, not to lib unit tests.
+/// This is the arrangement `tauri_build::WindowsAttributes::new_without_app_manifest`
+/// documents. Other targets (windows-gnu, macOS, Linux, mobile) keep Tauri's default.
+fn windows_attributes() -> tauri_build::WindowsAttributes {
+    let msvc = env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc");
+    if !msvc {
+        return tauri_build::WindowsAttributes::new();
+    }
+    let manifest = Path::new(&env::var("CARGO_MANIFEST_DIR").unwrap()).join("windows-app-manifest.xml");
+    println!("cargo:rerun-if-changed={}", manifest.display());
+    println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
+    println!("cargo:rustc-link-arg=/MANIFESTINPUT:{}", manifest.display());
+    tauri_build::WindowsAttributes::new_without_app_manifest()
 }
 
 fn emit_rpath_for(target_os: &str, build_dir: &Path) {
