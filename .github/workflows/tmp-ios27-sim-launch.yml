@@ -1,0 +1,158 @@
+# TEMPORARY (branch deleted after): does the iOS app stay alive on the iOS 27
+# simulator when built with Xcode 27 and Tauri 2.12?
+name: TEMP iOS 27 simulator launch (delete me)
+on:
+  push:
+    branches: [tmp/ios27-sim-launch]
+permissions:
+  contents: read
+env:
+  PYTHONIOENCODING: utf-8
+  CARGO_NET_RETRY: "10"
+  CARGO_HTTP_MULTIPLEXING: "false"
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+jobs:
+  launch:
+    runs-on: xcode-27
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: bash
+        working-directory: repos/CrispSorter
+    env:
+      LANG: en_US.UTF-8
+      LC_ALL: en_US.UTF-8
+      IPHONEOS_DEPLOYMENT_TARGET: '16.0'
+      PROTOC: /opt/homebrew/bin/protoc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: repos/CrispSorter
+      - uses: actions/checkout@v4
+        with:
+          repository: CrispStrobe/CrispEmbed
+          ref: c364feb974b91e14cbf328c6949f3df36e89ce81
+          path: repos/CrispEmbed
+          submodules: recursive
+      - uses: actions/checkout@v4
+        with:
+          repository: CrispStrobe/CrispASR
+          ref: v0.8.32
+          path: repos/CrispASR
+      - uses: actions/checkout@v4
+        with:
+          repository: CrispStrobe/crisp-docx
+          ref: ddf7830d8d92e6b59b10874d144a59f163a256e1
+          path: repos/crisp-docx
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+      - name: Select the newest Xcode 27
+        run: |
+          set -euo pipefail
+          XC=$(ls -d /Applications/Xcode_27*.app | sort -V | tail -1)
+          sudo xcode-select -s "$XC/Contents/Developer"
+          xcodebuild -version
+          xcrun --sdk iphonesimulator --show-sdk-version
+          git log --oneline -1
+          grep -A1 -E '^name = "(tauri|tao|wry|swift-rs)"$' Cargo.lock | grep -v -- --
+      - run: brew install protobuf
+      - run: npm ci
+      - name: Pin swift-rs to SwiftPM's native build system (Xcode 27)
+        run: |
+          set -euo pipefail
+          M=$(cargo metadata --locked --format-version 1 --manifest-path src-tauri/Cargo.toml \
+            | python3 -c 'import json,sys; print(next(p["manifest_path"] for p in json.load(sys.stdin)["packages"] if p["name"]=="swift-rs"))')
+          F="$(dirname "$M")/src-rs/build.rs"
+          grep -q -- '"--build-system", "native"' "$F" \
+            || perl -0pi -e 's/\.arg\("build"\)/.arg("build").args(["--build-system", "native"])/' "$F"
+          grep -n -- '"--build-system", "native"' "$F"
+      - name: Simulator build (debug)
+        run: |
+          set -euo pipefail
+          mkdir -p src-tauri/bin && touch src-tauri/bin/.gitkeep
+          npx tauri ios init --ci
+          npx tauri ios build --target aarch64-sim --debug --no-sign --ci
+          app=$(find src-tauri/gen/apple/build -type d -name '*.app' -print -quit)
+          test -n "$app"
+          echo "APP=$PWD/$app" >> "$GITHUB_ENV"
+      - name: Boot simulator, install, launch, watch 15 s
+        run: |
+          set -uo pipefail
+          test -n "$APP"
+          BID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")
+          EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Info.plist")
+          echo "app=$APP bid=$BID exe=$EXE"
+          /usr/libexec/PlistBuddy -c 'Print :UIApplicationSceneManifest' "$APP/Info.plist" || echo "(no UIApplicationSceneManifest)"
+          xcrun simctl list runtimes
+          UDID=$(xcrun simctl list devices available -j | python3 -c '
+          import json,sys
+          d=json.load(sys.stdin)["devices"]
+          best=None
+          for rt,devs in d.items():
+            if "iOS" not in rt: continue
+            ver=tuple(int(x) for x in rt.split("iOS-")[1].split("-"))
+            for x in devs:
+              if x["name"].startswith("iPhone") and (best is None or ver>best[0]): best=(ver,x["udid"],x["name"],rt)
+          print(best[1]); print(best, file=sys.stderr)')
+          echo "UDID=$UDID"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          mkdir -p "$RUNNER_TEMP/diag"
+          rm -f ~/Library/Logs/DiagnosticReports/*"$EXE"*.ips || true
+          xcrun simctl install "$UDID" "$APP"
+          xcrun simctl launch "$UDID" "$BID" || echo "::warning::simctl launch returned non-zero"
+          ok=1
+          for i in $(seq 1 15); do
+            sleep 1
+            line=$(xcrun simctl spawn "$UDID" launchctl list | grep "$BID" || true)
+            pid=$(echo "$line" | awk '{print $1}')
+            echo "t=${i}s: ${line:-<not listed>}"
+            if ! [[ "$pid" =~ ^[0-9]+$ ]]; then ok=0; fi
+          done
+          sleep 3
+          ls -la ~/Library/Logs/DiagnosticReports/ | tail -20 || true
+          if ls ~/Library/Logs/DiagnosticReports/*"$EXE"*.ips >/dev/null 2>&1; then
+            ok=0
+            cp ~/Library/Logs/DiagnosticReports/*"$EXE"*.ips "$RUNNER_TEMP/diag/"
+            for f in "$RUNNER_TEMP"/diag/*.ips; do
+              echo "== $f"; head -c 400 "$f"; echo
+              python3 - "$f" <<'PY'
+          import json,sys
+          t=open(sys.argv[1]).read().split("\n",1)
+          j=json.loads(t[1])
+          print("exception:", j.get("exception"))
+          ft=j.get("faultingThread",0)
+          imgs=j.get("usedImages",[])
+          for fr in j["threads"][ft]["frames"][:12]:
+            im=imgs[fr["imageIndex"]].get("name","?") if fr.get("imageIndex") is not None and fr["imageIndex"]<len(imgs) else "?"
+            print("  ", im, fr.get("symbol","?"))
+          PY
+            done
+          fi
+          xcrun simctl spawn "$UDID" log show --last 2m --style compact --predicate "process == \"$EXE\"" 2>/dev/null | tail -60 > "$RUNNER_TEMP/diag/syslog.txt" || true
+          tail -40 "$RUNNER_TEMP/diag/syslog.txt"
+          if [ "$ok" = 1 ]; then echo "RESULT: alive 15 s, no crash report"; else echo "::error::RESULT: app not alive for 15 s or crash report present"; exit 1; fi
+
+      - name: Upload crash reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diag
+          path: ${{ runner.temp }}/diag
+          if-no-files-found: ignore
+      - name: Repo's own simulator smoke (scripts/mobile_simulator_smoke.py)
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          sim=$(xcrun simctl list devices booted -j | python3 -c 'import json,sys; print(next(d["udid"] for r,ds in json.load(sys.stdin)["devices"].items() for d in ds))')
+          python3 scripts/mobile_simulator_smoke.py --platform ios --target "$sim" --artifact "$APP" --output "$RUNNER_TEMP/ios-smoke"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-app-smoke
+          path: ${{ runner.temp }}/ios-smoke/
+          if-no-files-found: ignore

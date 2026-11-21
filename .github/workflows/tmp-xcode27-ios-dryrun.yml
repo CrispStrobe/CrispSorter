@@ -1,0 +1,232 @@
+# TEMPORARY: build+sign-only copy of release.yml's release-ios (standard profile)
+# for the Xcode 27 move; no upload, no GitHub release. Branch is deleted after.
+name: TEMP xcode-27 iOS dry run, Tauri 2.12 (delete me)
+on:
+  push:
+    branches:
+    - tmp/ios27-sim-launch
+permissions:
+  contents: read
+env:
+  CRISPSORTER_MOBILE_RELEASE_PROFILE: standard
+  CRISPSORTER_RELEASE_SELECTOR: all
+  CRISPSORTER_RELEASE_PUBLISH: 'false'
+  CRISPSORTER_RELEASE_MAC_APPSTORE: ${{ inputs.mac_appstore || false }}
+  PYTHONIOENCODING: utf-8
+  CRISPEMBED_REPO: CrispStrobe/CrispEmbed
+  CRISPEMBED_REF: v0.17.19
+  CRISPEMBED_COMMIT: c364feb974b91e14cbf328c6949f3df36e89ce81
+  CRISPASR_REPO: CrispStrobe/CrispASR
+  CRISPASR_REF: v0.8.32
+  CRISPDOCX_REPO: CrispStrobe/crisp-docx
+  CRISPDOCX_REF: ddf7830d8d92e6b59b10874d144a59f163a256e1
+  APPLE_API_KEY_ID: 9RMU3C7422
+  APPLE_API_ISSUER_ID: 5f618ba3-98ef-42ad-835c-fbbef6c76cf5
+jobs:
+  ios-dry-run:
+    defaults:
+      run:
+        working-directory: repos/CrispSorter
+    permissions:
+      contents: read
+    runs-on: xcode-27
+    timeout-minutes: 120
+    env:
+      LANG: en_US.UTF-8
+      LC_ALL: en_US.UTF-8
+      HAS_SIGNING_KEY: ${{ secrets.APPSTORE_API_KEY_P8 != '' && 'true' || '' }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        path: repos/CrispSorter
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - name: Check out sibling CrispEmbed
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ env.CRISPEMBED_REPO }}
+        ref: ${{ env.CRISPEMBED_COMMIT }}
+        path: repos/CrispEmbed
+        submodules: recursive
+    - name: Check out sibling CrispASR
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ env.CRISPASR_REPO }}
+        ref: ${{ env.CRISPASR_REF }}
+        path: repos/CrispASR
+    - name: Check out sibling crisp-docx
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ env.CRISPDOCX_REPO }}
+        ref: ${{ env.CRISPDOCX_REF }}
+        path: repos/crisp-docx
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: aarch64-apple-ios
+    - uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: repos/CrispSorter -> target
+        key: ios-arm64
+        cache-on-failure: 'true'
+    - uses: actions/setup-node@v4
+      with:
+        node-version: lts/*
+    - name: Set the iOS deployment target for every toolchain
+      run: echo "IPHONEOS_DEPLOYMENT_TARGET=16.0" >> "$GITHUB_ENV"
+    - name: Select the newest Xcode 27 and require the iOS 27 SDK
+      run: "set -euo pipefail\nXC=$(ls -d /Applications/Xcode_27*.app | sort -V | tail -1)\nsudo xcode-select -s \"$XC/Contents/Developer\"\nxcodebuild -version\nSDK=$(xcrun --sdk iphoneos --show-sdk-version)\n\
+        echo \"iphoneos SDK: $SDK\"\nif [ \"${SDK%%.*}\" -lt 27 ]; then\n  echo \"::error::iOS SDK $SDK < 27 (ITMS-90725)\"; exit 1\nfi\n"
+    - name: Install npm deps
+      run: npm ci
+    - name: Validate clean committed sibling layout
+      run: "python3 scripts/check_mobile_release_layout.py \\\n  --embed-commit \"${{ env.CRISPEMBED_COMMIT }}\" \\\n  --asr-ref \"${{ env.CRISPASR_REF }}\" --docx-ref \"${{ env.CRISPDOCX_REF }}\"\n"
+    - name: Install protoc
+      run: brew install protobuf
+    - name: Require retained iOS identity for the signed OCR draft
+      if: env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
+      env:
+        RETAINED_IOS_KEY: ${{ secrets.IOS_DIST_P12 }}
+        RETAINED_IOS_PASSWORD: ${{ secrets.IOS_DIST_P12_PASSWORD }}
+        RETAINED_IOS_PROFILE: ${{ secrets.ASC_PROFILE_BASE64 }}
+      run: 'set -euo pipefail
+
+        [[ -n "$HAS_SIGNING_KEY" && -n "$RETAINED_IOS_KEY" && -n "$RETAINED_IOS_PASSWORD" && -n "$RETAINED_IOS_PROFILE" ]] || { echo ''::error::Retained iOS signing configuration is required for the OCR
+        draft''; exit 1; }
+
+        if ! command -v xcodegen >/dev/null; then brew install xcodegen; fi
+
+        if ! command -v ninja >/dev/null; then brew install ninja; fi
+
+        '
+    - name: Prepare production-pinned signed OCR draft
+      if: env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
+      run: "python3 scripts/prepare_signed_mobile_ocr_draft.py --target ios-arm64 \\\n  --output \"$RUNNER_TEMP/signed-mobile-ocr-draft\" --embed-commit \"${{ env.CRISPEMBED_COMMIT }}\" \\\n  --asr-ref\
+        \ \"${{ env.CRISPASR_REF }}\" --docx-ref \"${{ env.CRISPDOCX_REF }}\" \\\n  --protoc \"$(command -v protoc)\"\n"
+    - name: Record locked native OCR draft licenses
+      if: env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
+      run: node scripts/native_license_inventory.mjs prepare --output "$LICENSES_CARGO_METADATA"
+    - name: Decode App Store Connect API key
+      if: ${{ env.HAS_SIGNING_KEY }}
+      run: "mkdir -p ~/.appstoreconnect/private_keys\necho \"${{ secrets.APPSTORE_API_KEY_P8 }}\" | base64 -d \\\n  > ~/.appstoreconnect/private_keys/AuthKey_${{ env.APPLE_API_KEY_ID }}.p8\nchmod 600 ~/.appstoreconnect/private_keys/AuthKey_${{\
+        \ env.APPLE_API_KEY_ID }}.p8\necho \"API_KEY_PATH=$HOME/.appstoreconnect/private_keys/AuthKey_${{ env.APPLE_API_KEY_ID }}.p8\" >> \"$GITHUB_ENV\"\n"
+    - name: Import Distribution cert + provisioning profile (manual signing)
+      if: ${{ env.HAS_SIGNING_KEY }}
+      env:
+        IOS_DIST_P12: ${{ secrets.IOS_DIST_P12 }}
+        IOS_DIST_P12_PASSWORD: ${{ secrets.IOS_DIST_P12_PASSWORD }}
+        ASC_PROFILE_BASE64: ${{ secrets.ASC_PROFILE_BASE64 }}
+      run: "set -euo pipefail\n# Manual signing: import the Distribution .p12 into a temp keychain and\n# install the explicit App Store profile. NO -allowProvisioningUpdates\n# anywhere (it revokes the\
+        \ shared Distribution cert \u2014 see appstore.md).\nKC=\"$RUNNER_TEMP/cs-signing.keychain-db\"\n# Empty password: on the xcode-27 image unlock-keychain rejects the\n# password the keychain was\
+        \ just created with (runner-images#14837).\n# The keychain lives in RUNNER_TEMP on a single-use VM.\nKC_PW=\"\"\necho \"$IOS_DIST_P12\" | base64 --decode > \"$RUNNER_TEMP/dist.p12\"\nsecurity create-keychain\
+        \ -p \"$KC_PW\" \"$KC\"\n# No -t: never auto-lock during the long archive build.\nsecurity set-keychain-settings \"$KC\"\nsecurity unlock-keychain -p \"$KC_PW\" \"$KC\"\nsecurity import \"$RUNNER_TEMP/dist.p12\"\
+        \ -k \"$KC\" -P \"$IOS_DIST_P12_PASSWORD\" \\\n  -T /usr/bin/codesign -T /usr/bin/security\nsecurity list-keychains -d user -s \"$KC\" $(security list-keychains -d user | tr -d '\"')\nsecurity set-key-partition-list\
+        \ -S apple-tool:,apple:,codesign: -s -k \"$KC_PW\" \"$KC\" >/dev/null\n# DEBUG: which Distribution cert did this repo's IOS_DIST_P12 hold?\n# (sha1 56D3\u2026C632 = L9PHHNLY9Y, 317A15FE\u20268455\
+        \ = X48Y45DL9F; the profile\n# is bound to BOTH so either works.)\nsecurity find-identity -v -p codesigning | grep -i \"distribution\" \\\n  || { echo \"::error::no Distribution identity in keychain\
+        \ \u2014 IOS_DIST_P12 bad\"; exit 1; }\n# Install the App Store profile into both provisioning-profile dirs.\necho \"$ASC_PROFILE_BASE64\" | base64 --decode > \"$RUNNER_TEMP/cs.mobileprovision\"\
+        \nPLIST=\"$(security cms -D -i \"$RUNNER_TEMP/cs.mobileprovision\")\"\nUUID=$(/usr/libexec/PlistBuddy -c 'Print :UUID' /dev/stdin <<<\"$PLIST\")\nfor DIR in \"$HOME/Library/MobileDevice/Provisioning\
+        \ Profiles\" \\\n           \"$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles\"; do\n  mkdir -p \"$DIR\"; cp \"$RUNNER_TEMP/cs.mobileprovision\" \"$DIR/$UUID.mobileprovision\"\ndone\n\
+        echo \"installed profile UUID $UUID\"\n"
+    - name: Init iOS project
+      run: "if [[ \"$CRISPSORTER_MOBILE_RELEASE_PROFILE\" == ocr-draft ]]; then\n  npx tauri ios init --ci --config src-tauri/tauri.ocr-mobile.conf.json\n  python3 scripts/prepare_ocr_ios_project.py src-tauri/gen/apple/project.yml\
+        \ \\\n    --ort-framework \"$OCR_ORT_ROOT/onnxruntime.xcframework/ios-arm64/onnxruntime.framework/onnxruntime\" --retain-native-symbols\nelse\n  npx tauri ios init\nfi\n"
+    - name: Inject PrivacyInfo.xcprivacy into iOS project
+      run: "# Apple requires this manifest since iOS 17 for apps using\n# Required Reason APIs (NSUserDefaults, file timestamps, disk space).\nDEST=\"src-tauri/gen/apple/crispsorter_iOS/PrivacyInfo.xcprivacy\"\
+        \nif [ -d \"src-tauri/gen/apple/crispsorter_iOS\" ]; then\n  cp src-tauri/PrivacyInfo.xcprivacy \"$DEST\"\n  echo \"\u2713 Copied PrivacyInfo.xcprivacy\"\nelse\n  echo \"\u26A0 iOS project dir not\
+        \ found \u2014 PrivacyInfo will be missing\"\nfi\n"
+    - name: Strip alpha from App Icon (Apple rejects alpha in the 1024 marketing icon)
+      run: "set -euo pipefail\n# Tauri's icon set carries an alpha channel; the App Store 1024 icon\n# (and the home-screen icons) must be opaque or the build is rejected /\n# ships iconless. sips JPEG-roundtrip\
+        \ removes alpha (transparent\u2192white)\n# with system tools only \u2014 no brew/imagemagick needed.\nn=0\nwhile IFS= read -r f; do\n  if sips -g hasAlpha \"$f\" 2>/dev/null | grep -q \"hasAlpha:\
+        \ yes\"; then\n    tmp=\"$RUNNER_TEMP/$(basename \"$f\").jpg\"\n    sips -s format jpeg \"$f\" --out \"$tmp\" >/dev/null\n    sips -s format png \"$tmp\" --out \"$f\" >/dev/null\n    n=$((n+1))\n\
+        \  fi\ndone < <(find src-tauri/gen/apple -path \"*AppIcon.appiconset/*.png\" 2>/dev/null)\necho \"flattened $n app-icon png(s) to no-alpha\"\n"
+    - name: Set export compliance (no non-exempt encryption)
+      run: "# CrispSorter uses only standard HTTPS/TLS \u2014 exempt from export\n# regulations. Setting this in Info.plist prevents App Store\n# Connect from blocking the build on encryption compliance.\n\
+        PLIST=\"src-tauri/gen/apple/crispsorter_iOS/Info.plist\"\nif [ -f \"$PLIST\" ]; then\n  /usr/libexec/PlistBuddy -c \"Add :ITSAppUsesNonExemptEncryption bool false\" \"$PLIST\" 2>/dev/null \\\n \
+        \   || /usr/libexec/PlistBuddy -c \"Set :ITSAppUsesNonExemptEncryption false\" \"$PLIST\"\n  echo \"\u2713 Set ITSAppUsesNonExemptEncryption=false\"\n  # Purpose strings for frameworks that linked\
+        \ deps REFERENCE, even if\n  # unused at runtime. Apple's async static analysis rejects the build\n  # otherwise (ITMS-90683, emailed after a \"successful\" upload \u2192 the\n  # build never reaches\
+        \ VALID). tauri-plugin-dialog links Photos/\n  # PhotosUI on iOS for file/image picking (same class of dep as the\n  # file_picker plugin that hit CrispCloud with NSPhotoLibrary\u2026).\n  add_str()\
+        \ {\n    /usr/libexec/PlistBuddy -c \"Add :$1 string $2\" \"$PLIST\" 2>/dev/null \\\n      || /usr/libexec/PlistBuddy -c \"Set :$1 $2\" \"$PLIST\"\n    echo \"\u2713 Set $1\"\n  }\n  add_str NSPhotoLibraryUsageDescription\
+        \ \"CrispSorter accesses your photo library only when you pick an image or document to import.\"\n  add_str NSPhotoLibraryAddUsageDescription \"CrispSorter saves exported documents to the location\
+        \ you choose.\"\nelse\n  echo \"\u26A0 Info.plist not found at $PLIST \u2014 will set via API after upload\"\nfi\n"
+    - name: Pin swift-rs to SwiftPM's native build system (Xcode 27)
+      run: "set -euo pipefail\n# Edit the locked crate's extracted registry source in place rather\n# than a [patch.crates-io] path override: a path patch rewrites\n# Cargo.lock (the lock-hash-bound license\
+        \ inventory then fails, and swift-rs would lose its crates.io source).\nM=$(cargo metadata --locked --format-version 1 --manifest-path src-tauri/Cargo.toml \\\n  | python3 -c 'import json,sys; print(next(p[\"\
+        manifest_path\"] for p in json.load(sys.stdin)[\"packages\"] if p[\"name\"]==\"swift-rs\"))')\nF=\"$(dirname \"$M\")/src-rs/build.rs\"\ngrep -q -- '\"--build-system\", \"native\"' \"$F\" \\\n  ||\
+        \ perl -0pi -e 's/\\.arg\\(\"build\"\\)/.arg(\"build\").args([\"--build-system\", \"native\"])/' \"$F\"\ngrep -n -- '\"--build-system\", \"native\"' \"$F\"\n# Cargo never re-checks registry sources,\
+        \ so drop cached swift-rs and\n# tauri build units (restored target caches) to compile the edit.\nif [ -d target ]; then\n  find target -path '*/.fingerprint/*' \\( -name 'swift-rs-*' -o -name 'tauri-*'\
+        \ \\) -prune -exec rm -rf {} +\nfi\n"
+    - name: Create bin placeholder
+      run: mkdir -p src-tauri/bin && touch src-tauri/bin/.gitkeep
+    - name: "Build iOS app (signed for App Store \u2014 manual)"
+      if: ${{ env.HAS_SIGNING_KEY }}
+      env:
+        PROTOC: /opt/homebrew/bin/protoc
+      run: "set -euo pipefail\nXCPROJ=\"src-tauri/gen/apple/crispsorter.xcodeproj\"\nPBX=\"$XCPROJ/project.pbxproj\"\n\n# --- Archive UNSIGNED, then sign at export (-exportArchive). This is\n# the fleet-canonical\
+        \ manual flow (appstore.md: \"archive-unsigned \u2192\n# -exportArchive manual signing\"). Tauri CLI 2.10 bakes\n# `-allowProvisioningUpdates` into its internal `xcodebuild` call with\n# no opt-out;\
+        \ building the archive with CODE_SIGNING_ALLOWED=NO means\n# that flag has *nothing to provision*, so it can never mint a\n# Development cert or revoke the shared fleet Distribution cert (the\n\
+        # footgun appstore.md's HARD constraint #1 forbids). Distribution\n# signing is applied afterwards by `xcodebuild -exportArchive` from\n# ExportOptions.plist (manual, no auth flags). Insert (not\
+        \ sed-replace)\n# the keys \u2014 the Tauri-generated project may not contain them (single\n# app target, no Pods, so scoping to our-bundle-id blocks is enough). ---\npython3 - \"$PBX\" <<'PY'\n\
+        import sys, re, pathlib\np = pathlib.Path(sys.argv[1]); s = p.read_text(encoding='utf-8')\nwant = {\n  \"CODE_SIGN_STYLE\": \"Manual\",\n  \"DEVELOPMENT_TEAM\": \"N9XSJ4M3GT\",\n  \"CODE_SIGNING_ALLOWED\"\
+        : \"NO\",\n  \"CODE_SIGN_IDENTITY\": '\"\"',\n  \"PROVISIONING_PROFILE_SPECIFIER\": '\"\"',\n}\ndef patch(block):\n  body = block\n  for k, v in want.items():\n    esc = re.escape(k)\n    body =\
+        \ re.sub(rf'^\\s*{esc}\\s*=\\s*[^;]*;\\s*\\n', '', body, flags=re.M)\n  inject = \"\".join(f\"\\t\\t\\t\\t{k} = {v};\\n\" for k, v in want.items())\n  return body.replace(\"buildSettings = {\\n\"\
+        , \"buildSettings = {\\n\"+inject, 1)\n# patch every buildSettings block that names our app bundle id\nout, i, n = [], 0, 0\nfor m in re.finditer(r'buildSettings = \\{.*?\\};', s, flags=re.S):\n\
+        \  out.append(s[i:m.start()]); blk = m.group(0)\n  if \"com.crispstrobe.crispsorter\" in blk and \"crispsorter.RunnerTests\" not in blk:\n    blk = patch(blk); n += 1\n  out.append(blk); i = m.end()\n\
+        out.append(s[i:]); p.write_text(\"\".join(out), encoding='utf-8')\nprint(f\"patched {n} buildSettings block(s) for unsigned archive\")\nPY\n\n# `tauri ios init` generates the .xcodeproj but not\
+        \ a usable\n# project.xcworkspace; `tauri ios build` then invokes `xcodebuild\n# -workspace <proj>/project.xcworkspace` and dies with \"Unable to load\n# workspace\" (the real cause of the 2026-07-15\
+        \ CI failure). Create the\n# minimal self-referential workspace so the build can load it.\nWS_DIR=\"$XCPROJ/project.xcworkspace\"\nif [ ! -f \"$WS_DIR/contents.xcworkspacedata\" ]; then\n  mkdir\
+        \ -p \"$WS_DIR\"\n  cat > \"$WS_DIR/contents.xcworkspacedata\" <<'WSEOF'\n<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Workspace version=\"1.0\">\n  <FileRef location=\"self:\"/>\n</Workspace>\n\
+        WSEOF\n  echo \"created $WS_DIR/contents.xcworkspacedata\"\nfi\n\n# Build frontend + Rust + archive (UNSIGNED) via Tauri. Tauri runs the\n# build server the Rust \"Build Phase\" needs; the pbxproj\
+        \ above sets\n# CODE_SIGNING_ALLOWED=NO, so anything Tauri exports is unsigned and\n# carries no provisioning profile. We want the .xcarchive only, and\n# sign it ourselves with -exportArchive below.\n\
+        echo \"=== tauri ios build (unsigned archive) ===\"\nif [[ \"$CRISPSORTER_MOBILE_RELEASE_PROFILE\" == ocr-draft ]]; then\n  npx tauri ios build --target aarch64 --features ocr-mobile --config src-tauri/tauri.ocr-mobile.conf.json\
+        \ --export-method app-store-connect 2>&1 | tail -60 || true\n  node scripts/native_license_inventory.mjs verify\nelse\n  npx tauri ios build --export-method app-store-connect 2>&1 | tail -60 ||\
+        \ true\nfi\n\n# Discard whatever Tauri exported. This used to be `if [ -z \"$IPA\" ]`\n# \u2014 export manually *only* when Tauri produced nothing \u2014 on the\n# assumption, stated in the comment\
+        \ above, that its app-store export\n# \"can't sign an unsigned archive and is expected to no-op/fail\".\n# Tauri CLI 2.10 does produce an .ipa, so that branch never ran, and\n# the unsigned one\
+        \ went to App Store Connect:\n#\n#   ERROR: Validation failed (409) Missing Provisioning Profile \u2014\n#   Apps must contain a provisioning profile in a file named\n#   embedded.mobileprovision\n\
+        #\n# after a 45-minute build. Always export ourselves.\nfind src-tauri/gen/apple build -name \"*.ipa\" -type f -delete 2>/dev/null || true\n\nARCHIVE=$(find src-tauri/gen/apple build -name \"*.xcarchive\"\
+        \ -type d 2>/dev/null | head -1)\n[ -n \"$ARCHIVE\" ] || { echo \"::error::no .xcarchive found after tauri ios build\"; exit 1; }\necho \"archive: $ARCHIVE\"\nsecurity unlock-keychain -p \"\" \"\
+        $RUNNER_TEMP/cs-signing.keychain-db\"\n# Manual export \u2014 NO -allowProvisioningUpdates / auth flags.\nPATH=\"/usr/bin:$PATH\" xcodebuild -exportArchive \\\n  -archivePath \"$ARCHIVE\" \\\n \
+        \ -exportPath build/ios/export \\\n  -exportOptionsPlist src-tauri/ExportOptions.plist 2>&1 | tail -40\nIPA=$(find build/ios/export -name \"*.ipa\" -type f 2>/dev/null | head -1)\n\n[ -n \"$IPA\"\
+        \ ] || { echo \"::error::App Store IPA was not produced\"; exit 1; }\necho \"IPA=$IPA\" >> \"$GITHUB_ENV\"\necho \"=== signed IPA: $IPA ===\"\nWORK=$(mktemp -d); unzip -q \"$IPA\" -d \"$WORK\"\n\
+        # Assert the profile is embedded, here, rather than learning it from\n# altool 20 minutes later. `codesign --verify` is not enough: it\n# passed on the profile-less IPA (\"satisfies its Designated\n\
+        # Requirement\"), because a valid signature says nothing about\n# whether a provisioning profile came with it.\nls \"$WORK\"/Payload/*.app/embedded.mobileprovision >/dev/null 2>&1 \\\n  || { echo\
+        \ \"::error::exported IPA has no embedded.mobileprovision \u2014 App Store Connect will reject it (409)\"; exit 1; }\n# Here-string, not a pipe: PlistBuddy cannot read /dev/stdin from a\n# pipe\
+        \ and answers \"Error Reading File: /dev/stdin\". Same shape the\n# profile-install step above already uses for :UUID.\nPROFILE_PLIST=\"$(security cms -D -i \"$WORK\"/Payload/*.app/embedded.mobileprovision)\"\
+        \necho \"embedded profile: $(/usr/libexec/PlistBuddy -c 'Print :Name' /dev/stdin <<<\"$PROFILE_PLIST\" 2>/dev/null)\"\ncodesign --verify --deep --strict --verbose=2 \"$WORK\"/Payload/*.app 2>&1\
+        \ | tail -3\n"
+    - name: Build iOS app (unsigned fallback)
+      if: ${{ !env.HAS_SIGNING_KEY }}
+      env:
+        PROTOC: /opt/homebrew/bin/protoc
+      run: "echo \"No APPLE_API_KEY_P8 secret \u2014 building unsigned\"\nnpx tauri ios build 2>&1 || true\n\nXCPROJ=\"src-tauri/gen/apple/crispsorter.xcodeproj\"\nWS_DIR=\"$XCPROJ/project.xcworkspace\"\
+        \nmkdir -p \"$WS_DIR\"\ncat > \"$WS_DIR/contents.xcworkspacedata\" << 'WSEOF'\n<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Workspace version=\"1.0\">\n  <FileRef location=\"self:\"/>\n</Workspace>\n\
+        WSEOF\n\nif [ -d \"$XCPROJ\" ]; then\n  xcodebuild \\\n    -project \"$XCPROJ\" \\\n    -scheme crispsorter_iOS \\\n    -sdk iphoneos \\\n    -configuration Release \\\n    CODE_SIGNING_ALLOWED=NO\
+        \ \\\n    CODE_SIGN_IDENTITY=\"\" \\\n    CODE_SIGN_ENTITLEMENTS=\"\" \\\n    DEVELOPMENT_TEAM=\"\" \\\n    build \\\n    CONFIGURATION_BUILD_DIR=\"$(pwd)/ios-build\" \\\n    2>&1 | tail -20\nfi\n"
+    - name: Verify final signed iOS OCR draft provenance
+      if: env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
+      run: "python3 scripts/record_signed_mobile_ocr_draft.py --target ios-arm64 \\\n  --staging \"$OCR_DRAFT_ROOT\" --artifact \"$IPA\"\n"
+    - name: Retain signed OCR draft package
+      if: success() && env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
+      uses: actions/upload-artifact@v4
+      with:
+        name: signed-ocr-draft-ios-arm64-unqualified
+        path: ${{ runner.temp }}/signed-mobile-ocr-draft/artifact/*.ipa
+        if-no-files-found: error
+        retention-days: 14
+    - name: Retain optional signed OCR draft diagnostics
+      if: always() && env.CRISPSORTER_MOBILE_RELEASE_PROFILE == 'ocr-draft'
+      continue-on-error: true
+      uses: actions/upload-artifact@v4
+      with:
+        name: signed-ocr-draft-ios-arm64-diagnostics
+        path: '${{ runner.temp }}/signed-mobile-ocr-draft/artifact/signed-draft.json
+
+          ${{ runner.temp }}/signed-mobile-ocr-draft/artifact/failure.json
+
+          '
+        if-no-files-found: warn
+        retention-days: 14
+    - name: Validate with App Store Connect (advisory, no upload)
+      if: ${{ env.HAS_SIGNING_KEY }}
+      continue-on-error: true
+      run: xcrun altool --validate-app -f "$IPA" --type ios --apple-id "${{ secrets.APPSTORE_APP_ID }}" --api-key "${{ env.APPLE_API_KEY_ID }}" --api-issuer "${{ env.APPLE_API_ISSUER_ID }}" 2>&1 | tail
+        -15
