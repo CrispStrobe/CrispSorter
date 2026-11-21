@@ -94,7 +94,7 @@ jobs:
           best=None
           for rt,devs in d.items():
             if "iOS" not in rt: continue
-            ver=tuple(int(x) for x in rt.split("iOS-")[1].split("-"))
+            ver=tuple(int(x) for x in __import__("itertools").takewhile(str.isdigit, rt.split("iOS-")[1].split("-")))
             for x in devs:
               if x["name"].startswith("iPhone") and (best is None or ver>best[0]): best=(ver,x["udid"],x["name"],rt)
           print(best[1]); print(best, file=sys.stderr)')
