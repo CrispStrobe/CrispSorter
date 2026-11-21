@@ -12,9 +12,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ['tag', 'repo', 'version']:
         parser.add_argument('--' + name, required=True)
+    parser.add_argument('--allow-unsigned-windows', action='store_true',
+                        help='Explicit operator opt-in: accept the unsigned-labeled Windows portable ZIP instead of a signed one.')
     args = parser.parse_args()
+    windows = 'x64-windows-portable-unsigned.zip' if args.allow_unsigned_windows else 'x64-windows-portable.zip'
     expected = {f'CrispSorter_{args.version}_amd64.deb', f'CrispSorter_{args.version}_aarch64.dmg',
-                f'CrispSorter_{args.version}_x64-windows-portable.zip', 'CrispSorter_aarch64.app.tar.gz'}
+                f'CrispSorter_{args.version}_{windows}', 'CrispSorter_aarch64.app.tar.gz'}
     def package(name):
         return (name.endswith(('.deb', '.dmg', '.exe', '.msi'))
                 or (name.endswith('.app.tar.gz') and 'ios' not in name.lower())

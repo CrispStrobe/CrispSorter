@@ -10,6 +10,10 @@ on:
         description: 'Flip the built draft to the PUBLIC Latest release. Leave OFF to only build/test (e.g. exercise the crispembed compile) and keep the draft unpublished. Also gates the REAL App Store upload (off = validate-only dry run).'
         type: boolean
         default: false
+      allow_unsigned_windows:
+        description: 'Explicitly allow publishing UNSIGNED Windows packages (no Windows signing identity exists). Only honoured with publish=true; release notes then state that Windows packages are unsigned.'
+        type: boolean
+        default: false
       mac_appstore:
         description: 'Run the macOS App Store job (build cloud-only sandbox .pkg, sign, validate). Upload to ASC only if publish is also ON.'
         type: boolean
@@ -36,6 +40,7 @@ env:
   CRISPSORTER_MOBILE_RELEASE_PROFILE: ${{ (inputs.platform == 'android_ocr_draft' || inputs.platform == 'ios_ocr_draft') && 'ocr-draft' || inputs.mobile_profile || 'standard' }}
   CRISPSORTER_RELEASE_SELECTOR: ${{ inputs.platform || 'all' }}
   CRISPSORTER_RELEASE_PUBLISH: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
+  CRISPSORTER_ALLOW_UNSIGNED_WINDOWS: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && inputs.allow_unsigned_windows }}
   CRISPSORTER_RELEASE_MAC_APPSTORE: ${{ inputs.mac_appstore || false }}
   # Python's stdout on a Windows runner is the console code page (cp1252),
   # so any inline `python -c` that prints file content dies on the first
@@ -735,7 +740,8 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           if (-not $env:WINDOWS_SIGNING_PFX_BASE64 -and -not $env:WINDOWS_SIGNING_PFX_PASSWORD -and -not $env:WINDOWS_SIGNING_THUMBPRINT) {
-            if ($env:RELEASE_PUBLISH -eq 'true') { throw 'Windows production signing credentials are required to publish' }
+            if ($env:RELEASE_PUBLISH -eq 'true' -and $env:CRISPSORTER_ALLOW_UNSIGNED_WINDOWS -ne 'true') { throw 'Windows production signing credentials are required to publish (or dispatch with allow_unsigned_windows=true)' }
+            if ($env:CRISPSORTER_ALLOW_UNSIGNED_WINDOWS -eq 'true') { Write-Host '::warning::Publishing UNSIGNED Windows packages by explicit operator opt-in.' }
             'WINDOWS_SIGNING_ENABLED=false' >> $env:GITHUB_ENV
             Write-Host '::notice::No Windows identity: portable draft will be labeled unsigned.'
             exit 0
@@ -2349,8 +2355,22 @@ jobs:
           set -euo pipefail
           VERSION=$(jq -r .version src-tauri/tauri.conf.json)
           TAG="v${VERSION}"
-          python3 scripts/check_desktop_release_assets.py --tag "$TAG" --repo "$GITHUB_REPOSITORY" --version "$VERSION"
+          GATE=()
+          if [ "$CRISPSORTER_ALLOW_UNSIGNED_WINDOWS" = true ]; then GATE+=(--allow-unsigned-windows); fi
+          python3 scripts/check_desktop_release_assets.py --tag "$TAG" --repo "$GITHUB_REPOSITORY" --version "$VERSION" "${GATE[@]}"
           python3 scripts/check_mobile_release_assets.py --tag "$TAG" --repo "$GITHUB_REPOSITORY" --version "$VERSION"
+          # Checksums over every final asset, regenerated so they match what is published.
+          SUMS="$RUNNER_TEMP/sums"; rm -rf "$SUMS"; mkdir -p "$SUMS"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$SUMS" --pattern '*'
+          rm -f "$SUMS/SHA256SUMS.txt"
+          (cd "$SUMS" && sha256sum -- * | sort -k2 > "$RUNNER_TEMP/SHA256SUMS.txt")
+          gh release upload "$TAG" "$RUNNER_TEMP/SHA256SUMS.txt" --repo "$GITHUB_REPOSITORY" --clobber
+          NOTES="$RUNNER_TEMP/notes.md"
+          if [ -f "RELEASE_NOTES_${TAG}.md" ]; then cp "RELEASE_NOTES_${TAG}.md" "$NOTES"; else gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$NOTES"; fi
+          if [ "$CRISPSORTER_ALLOW_UNSIGNED_WINDOWS" = true ] && ! grep -q 'Windows packages are unsigned' "$NOTES"; then
+            printf '\n\n> **Windows packages are unsigned.** No Windows code-signing identity exists yet; SmartScreen will warn on first launch. Verify downloads against `SHA256SUMS.txt`.\n' >> "$NOTES"
+          fi
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$NOTES"
           echo "Publishing release ${TAG}…"
           gh release edit "${TAG}" --draft=false --latest
           echo "✓ Published ${TAG}"

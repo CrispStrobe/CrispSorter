@@ -19,11 +19,11 @@ class DesktopPackages(unittest.TestCase):
         fixtures.windows(self.root/f'CrispSorter_{fixtures.VERSION}_x64-windows-portable.zip')
         self.draft=fixtures.Draft(self.root)
 
-    def run_check(self,metadata=None):
+    def run_check(self,metadata=None,extra=()):
         def dpkg(*args,**kwargs):
             if isinstance(metadata,Exception):raise metadata
             return metadata or 'Version: 0.15.3\nArchitecture: amd64\n'
-        with patch.object(sys,'argv',['check','--repo','example/app','--tag','v'+fixtures.VERSION,'--version',fixtures.VERSION]), \
+        with patch.object(sys,'argv',['check','--repo','example/app','--tag','v'+fixtures.VERSION,'--version',fixtures.VERSION,*extra]), \
                 patch.object(assets,'gh',side_effect=self.draft.gh),patch.object(gate.subprocess,'check_output',side_effect=dpkg):
             gate.main()
 
@@ -42,6 +42,15 @@ class DesktopPackages(unittest.TestCase):
                 asset=next(a for a in self.draft.assets if a['name'].endswith('.dmg'))
                 asset['name']=asset['name'].replace('.dmg','-unsigned.dmg')
             with self.subTest(mode=mode),self.assertRaises(ValueError):self.run_check()
+
+    def test_unsigned_windows_requires_explicit_opt_in(self):
+        signed=self.root/f'CrispSorter_{fixtures.VERSION}_x64-windows-portable.zip'
+        signed.rename(signed.with_name(signed.name.replace('.zip','-unsigned.zip')));self.draft.refresh()
+        with self.assertRaises(ValueError):self.run_check()
+        self.run_check(extra=('--allow-unsigned-windows',))
+        mac=next(a for a in self.draft.assets if a['name'].endswith('.dmg'))
+        mac['name']=mac['name'].replace('.dmg','-unsigned.dmg')
+        with self.assertRaises(ValueError):self.run_check(extra=('--allow-unsigned-windows',))
 
     def test_successful_required_jobs_and_signing_remain_mandatory(self):
         text=(Path(__file__).resolve().parents[1]/'.github/workflows/release.yml').read_text()
