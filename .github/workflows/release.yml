@@ -1623,15 +1623,20 @@ jobs:
       - name: Pin swift-rs to SwiftPM's native build system (Xcode 27)
         run: |
           set -euo pipefail
-          V=$(awk '/^name = "swift-rs"$/{getline; gsub(/"/,"",$3); print $3}' Cargo.lock)
-          [ -n "$V" ] || { echo "::error::swift-rs not in Cargo.lock"; exit 1; }
-          curl -sSfL "https://static.crates.io/crates/swift-rs/swift-rs-$V.crate" | tar xz -C "$RUNNER_TEMP"
-          D="$RUNNER_TEMP/swift-rs-$V"
-          perl -0pi -e 's/\.arg\("build"\)/.arg("build").args(["--build-system", "native"])/' "$D/src-rs/build.rs"
-          grep -q -- '"--build-system", "native"' "$D/src-rs/build.rs"
-          mkdir -p "$HOME/.cargo"
-          printf '\n[patch.crates-io]\nswift-rs = { path = "%s" }\n' "$D" >> "$HOME/.cargo/config.toml"
-          cat "$HOME/.cargo/config.toml"
+          # Edit the locked crate's extracted registry source in place rather
+          # than a [patch.crates-io] path override: a path patch rewrites
+          # Cargo.lock (the lock-hash-bound license inventory then fails, and swift-rs would lose its crates.io source).
+          M=$(cargo metadata --locked --format-version 1 --manifest-path src-tauri/Cargo.toml \
+            | python3 -c 'import json,sys; print(next(p["manifest_path"] for p in json.load(sys.stdin)["packages"] if p["name"]=="swift-rs"))')
+          F="$(dirname "$M")/src-rs/build.rs"
+          grep -q -- '"--build-system", "native"' "$F" \
+            || perl -0pi -e 's/\.arg\("build"\)/.arg("build").args(["--build-system", "native"])/' "$F"
+          grep -n -- '"--build-system", "native"' "$F"
+          # Cargo never re-checks registry sources, so drop cached swift-rs and
+          # tauri build units (restored target caches) to compile the edit.
+          if [ -d target ]; then
+            find target -path '*/.fingerprint/*' \( -name 'swift-rs-*' -o -name 'tauri-*' \) -prune -exec rm -rf {} +
+          fi
 
       - name: Create bin placeholder
         run: mkdir -p src-tauri/bin && touch src-tauri/bin/.gitkeep
