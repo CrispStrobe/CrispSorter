@@ -54,7 +54,26 @@ fn main() {
         }
     }
 
-    tauri_build::build()
+    // Windows: embed the Common-Controls v6 manifest with the linker for EVERY
+    // linked target, not only the app binary. tauri-build's resource-file
+    // manifest is linked into bins only, so the `cargo test --lib` harness got
+    // none; since Tauri 2.12 that binary imports comctl32!TaskDialogIndirect
+    // (v6-only) and died with 0xc0000139 STATUS_ENTRYPOINT_NOT_FOUND before
+    // running a test. This mirrors Tauri's own documented test setup; the
+    // resource manifest is dropped so the app does not carry two manifests.
+    let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+    if target_os == "windows" && target_env == "msvc" {
+        let manifest =
+            Path::new(&env::var("CARGO_MANIFEST_DIR").unwrap()).join("windows-app-manifest.xml");
+        println!("cargo:rerun-if-changed={}", manifest.display());
+        println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
+        println!("cargo:rustc-link-arg=/MANIFESTINPUT:{}", manifest.display());
+        let windows = tauri_build::WindowsAttributes::new_without_app_manifest();
+        tauri_build::try_build(tauri_build::Attributes::new().windows_attributes(windows))
+            .expect("failed to run tauri-build");
+    } else {
+        tauri_build::build()
+    }
 }
 
 fn emit_rpath_for(target_os: &str, build_dir: &Path) {
