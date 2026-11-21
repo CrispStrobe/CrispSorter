@@ -2357,7 +2357,7 @@ dependencies = [
 
 [[package]]
 name = "crispembed"
-version = "0.17.19"
+version = "0.17.20"
 dependencies = [
  "crispembed-sys",
  "libc",
@@ -2365,7 +2365,7 @@ dependencies = [
 
 [[package]]
 name = "crispembed-sys"
-version = "0.17.19"
+version = "0.17.20"
 
 [[package]]
 name = "crisplens-protocol"

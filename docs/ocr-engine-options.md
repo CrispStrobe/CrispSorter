@@ -74,7 +74,7 @@ are added when their respective runtime capabilities are available. The
 | Legacy local recognizers | ocrs and PaddleOCR v4 can be selected explicitly when compiled. Their plain-text review adapter supplies an unscored page block. Their pinned weights (ocrs ONNX, PaddleOCR v4 det/rec/SLANet + vocabularies) are installed by the OCR model manager like every other model; usls never downloads on its own. |
 | Automatic pipeline | A routing policy. Unconfigured embedded OCR selects Tesseract; an enabled configured pipeline retains its stages. Disabled advanced stages do not reactivate implicitly. Explicit legacy tiers remain meaningful. |
 
-The pinned embedded runtime is CrispEmbed 0.17.19; the
+The pinned embedded runtime is CrispEmbed 0.17.20; the
 [runtime lock](../scripts/crispembed-runtime-lock.json) records the source and
 platform assets. A menu choice is not proof that its weights are already
 installed or that its accuracy has been measured on the user's documents.

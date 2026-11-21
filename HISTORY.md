@@ -7,6 +7,27 @@ of the codebase look the way they do.
 For active development plans, see [PLAN.md](PLAN.md).
 For technical pitfalls / non-obvious patterns, see [LEARNINGS.md](LEARNINGS.md).
 
+## CrispEmbed v0.17.20 pin (2026-11-21)
+
+Every live CrispEmbed v0.17.19 pin now points at v0.17.20
+(`d842065436fddae00a89bbc89db56b92293a1b23`). That covers the CI, release, macOS-artifact, OCR
+bench-build, OCR-paired and SMB workflows, Cargo.lock, the runtime and mobile locks, the Kaggle
+quality tools, the bench vendor pins and three docs. Historical result receipts are unchanged.
+ggml (`3a27b6c6`) and SheenBidi are unchanged. All seven locked archives were re-downloaded. Their
+sha256 and sizes match the release asset digests, and the runtime lock carries the new values. The
+OCR bench CUDA digests are the v0.17.20 release digests. The vendored scorer and manifests are
+byte-identical at the new commit.
+
+Upstream changes: `pcs` resolves to a mixed-precision 4-bit file under Apache-2.0, and the
+Unlimited-OCR-2 fused decode step is on by default (`CRISPEMBED_UNLIMITED_OCR2_FUSED_STEP=0` opts
+out).
+
+Unpublished drafts v0.14.0-v0.15.4: since 4e1d99b2 the release workflow requires Developer ID
+signing and notarization (macOS) and Windows code-signing credentials to publish. Those repository
+secrets are not configured, so every run since then could only build unsigned drafts.
+v0.15.3 is incomplete (Android only; its run was cancelled). v0.15.4 has the full unsigned set.
+The latest published release remains v0.11.0.
+
 ## Reviewed OCR text alternatives (2026-11-09, feature branch)
 
 Saved capability-aware PDF preflight and direct text/HTML/Word alternatives,
