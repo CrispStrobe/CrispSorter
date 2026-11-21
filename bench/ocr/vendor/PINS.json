@@ -1,8 +1,8 @@
 {
   "schema": "crispsorter-ocr-bench-pins-v1",
   "crispembed_repo": "CrispStrobe/CrispEmbed",
-  "crispembed_commit": "c364feb974b91e14cbf328c6949f3df36e89ce81",
-  "crispembed_commit_note": "Tag v0.17.19 = the CRISPEMBED_COMMIT pinned in .github/workflows/ci.yml and scripts/crispembed-runtime-lock.json.",
+  "crispembed_commit": "d842065436fddae00a89bbc89db56b92293a1b23",
+  "crispembed_commit_note": "Tag v0.17.20 = the CRISPEMBED_COMMIT pinned in .github/workflows/ci.yml and scripts/crispembed-runtime-lock.json.",
   "vendored": {
     "crispembed_score.py": {
       "upstream_path": "tools/kaggle/ocr-real-scans/score.py",

@@ -41,8 +41,8 @@ env:
   HF_REPO: cstr/crispsorter-ocr-bench
   # Keep equal to .github/workflows/ci.yml (same tag/commit the app CI builds against).
   CRISPEMBED_REPO: CrispStrobe/CrispEmbed
-  CRISPEMBED_REF: v0.17.19
-  CRISPEMBED_COMMIT: c364feb974b91e14cbf328c6949f3df36e89ce81
+  CRISPEMBED_REF: v0.17.20
+  CRISPEMBED_COMMIT: d842065436fddae00a89bbc89db56b92293a1b23
   CRISPASR_REPO: CrispStrobe/CrispASR
   CRISPASR_REF: v0.8.32
   CRISPDOCX_REPO: CrispStrobe/crisp-docx
@@ -128,10 +128,10 @@ jobs:
           curl -fL --retry 8 --retry-all-errors -o "../ce-assets/$cuda" "$base/$cuda"
           # The CPU archive is verified against scripts/crispembed-runtime-lock.json above. The CUDA
           # archives are not in that lock (the app does not ship them); these are the GitHub
-          # release asset digests of v0.17.19. Bump together with CRISPEMBED_REF.
+          # release asset digests of v0.17.20. Bump together with CRISPEMBED_REF.
           case "$cuda" in
-            crispembed-linux-x86_64-cuda-bundled.tar.gz) want=f403153964b5f4f2b7bf2f7396d16727a169d0ff1139e122d1776ff5ba4fe7f6 ;;
-            crispembed-linux-x86_64-cuda.tar.gz) want=0f07aa8bd8709b6f1e039d8f65c68aae63d2c3173bcfd28e5722fe7e1ced14b8 ;;
+            crispembed-linux-x86_64-cuda-bundled.tar.gz) want=c072bf49a0a2650553fe70c364ffb7377528e01caac777272951c9ddfe474cf4 ;;
+            crispembed-linux-x86_64-cuda.tar.gz) want=b31d00869bc47525f7f3ad00a87ca6e92da8ebfc878f195ec17f5850d82e5d86 ;;
             *) want="" ;;
           esac
           got=$(sha256sum "../ce-assets/$cuda" | cut -d' ' -f1)

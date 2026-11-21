@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "purpose": "Paired OCR mobile feature builds; independent of the release runtime lock",
-  "source_commit": "c364feb974b91e14cbf328c6949f3df36e89ce81",
+  "source_commit": "d842065436fddae00a89bbc89db56b92293a1b23",
   "ggml_commit": "3a27b6c665b191cb230be367db5c52d81dd3e2ac",
   "native_components": {
     "sheenbidi": {
