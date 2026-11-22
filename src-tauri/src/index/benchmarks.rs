@@ -68,7 +68,13 @@ fn shared_models_dir() -> std::path::PathBuf {
     std::env::temp_dir().join("crispsorter-benchmark-models")
 }
 
+// Downloads and runs 14 embedding models (several GB) from Hugging Face. As a
+// default CI test it took 3-4 min on a good day and over an hour when HF was
+// slow, pushing the Windows job to its 2-hour limit, and every model failure
+// is only printed as SKIPPED, so it never gated anything. Opt in with:
+//   cargo test -p crispsorter --lib benchmark_models -- --ignored --nocapture
 #[tokio::test]
+#[ignore = "downloads GB of models from Hugging Face; run with --ignored"]
 async fn benchmark_models() {
     let models = vec![
         // ── fastembed native ─────────────────────────────────────────────────
@@ -303,11 +309,12 @@ async fn run_benchmark_for_model(model: EmbedderModel) -> anyhow::Result<()> {
 // semantic ordering, triplet margin, anisotropy, and unit-norm compliance
 // for the four local Octen export variants.
 //
-// Run with: cargo test embedding_quality_metrics -- --nocapture
+// Run with: cargo test embedding_quality_metrics -- --ignored --nocapture
 //
 // Note: FP32 baseline must be present (~2.4 GB).  If missing, the test is
 // skipped.  All variants share the same tokenizer from the int8 directory.
 #[tokio::test]
+#[ignore = "downloads GB of models from Hugging Face; run with --ignored"]
 async fn embedding_quality_metrics() {
     let corpus: Vec<(&str, &str)> = vec![
         // (label, text)
