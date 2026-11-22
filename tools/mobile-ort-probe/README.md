@@ -15,9 +15,13 @@ by the Rust application. The pinned C runtime depends only on public Android
 system libraries. Any future non-system dependency fails staging until its
 own library is supplied and validated.
 
-iOS uses the published `onnxruntime-c` 1.23.0 CocoaPod archive. The 1.23.2 iOS
-package is not published; the explicit 1.23.0 package supplies the same API-23
-header bytes. The selected device/simulator platform, architecture, static
+iOS uses ONNX Runtime 1.23.2, the same version as Android. Microsoft's
+CocoaPod archive hosts and GitHub repository are gone, so the lock pins the
+official `Microsoft.ML.OnnxRuntime` 1.23.2 NuGet package's iOS XCFramework,
+repackaged unmodified in the CocoaPod layout and hosted as a release asset of
+`CrispStrobe/onnxruntime-spm`, together with the pinned license notices
+(`notices_url`). Its C header is byte-identical to the pinned API-23 header.
+The selected device/simulator platform, architecture, static
 archive slices, version and whole-archive/library hashes are checked. Cargo
 receives the qualified XCFramework path, and the final Xcode link explicitly
 includes that same static archive and CoreML. API compatibility is subsequently

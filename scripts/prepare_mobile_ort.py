@@ -242,7 +242,9 @@ def main() -> None:
         data = ((args.notices_dir / (pin["version"] + "-" + notice["filename"])).read_bytes() if args.notices_dir
                 else cached_bytes(output / "notices" / notice["filename"], notice))
         if data is None:
-            data = download({**notice, "url": f"https://raw.githubusercontent.com/microsoft/onnxruntime/v{pin['version']}/{notice['filename']}"})
+            # Microsoft's repository is gone; the lock names a mirror of the pinned bytes.
+            template = lock.get("notices_url", "https://raw.githubusercontent.com/microsoft/onnxruntime/v{version}/{filename}")
+            data = download({**notice, "url": template.format(filename=notice["filename"], version=pin["version"])})
         check_bytes(data, notice, "ONNX Runtime notice")
         notices[notice["filename"]] = data
     receipt = extract(archive_path, output, args.target, lock)

@@ -16,20 +16,22 @@
     }
   },
   "ios": {
-    "version": "1.23.0",
-    "url": "https://download.onnxruntime.ai/pod-archive-onnxruntime-c-1.23.0.zip",
-    "filename": "pod-archive-onnxruntime-c-1.23.0.zip",
-    "bytes": 49207123,
-    "sha256": "756a78e0168f29840bc614b43aeb03e63673f44022e0221d21698a2c8ed747ef",
-    "specification": "https://github.com/CocoaPods/Specs/blob/master/Specs/3/a/a/onnxruntime-c/1.23.0/onnxruntime-c.podspec.json",
+    "version": "1.23.2",
+    "url": "https://github.com/CrispStrobe/onnxruntime-spm/releases/download/onnxruntime-c-1.23.2/pod-archive-onnxruntime-c-1.23.2.zip",
+    "filename": "pod-archive-onnxruntime-c-1.23.2.zip",
+    "bytes": 46926916,
+    "sha256": "24671090c0fa12d8262bbb2357dc3d88ea6905d96b9bf31fb170d0647ec1cac4",
+    "source": "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.23.2/microsoft.ml.onnxruntime.1.23.2.nupkg",
+    "source_sha256": "25fe172f7fcdf34f2b5b02c8b997f6b88abc282956849d4af4335af23d0c4e4a",
     "libraries": {
-      "ios-arm64_x86_64-simulator": { "bytes": 83004696, "sha256": "08842f65bce8c305e6848ce1fd838437a01801829b5139c54af7f97f8ecfebd3" },
-      "ios-arm64": { "bytes": 38398152, "sha256": "780df6a7b7355a1fbc78e560ccb0dac9d349cd463adfe9d4ec9e773a165b9477" }
+      "ios-arm64_x86_64-simulator": { "bytes": 77548000, "sha256": "84df104076eb03f0748b854fe07ae724010470252860d8a6c9feba778a24a05a" },
+      "ios-arm64": { "bytes": 38589256, "sha256": "c2ee6e4d9e9c2b69603c5a5ce43c63d6fb36dcd1771500febeeb2d2a419f4eda" }
     }
   },
   "notices": [
     { "filename": "LICENSE", "bytes": 1073, "sha256": "2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c" },
     { "filename": "ThirdPartyNotices.txt", "bytes": 326866, "sha256": "e9e90971a8e75a9a8ac0c6412e29c1202d079998389915aa485f46c816c3b4cc" }
   ],
-  "provenance": "Official Microsoft Android Maven AAR and published iOS CocoaPod archive, retrieved over HTTPS and inspected on 2026-11-09. Android published SHA-1 is recorded as a distribution cross-check; extraction requires the committed SHA-256. Both platforms carry the same API-23 header bytes. iOS 1.23.2 is not published, so its available API-compatible 1.23.0 static framework is pinned explicitly. Full application and tiny Add-model execution remain required."
+  "provenance": "Official Microsoft Android Maven AAR (1.23.2). iOS: Microsoft's CocoaPods archive hosts are gone (onnxruntimepackages.z14.web.core.windows.net 404, download.onnxruntime.ai serves a non-matching *.azureedge.net certificate and 404s, github.com/microsoft/onnxruntime 404s), so the 1.23.0 pod archive pinned on 2026-11-09 can no longer be retrieved. On 2026-11-22 iOS was re-pinned to 1.23.2, the same version as Android: the official NuGet package Microsoft.ML.OnnxRuntime 1.23.2 (source_sha256) ships runtimes/ios/native/onnxruntime.xcframework.zip, repackaged unmodified in the CocoaPods layout (onnxruntime.xcframework, Headers/*.h copied from the framework, LICENSE) and hosted as a GitHub Release asset of CrispStrobe/onnxruntime-spm. Its C header is byte-identical to the pinned API-23 header. Notices are the unchanged pinned bytes, identical in the official onnxruntime 1.23.0 and 1.23.2 PyPI wheels, hosted on the same release because raw.githubusercontent.com/microsoft/onnxruntime 404s. Full application and tiny Add-model execution remain required.",
+  "notices_url": "https://github.com/CrispStrobe/onnxruntime-spm/releases/download/onnxruntime-c-1.23.2/{filename}"
 }
