@@ -2,6 +2,11 @@
 //! Arrow, SQLite and full-text implementation. Model calls are unavailable.
 #![allow(dead_code, unused_imports)]
 
+#[path = "../../src-tauri/src/operation_log.rs"]
+mod operation_log;
+
+fn app_log(_level: &str, _message: String) {}
+
 #[path = "../../src-tauri/src/index/snippet.rs"] pub mod snippet_production;
 #[path = "../../src-tauri/src/index/summary.rs"] pub mod summary_production;
 #[path = "../../src-tauri/src/index/barcode.rs"] pub mod barcode_production;
