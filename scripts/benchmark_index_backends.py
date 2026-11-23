@@ -2,6 +2,8 @@
 """Compare isolated service costs on generated text and vectors, using Docker."""
 
 import contextlib
+import csv
+import io
 import json
 from pathlib import Path
 import random
@@ -12,6 +14,8 @@ import time
 from urllib.request import Request, urlopen
 import uuid
 
+from pg8000 import dbapi
+
 
 IMAGES = {
     "opensearch": {
@@ -21,6 +25,10 @@ IMAGES = {
     "qdrant": {
         "image": "qdrant/qdrant@sha256:c5e32ee251293d2e1f4dd34890ad75eeee5a4f3821a121d6d8b7e4323448b386",
         "tag": "v1.20.2", "port": 6333, "compressed_bytes": 74318344,
+    },
+    "postgres": {
+        "image": "pgvector/pgvector@sha256:4bdc16048580b56345bca441bffe8d9b45dd2f5d76963808c853df1661df6e00",
+        "tag": "0.8.7-pg18", "port": 5432, "compressed_bytes": 165258000,
     },
 }
 COUNT = 4096
@@ -51,35 +59,51 @@ def service(backend):
     pull_s = time.perf_counter() - start
     disk_bytes = int(docker("image", "inspect", "--format", "{{.Size}}", image["image"]))
     name = "index-bench-" + uuid.uuid4().hex[:12]
+    password = uuid.uuid4().hex
     environment = {
-        "discovery.type": "single-node",
-        "OPENSEARCH_JAVA_OPTS": "-Xms1g -Xmx1g",
-        "DISABLE_INSTALL_DEMO_CONFIG": "true",
-        "DISABLE_SECURITY_PLUGIN": "true",
-    } if backend == "opensearch" else {}
+        "opensearch": {
+            "discovery.type": "single-node",
+            "OPENSEARCH_JAVA_OPTS": "-Xms1g -Xmx1g",
+            "DISABLE_INSTALL_DEMO_CONFIG": "true",
+            "DISABLE_SECURITY_PLUGIN": "true",
+        },
+        "postgres": {"POSTGRES_PASSWORD": password},
+    }.get(backend, {})
     env_args = [item for key, value in environment.items() for item in ("--env", f"{key}={value}")]
     start = time.perf_counter()
     docker("run", "--detach", "--name", name, "--memory", "3g", "--memory-swap", "3g",
-           "--cpus", "2", "--publish", f"127.0.0.1::{image['port']}", *env_args, image["image"])
+           "--cpus", "2", "--shm-size", "256m", "--publish", f"127.0.0.1::{image['port']}",
+           *env_args, image["image"])
+    database = None
     try:
         address = docker("port", name, f"{image['port']}/tcp")
         base = f"http://{address}"
         health = "/" if backend == "opensearch" else "/collections"
         while True:
             try:
-                call(base, health)
+                if backend == "postgres":
+                    host, port = address.rsplit(":", 1)
+                    database = dbapi.connect(user="postgres", password=password, host=host, port=int(port), timeout=15)
+                else:
+                    call(base, health)
                 break
-            except OSError:
+            except (OSError, dbapi.Error):
                 if time.perf_counter() - start > 120:
                     raise
                 time.sleep(0.5)
-        yield base, name, {"cold_pull_s": pull_s, "installed_image_bytes": disk_bytes,
-                           "startup_s": time.perf_counter() - start}
+        yield (database if backend == "postgres" else base), name, {
+            "cold_pull_s": pull_s, "installed_image_bytes": disk_bytes,
+            "startup_s": time.perf_counter() - start,
+        }
     except Exception:
         print(docker("logs", "--tail", "30", name), file=sys.stderr)
         raise
     finally:
-        docker("rm", "--force", name)
+        try:
+            if database is not None:
+                database.close()
+        finally:
+            docker("rm", "--force", "--volumes", name)
 
 
 def generate():
@@ -160,6 +184,64 @@ def query_times(run_query, validate):
     return {"median_ms": statistics.median(durations), "p95_ms": p95}
 
 
+def run_postgres(database, docs):
+    with contextlib.closing(database.cursor()) as cursor:
+        cursor.execute("CREATE EXTENSION vector")
+        cursor.execute(f"""
+            CREATE TABLE documents (
+                id integer PRIMARY KEY,
+                group_id integer NOT NULL,
+                body text NOT NULL,
+                vec vector({DIMENSIONS}) NOT NULL,
+                terms tsvector GENERATED ALWAYS AS (to_tsvector('german', body)) STORED
+            )
+        """)
+        database.commit()
+        start = time.perf_counter()
+        for offset in range(0, len(docs), BATCH):
+            with io.StringIO(newline="") as records:
+                csv.writer(records).writerows(
+                    (doc["id"], doc["group"], doc["body"], json.dumps(doc["vec"]))
+                    for doc in docs[offset:offset + BATCH]
+                )
+                records.seek(0)
+                cursor.execute("COPY documents (id, group_id, body, vec) FROM STDIN WITH (FORMAT CSV)",
+                               stream=records)
+        database.commit()
+        cursor.execute("SELECT count(*) FROM documents")
+        assert cursor.fetchone()[0] == len(docs)
+        visible = time.perf_counter() - start
+
+        cursor.execute("CREATE INDEX documents_terms ON documents USING gin (terms)")
+        cursor.execute("CREATE INDEX documents_group ON documents (group_id)")
+        cursor.execute("CREATE INDEX documents_vec ON documents USING hnsw (vec vector_cosine_ops)")
+        cursor.execute("ANALYZE documents")
+        database.commit()
+        indexed = time.perf_counter() - start
+
+        def rows(statement, params):
+            cursor.execute(statement, params)
+            return cursor.fetchall()
+
+        return {
+            "bulk_visible_s": visible,
+            "indexes_ready_s": indexed,
+            "scoped_term_query": query_times(
+                lambda i: rows("""
+                    SELECT id FROM documents, plainto_tsquery('german', %s) AS search(query)
+                    WHERE group_id = %s AND terms @@ query
+                    ORDER BY ts_rank(terms, query) DESC LIMIT 10
+                """, ("Sitzungsbeschluss", i % GROUPS)),
+                lambda i, hits: verify_hits(hits, i, lambda hit: hit[0]),
+            ),
+            "vector_query": query_times(
+                lambda i: rows("SELECT id FROM documents ORDER BY vec <=> CAST(%s AS vector) LIMIT 10",
+                               (json.dumps(docs[i]["vec"]),)),
+                lambda i, hits: verify_vector_hits(hits, i, lambda hit: hit[0]),
+            ),
+        }
+
+
 def run(backend, docs):
     with service(backend) as (base, name, result):
         if backend == "opensearch":
@@ -175,7 +257,7 @@ def run(backend, docs):
                     "knn": {"vec": {"vector": docs[i]["vec"], "k": 10}}}})["hits"]["hits"],
                 lambda i, hits: verify_vector_hits(hits, i, lambda hit: int(hit["_id"])),
             )
-        else:
+        elif backend == "qdrant":
             visible, settled, vectors = load_qdrant(base, docs)
             result.update(bulk_visible_s=visible, optimizer_idle_s=settled, indexed_vectors=vectors)
             result["scoped_term_filter"] = query_times(
@@ -190,6 +272,8 @@ def run(backend, docs):
                     "query": docs[i]["vec"], "limit": 10})["result"]["points"],
                 lambda i, hits: verify_vector_hits(hits, i, lambda hit: hit["id"]),
             )
+        else:
+            result.update(run_postgres(base, docs))
         result["memory_after_queries"] = docker("stats", "--no-stream", "--format", "{{.MemUsage}}", name)
         return result
 
