@@ -74,6 +74,38 @@ performance. See [SQLite FTS5](https://www.sqlite.org/fts5.html),
 [OpenSearch Docker](https://docs.opensearch.org/latest/install-and-configure/install-opensearch/docker/)
 and [Qdrant capacity planning](https://qdrant.tech/documentation/capacity-planning/).
 
+### Container image and service measurements
+
+Compressed layer sizes from the Linux OCI manifests in MiB:
+
+| Image | Linux amd64 | Linux arm64 |
+| --- | ---: | ---: |
+| OpenSearch 3.10.0 | 1,107 | 845 |
+| Qdrant 1.20.2 | 71 | 69 |
+| PostgreSQL 18 with pgvector 0.8.7 | 158 | 156 |
+
+The [hosted synthetic run](https://github.com/CrispStrobe/CrispSorter/actions/runs/45260934512)
+loaded 4,096 records with 128-dimensional vectors and eight groups. It capped
+each Linux amd64 service at two CPU cores and 3 GiB RAM and verified scoped
+results and exact self-vector hits. OpenSearch used a 1 GiB JVM heap.
+
+| Measurement | OpenSearch | Qdrant |
+| --- | ---: | ---: |
+| Installed image | 1,615 MiB | 188 MiB |
+| Service startup | 18.44 s | 0.15 s |
+| Bulk load until visible | 3.03 s | 0.22 s |
+| Warm scoped term request p95 | 5.94 ms | 0.69 ms |
+| Warm vector request p95 | 7.52 ms | 0.88 ms |
+| Memory after queries | 1.39 GiB | 51.9 MiB |
+
+OpenSearch ranked the term results. Qdrant filtered by term and group and
+finished building all vector indexes within 0.98 s of starting the load.
+Memory is a post-query sample. The fixture does not establish peak RAM,
+long-run maintenance cost or equal durability and relevance. It supports
+testing Qdrant first for a lean vector service. OpenSearch remains a candidate
+if ranked lexical queries, distributed replicas and search features justify
+the heavier image and working set.
+
 ## OCR qualification
 
 Use the same rendered pages and reference transcriptions for OCRS, CrispEmbed
