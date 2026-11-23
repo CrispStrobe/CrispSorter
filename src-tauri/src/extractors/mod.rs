@@ -1220,8 +1220,24 @@ pub fn extract_text_from_path_with_opts(
     path: &Path,
     opts: ExtractOptions,
 ) -> Result<ExtractedDocument> {
+    extract_text_with_source(path, opts, None)
+}
+
+pub(crate) fn extract_pdf_from_bytes(
+    path: &Path,
+    opts: ExtractOptions,
+    bytes: &[u8],
+) -> Result<ExtractedDocument> {
+    extract_text_with_source(path, opts, Some(bytes))
+}
+
+fn extract_text_with_source(
+    path: &Path,
+    opts: ExtractOptions,
+    pdf_bytes: Option<&[u8]>,
+) -> Result<ExtractedDocument> {
     let log = OperationLog::start("extract.file", json!({"engine":opts.ocr_pipeline.engine,"forced":opts.try_ocr && opts.ocr_pdf_min_chars==usize::MAX}));
-    let result = extract_text_from_path_with_opts_inner(path, opts, &log);
+    let result = extract_text_from_path_with_opts_inner(path, opts, &log, pdf_bytes);
     match &result {
         Ok(document) => log.succeed(json!({"characters":document.full_text.chars().count(),"items":document.members.len()})),
         Err(_) => log.fail("extraction_failed"),
@@ -1233,6 +1249,7 @@ fn extract_text_from_path_with_opts_inner(
     path: &Path,
     mut opts: ExtractOptions,
     log: &OperationLog,
+    pdf_bytes: Option<&[u8]>,
 ) -> Result<ExtractedDocument> {
     let ext = path
         .extension()
@@ -1274,7 +1291,10 @@ fn extract_text_from_path_with_opts_inner(
                 Ok(ExtractedDocument { full_text:pages.join(page_source::PAGE_SEPARATOR), ext:ext.clone(),
                     source_url:pdf::extract_source_url(path), ..Default::default() })
             } else {
-            let (mut doc, page_text) = pdf::extract_with_pages(path)?;
+            let (mut doc, page_text) = match pdf_bytes {
+                Some(bytes) => pdf::extract_bytes_with_pages(bytes),
+                None => pdf::extract_with_pages(path),
+            }?;
             doc.ext = ext.clone();
             for (index,text) in page_text.iter().enumerate() {
                 log.step("page_decision", json!({"page":index+1,"pages":page_text.len(),

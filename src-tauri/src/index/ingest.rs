@@ -332,6 +332,33 @@ fn apply_fts_write(fts: &FtsIndex, pending: &PendingFtsWrite) -> Result<()> {
     commit_fts_write(fts, pending, writer)
 }
 
+async fn apply_ingest_fts_write(fts: &FtsIndex, pending: &PendingFtsWrite) -> Result<()> {
+    let first = apply_fts_write(fts, pending);
+    #[cfg(windows)]
+    if first.as_ref().is_err_and(|error| {
+        use tantivy::directory::error::OpenWriteError;
+        matches!(
+            error.downcast_ref::<tantivy::TantivyError>(),
+            Some(tantivy::TantivyError::OpenWriteError(OpenWriteError::IoError { io_error, .. }))
+                if matches!(io_error.raw_os_error(), Some(5 | 32 | 33))
+        )
+    }) {
+        // A transient Windows file-open failure can interrupt a commit.
+        // Replay the same durable intent and let Tantivy clean failed files
+        // before trying to publish the replacement postings again.
+        let mut result = first;
+        for delay_ms in [40, 100, 250] {
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            result = replay_fts_write(fts, pending);
+            if result.is_ok() {
+                break;
+            }
+        }
+        return result;
+    }
+    first
+}
+
 fn replay_fts_write(fts: &FtsIndex, pending: &PendingFtsWrite) -> Result<()> {
     let writer = fts.writer().context("opening full-text writer for recovery")?;
     // A failed meta.json publication can leave managed deletion files at an
@@ -685,12 +712,20 @@ impl IngestPipeline {
                     let _guard = write_lock.lock().await;
                     let _lease = acquire_process_write_guard(vector_w.ingest_journal_path()).await?;
                     let write_start = Instant::now();
+                    let log = crate::operation_log::enabled("debug").then(|| {
+                        crate::operation_log::OperationLog::start(
+                            "index.write_batch",
+                            serde_json::json!({"files": job.verified_sources.len(), "rows": job.all_chunks.len()}),
+                        )
+                    });
                     repair_fts_writes(&fts_w, &vector_w).await
                         .context("repairing a previous full-text write")?;
+                    if let Some(log) = &log { log.step("repaired_prior_write", serde_json::Value::Null); }
                     // A slow embedding job can outlive a newer extraction of
                     // the same source. Verify after taking the writer lease,
                     // before creating an intent or replacing any good rows.
                     verify_source_receipts(job.verified_sources).await?;
+                    if let Some(log) = &log { log.step("verified_source_hashes", serde_json::Value::Null); }
                     let mut doc_ids = Vec::new();
                     if job.tantivy_inputs.is_empty() {
                         vector_w.upsert_metadata_rows(&job.all_chunks).await?;
@@ -698,6 +733,7 @@ impl IngestPipeline {
                         let generation = uuid::Uuid::new_v4().to_string();
                         let provisional_ids = job.tantivy_inputs.iter().map(|input| input.doc_id.clone()).collect::<Vec<_>>();
                         let plan = vector_w.prepare_occurrence_write(&mut job.all_chunks, &mut job.tantivy_inputs, &generation).await?;
+                        if let Some(log) = &log { log.step("resolved_source_ids", serde_json::Value::Null); }
                         for (provisional, expected) in &job.expected_occurrences {
                             let resolved = provisional_ids.iter().position(|id| id == provisional).and_then(|index| plan.doc_ids.get(index));
                             anyhow::ensure!(resolved == Some(expected),
@@ -715,16 +751,20 @@ impl IngestPipeline {
                         };
                         record_fts_intent(vector_w.ingest_journal_path(), &pending)
                             .context("persisting index write intent")?;
+                        if let Some(log) = &log { log.step("saved_write_intent", serde_json::Value::Null); }
                         vector_w.commit_occurrence_plan(&job.all_chunks, plan).await?;
+                        if let Some(log) = &log { log.step("committed_lance", serde_json::Value::Null); }
                         // Failure from this point leaves a durable repair. A
                         // retry or reopening the pipeline completes the exact
                         // full-text update; completed vector rows are not lost.
-                        apply_fts_write(&fts_w, &pending)
+                        apply_ingest_fts_write(&fts_w, &pending).await
                             .context("Vector rows saved; full-text repair is pending")?;
+                        if let Some(log) = &log { log.step("committed_tantivy", serde_json::Value::Null); }
                         finish_fts_intent(vector_w.ingest_journal_path(), &pending.generation)?;
                     }
 
                     let write_time_ms = write_start.elapsed().as_millis() as u64;
+                    if let Some(log) = &log { log.succeed(serde_json::Value::Null); }
                     Ok(IngestStats {
                         chunk_count: job.total_chunk_count,
                         embed_time_ms: job.embed_time_ms,

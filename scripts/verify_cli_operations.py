@@ -137,21 +137,48 @@ def verify(executable: Path) -> None:
         docs = root / "bulk"
         docs.mkdir()
         sources = [docs / f"file-{i:02}.txt" for i in range(34)]
+        sources[0] = docs / "file-'00.txt"
         for i, file in enumerate(sources):
             file.write_text(f"Full text batching fixture {i}", encoding="utf-8")
         blank = docs / "blank.txt"
         blank.write_text("", encoding="utf-8")
         data = root / "text-index"
-        indexed = run("index", "ingest", "--text-only", "--data-dir", str(data),
-                      *(str(path) for path in [*sources, blank]))
+        pdfs = [source, *(docs / f"copy-{i}.pdf" for i in range(3))]
+        for copy in pdfs[1:]:
+            copy.write_bytes(original)
+        inputs = [*sources, *pdfs]
+        ingest_args = [
+            "index", "ingest", "--text-only", "--text-batch-size", "32",
+            "--data-dir", str(data), *(str(path) for path in [*inputs, blank]),
+        ]
+        indexed = run("--log-verbosity", "debug", *ingest_args)
         assert indexed.returncode == 0, indexed.stderr
         rows = [json.loads(line) for line in indexed.stdout.splitlines()]
-        assert rows == [{"path": str(path), "chunks": 1, "empty": False} for path in sources], rows
+        assert rows == [{"path": str(path), "chunks": 1, "empty": False} for path in inputs], rows
+        shared_reads = [event for event in operations(indexed.stderr)
+                        if event["operation"] == "index.prepare_source"
+                        and event.get("stage") == "source_hashed"
+                        and event["context"].get("reused")]
+        assert len(shared_reads) == len(pdfs), shared_reads
         assert "1 errors" in indexed.stderr and blank.name in indexed.stderr, indexed.stderr
+
+        list_args = ["--format", "json", "index", "list", "--data-dir", str(data)]
+        before = run(*list_args)
+        assert before.returncode == 0, before.stderr
+        sources[0].write_text("Updated content with new searchable text", encoding="utf-8")
+        refreshed = run(*ingest_args)
+        assert refreshed.returncode == 0 and refreshed.stdout == indexed.stdout, refreshed.stderr
+        after = run(*list_args)
+        assert after.returncode == 0, after.stderr
+        assert sorted(after.stdout.splitlines()) == sorted(before.stdout.splitlines())
+        updated = run("--format", "json", "index", "search", '"new searchable text"',
+                      "--data-dir", str(data))
+        assert updated.returncode == 0, updated.stderr
+        assert len(updated.stdout.splitlines()) == 1 and sources[0].name in updated.stdout
         stats = run("index", "stats", "--data-dir", str(data))
         assert stats.returncode == 0, stats.stderr
         counts = json.loads(stats.stdout)
-        assert (counts["docs"], counts["chunks"], counts["fts_docs"]) == (34, 34, 34), counts
+        assert (counts["docs"], counts["chunks"], counts["fts_docs"]) == (38, 38, 38), counts
 
     print("CLI operation contract passed: JSON, stderr receipts, OCR policy, PDF operations and full-text ingest")
 

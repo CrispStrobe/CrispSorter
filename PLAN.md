@@ -2,6 +2,9 @@
 
 ## Current testing and release policy
 
+See [full-text indexing performance and scale](docs/fulltext-performance-and-scale.md)
+for the Windows measurements and the OCR and storage comparison criteria.
+
 Ordinary test failures should be fixed and rerun. Optional diagnostics, reports,
 replay inputs, source-identity records and admission paperwork do not gate a
 build or release. Keep checks that protect actual product correctness: package

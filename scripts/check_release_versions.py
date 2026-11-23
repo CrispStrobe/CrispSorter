@@ -13,11 +13,11 @@ VERSION = re.compile(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)')
 
 def check_versions(root):
     root = Path(root)
-    config = json.loads((root / 'src-tauri/tauri.conf.json').read_text())
-    package = json.loads((root / 'package.json').read_text())
-    npm_lock = json.loads((root / 'package-lock.json').read_text())
-    cargo = tomllib.loads((root / 'src-tauri/Cargo.toml').read_text())['package']
-    cargo_lock = tomllib.loads((root / 'Cargo.lock').read_text())
+    config = json.loads((root / 'src-tauri/tauri.conf.json').read_text(encoding='utf-8'))
+    package = json.loads((root / 'package.json').read_text(encoding='utf-8'))
+    npm_lock = json.loads((root / 'package-lock.json').read_text(encoding='utf-8'))
+    cargo = tomllib.loads((root / 'src-tauri/Cargo.toml').read_text(encoding='utf-8'))['package']
+    cargo_lock = tomllib.loads((root / 'Cargo.lock').read_text(encoding='utf-8'))
     version = config.get('version')
     if not isinstance(version, str) or not VERSION.fullmatch(version):
         raise ValueError('Tauri release version must be an exact numeric major.minor.patch')

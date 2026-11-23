@@ -7,6 +7,15 @@ of the codebase look the way they do.
 For active development plans, see [PLAN.md](PLAN.md).
 For technical pitfalls / non-obvious patterns, see [LEARNINGS.md](LEARNINGS.md).
 
+## Verified text ingest and PDFium defaults (2026-11-23)
+
+PDFium is used first for native PDF extraction when bundled. Verified
+text-only ingest batches identity lookups and commits, reuses native PDF
+source bytes and overlaps file preparation with writing. See
+[the Windows benchmark and scale decisions](docs/fulltext-performance-and-scale.md).
+The release workflow can stamp a version tag on an all-platform build-only
+dispatch from main. Public publication uses the existing signing gates.
+
 ## CrispEmbed v0.17.20 pin (2026-11-21)
 
 Every live CrispEmbed v0.17.19 pin now points at v0.17.20
