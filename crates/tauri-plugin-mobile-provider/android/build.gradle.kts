@@ -15,7 +15,13 @@ android {
         targetCompatibility = JavaVersion.VERSION_1_8
     }
     kotlinOptions { jvmTarget = "1.8" }
-    sourceSets.getByName("androidTest").assets.srcDir("../../../tests/fixtures/mobile-documents")
+}
+
+androidComponents {
+    onVariants { variant ->
+        variant.androidTest?.sources?.assets
+            ?.addStaticSourceDirectory("../../../tests/fixtures/mobile-documents")
+    }
 }
 
 dependencies {
