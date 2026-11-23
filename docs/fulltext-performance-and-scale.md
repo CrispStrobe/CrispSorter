@@ -85,13 +85,16 @@ production candidates.
 | SQLite plus Tantivy or FTS5 | Embedded text-only catalog | Atomic metadata updates, German search parity, incremental refresh |
 | OpenSearch | Multi-node lexical service | Image and JVM cost, indexing throughput, replica and merge overhead, scoped and broad query p95 |
 | Qdrant | Vector-heavy service | Image size, on-disk vectors, quantization recall, payload filters and snapshot recovery |
+| PostgreSQL plus pgvector | Remote ranked text and vectors | German search quality, HNSW maintenance, replication and local durability |
 
 Compare compressed image size by platform, installed size, peak resident
 memory, WAL and index size, warm and cold p95, and update throughput on the
-same corpus and hardware. A small synthetic run does not predict multi-terabyte
-performance. See [SQLite FTS5](https://www.sqlite.org/fts5.html),
-[OpenSearch Docker](https://docs.opensearch.org/latest/install-and-configure/install-opensearch/docker/)
-and [Qdrant capacity planning](https://qdrant.tech/documentation/capacity-planning/).
+same corpus and hardware. Establish multi-terabyte capacity with staged
+ingestion and representative queries at increasing shard counts.
+See [SQLite FTS5](https://www.sqlite.org/fts5.html),
+[OpenSearch Docker](https://docs.opensearch.org/latest/install-and-configure/install-opensearch/docker/),
+[Qdrant capacity planning](https://qdrant.tech/documentation/capacity-planning/)
+and [pgvector](https://github.com/pgvector/pgvector#hnsw).
 
 ### Container image and service measurements
 
@@ -103,27 +106,34 @@ Compressed layer sizes from the Linux OCI manifests in MiB:
 | Qdrant 1.20.2 | 71 | 69 |
 | PostgreSQL 18 with pgvector 0.8.7 | 158 | 156 |
 
-The [hosted synthetic run](https://github.com/CrispStrobe/CrispSorter/actions/runs/45260934512)
+The [hosted three-engine run](https://github.com/CrispStrobe/CrispSorter/actions/runs/45270345212)
 loaded 4,096 records with 128-dimensional vectors and eight groups. It capped
 each Linux amd64 service at two CPU cores and 3 GiB RAM and verified scoped
 results and exact self-vector hits. OpenSearch used a 1 GiB JVM heap.
+PostgreSQL used `COPY`, a stored German `tsvector` with a GIN index, and a
+pgvector cosine HNSW index.
 
-| Measurement | OpenSearch | Qdrant |
-| --- | ---: | ---: |
-| Installed image | 1,615 MiB | 188 MiB |
-| Service startup | 18.44 s | 0.15 s |
-| Bulk load until visible | 3.03 s | 0.22 s |
-| Warm scoped term request p95 | 5.94 ms | 0.69 ms |
-| Warm vector request p95 | 7.52 ms | 0.88 ms |
-| Memory after queries | 1.39 GiB | 51.9 MiB |
+| Measurement | OpenSearch | Qdrant | PostgreSQL + pgvector |
+| --- | ---: | ---: | ---: |
+| Installed image | 1,615 MiB | 188 MiB | 442 MiB |
+| Cold image pull | 16.87 s | 2.17 s | 5.74 s |
+| Service startup after pull | 21.09 s | 0.67 s | 1.27 s |
+| Bulk load until visible | 4.31 s | 0.34 s | 0.90 s |
+| Warm scoped term request p95 | 16.81 ms | 0.90 ms | 1.14 ms |
+| Warm vector request p95 | 21.34 ms | 1.29 ms | 1.03 ms |
+| Memory after queries | 1.40 GiB | 51.5 MiB | 44.5 MiB |
 
-OpenSearch ranked the term results. Qdrant filtered by term and group and
-finished building all vector indexes within 0.98 s of starting the load.
-Memory is a post-query sample. The fixture does not establish peak RAM,
-long-run maintenance cost or equal durability and relevance. It supports
-testing Qdrant first for a lean vector service. OpenSearch remains a candidate
-if ranked lexical queries, distributed replicas and search features justify
-the heavier image and working set.
+OpenSearch and PostgreSQL ranked the term results. Qdrant filtered by term
+and group. Qdrant finished its vector indexes 1.35 s after load start, and
+PostgreSQL finished all three secondary indexes 1.96 s after load start.
+The [first two-engine run](https://github.com/CrispStrobe/CrispSorter/actions/runs/45260934512)
+had OpenSearch term and vector p95 values of 5.94 and 7.52 ms, illustrating
+variation across hosted runs. Memory is a post-query sample. These small
+runs leave peak RAM, maintenance cost, ranking parity and durability under
+load open. Test Qdrant first for a dedicated vector service. If one remote
+database needs ranked lexical search and vectors, include PostgreSQL in the
+pilot. Test OpenSearch when its lexical features or distributed replicas
+justify the heavier footprint.
 
 ## OCR qualification
 

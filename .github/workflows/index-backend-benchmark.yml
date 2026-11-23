@@ -28,4 +28,3 @@ jobs:
         with:
           name: index-backend-results
           path: index-backend-results.json
-
