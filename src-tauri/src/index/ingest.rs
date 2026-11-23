@@ -186,6 +186,15 @@ pub struct RawDocument {
     pub container: Option<container::ContainerDocument>,
 }
 
+impl RawDocument {
+    pub(crate) fn ensure_searchable_content(&self) -> Result<()> {
+        anyhow::ensure!(!self.full_text.trim().is_empty()
+            || self.embedding_vit.is_some() || self.embedding_omni.is_some() || self.container.is_some(),
+            "No searchable text was extracted from {}; use metadata indexing or retry extraction with OCR", self.filename);
+        Ok(())
+    }
+}
+
 // ── IngestStats ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -894,9 +903,7 @@ impl IngestPipeline {
         container::expand_roots(&mut raws)?;
         for raw in &raws {
             anyhow::ensure!(!raw.source_hash.trim().is_empty(), "Document identity is required");
-            anyhow::ensure!(!raw.full_text.trim().is_empty()
-                || raw.embedding_vit.is_some() || raw.embedding_omni.is_some() || raw.container.is_some(),
-                "No searchable text was extracted from {}; use metadata indexing or retry extraction with OCR", raw.filename);
+            raw.ensure_searchable_content()?;
         }
         let active_embedder = if self.config.text_only { None } else { self.embedder.as_ref() };
 

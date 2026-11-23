@@ -1,0 +1,26 @@
+name: Index backend benchmark
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/index-backend-benchmark.yml
+      - scripts/benchmark_index_backends.py
+
+permissions:
+  contents: read
+
+jobs:
+  fixture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the synthetic benchmark
+        run: python3 scripts/benchmark_index_backends.py index-backend-results.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: index-backend-results
+          path: index-backend-results.json
+

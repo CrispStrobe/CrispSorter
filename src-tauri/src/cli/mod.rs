@@ -4615,6 +4615,12 @@ async fn cmd_index_async(
                         continue;
                     }
                 };
+                if text_only {
+                    if let Err(error) = raw.ensure_searchable_content() {
+                        report.record(out, p, Err(error));
+                        continue;
+                    }
+                }
                 let text_bytes = raw.full_text.len();
                 if text_only
                     && raw.container.is_none()
