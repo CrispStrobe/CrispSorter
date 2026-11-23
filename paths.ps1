@@ -1,4 +1,4 @@
-﻿# CrispSorter Environment Setup
+# CrispSorter Environment Setup
 # Dynamically configures MSVC, CUDA, and Rust paths without hardcoded usernames.
 
 $ProjectRoot = $PSScriptRoot
@@ -6,36 +6,45 @@ if (-not $ProjectRoot) { $ProjectRoot = Get-Location }
 
 Write-Host "--- Configuring Environment ---" -ForegroundColor Cyan
 
-# 1. Detect Visual Studio / MSVC (Required for CUDA kernels)
-$VSPath = "C:\Program Files\Microsoft Visual Studio"
-if (Test-Path $VSPath) {
-    $cl = Get-ChildItem -Path $VSPath -Filter cl.exe -Recurse -ErrorAction SilentlyContinue | 
-          Where-Object { $_.FullName -like "*Hostx64\x64*" } | 
-          Select-Object -First 1
-    
-    if ($cl) {
-        $MSVCBin = $cl.DirectoryName
-        Write-Host "Detected MSVC: $MSVCBin" -ForegroundColor Green
-        $env:PATH = "$MSVCBin;" + $env:PATH
+# 1. Load the compiler, linker, Windows SDK, and nmake from Visual Studio.
+# Standalone Build Tools typically live under Program Files (x86).
+if ($env:VSCMD_ARG_TGT_ARCH -ne 'x64') {
+    $VsWhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (Test-Path -LiteralPath $VsWhere) {
+        $VcVars = & $VsWhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find 'VC\Auxiliary\Build\vcvars64.bat' |
+            Select-Object -First 1
+        if ($VcVars) {
+            $VcEnvironment = & $env:ComSpec /d /c ('call "{0}" >nul && set' -f $VcVars)
+            if ($LASTEXITCODE -ne 0) { throw "Failed to load the MSVC environment from $VcVars" }
+            foreach ($Entry in $VcEnvironment) {
+                $Name, $Value = $Entry -split '=', 2
+                if ($Name -and $null -ne $Value) { Set-Item -LiteralPath "Env:$Name" -Value $Value }
+            }
+        }
     }
 }
 
-# 2. Locate the REAL Rust Toolchain (Bypassing broken Chocolatey shims)
-$RustupBin = "$env:USERPROFILE\.rustup\toolchains"
-if (Test-Path $RustupBin) {
-    $StablePath = Get-ChildItem -Path $RustupBin -Filter "stable-x86_64-pc-windows-msvc" -Directory | Select-Object -First 1
-    if ($StablePath) {
-        $RealRustBin = Join-Path $StablePath.FullName "bin"
-        Write-Host "Detected Rust: $RealRustBin" -ForegroundColor Green
-        $env:PATH = "$RealRustBin;" + $env:PATH
-        $env:CARGO = Join-Path $RealRustBin "cargo.exe"
-        $env:RUSTC = Join-Path $RealRustBin "rustc.exe"
-    }
+# 2. Match the Rust toolchain in CI. Locked ort-sys assumes Cargo's
+# pre-1.100 build directory layout when copying runtime DLLs.
+$Rustup = Get-Command rustup.exe -CommandType Application -ErrorAction SilentlyContinue
+if (-not $Rustup) { throw 'Install Rust with rustup before building CrispSorter.' }
+if (-not $env:RUSTUP_TOOLCHAIN) { $env:RUSTUP_TOOLCHAIN = '1.99.1' }
+$RustInstalled = & {
+    $ErrorActionPreference = 'Continue'
+    & $Rustup.Source run $env:RUSTUP_TOOLCHAIN rustc --version 2>$null | Out-Null
+    $LASTEXITCODE -eq 0
 }
+if (-not $RustInstalled) {
+    & $Rustup.Source toolchain install $env:RUSTUP_TOOLCHAIN --profile minimal
+    if ($LASTEXITCODE -ne 0) { throw "Failed to install Rust $env:RUSTUP_TOOLCHAIN" }
+}
+$CargoBin = Split-Path $Rustup.Source
+$env:CARGO = Join-Path $CargoBin 'cargo.exe'
+$env:RUSTC = Join-Path $CargoBin 'rustc.exe'
 
 # 3. Project specific priorities
 $PriorityPaths = @(
-    "$env:USERPROFILE\.cargo\bin",
+    $CargoBin,
     (Join-Path $ProjectRoot "gh_temp\bin"),
     (Join-Path $ProjectRoot "src-tauri\target\release")
 )
@@ -120,8 +129,9 @@ $PerlCachedExe = Join-Path $PerlRoot "perl\bin\perl.exe"
 
 function Test-OpenSslPerl($exe) {
     if (-not $exe) { return $false }
+    $ErrorActionPreference = 'Continue'
     try {
-        & $exe -e "use Locale::Maketext::Simple; use IPC::Cmd; exit 0" 2>$null
+        & $exe -MLocale::Maketext::Simple -MIPC::Cmd -e 'exit($^O eq ''MSWin32'' ? 0 : 1)' 2>$null
         return ($LASTEXITCODE -eq 0)
     } catch { return $false }
 }
@@ -162,7 +172,10 @@ if (-not (Test-OpenSslPerl $PerlOnPath)) {
     }
 }
 $ActivePerl = (Get-Command perl -ErrorAction SilentlyContinue).Source
-if ($ActivePerl) { Write-Host "Active Perl: $ActivePerl" -ForegroundColor Green }
+if (Test-OpenSslPerl $ActivePerl) {
+    $env:OPENSSL_SRC_PERL = $ActivePerl
+    Write-Host "Active Perl: $ActivePerl" -ForegroundColor Green
+}
 
 # Final Verification
 $CargoPath = (Get-Command cargo -ErrorAction SilentlyContinue).Source
