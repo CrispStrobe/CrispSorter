@@ -28,7 +28,7 @@ class DraftStaging(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.base = Path(temporary.name)
+        self.base = Path(temporary.name).resolve()
         self.project = self.base / 'repos/CrispSorter'
         (self.project / 'scripts').mkdir(parents=True)
         (self.project / 'src-tauri').mkdir()
