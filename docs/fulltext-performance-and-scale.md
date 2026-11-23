@@ -36,6 +36,25 @@ and 128 documents per commit with a 16 MiB text cap. A 256-document batch took
 ingest tests passed. One direct Tantivy test setup hit an intermittent Windows
 file-open error and passed on rerun.
 
+### Native PDF extractor comparison
+
+On a separate 48-PDF sample, using in-memory input, PDFium took 0.37 s and
+`pdf-extract` took 0.63 s. PDFium opened all 48 files. The Rust parser panicked
+on one malformed stream. The other 47 files had the same page counts and
+blank-page positions. The measured single-pass Rust shortcut improved parser
+time by about 1% on the 30-PDF sample. Reusing the metadata parse still avoids
+a second Rust document parse when the fallback is used.
+
+[Docling Parse](https://github.com/docling-project/docling-parse) 7.27.1 took
+7.43 s on the 48-file sample with serial text-line extraction and opened all
+48. Its MIT C++ parser is a candidate for difficult layout cases.
+[OSS Document Scanner](https://github.com/ossappscollective/OSS-DocumentScanner)
+offers mobile scan-preprocessing examples.
+[PDF4QT](https://github.com/JakubMelka/PDF4QT#2-legal-issues) has an MIT engine
+and its documented build depends on LGPL Qt. The existing bundled
+[BSD-style PDFium](https://pdfium.googlesource.com/pdfium/+/refs/heads/main/LICENSE)
+has the strongest speed and integration result here.
+
 ## Scaling on limited hardware
 
 - Put mutable catalogs, journals and active scratch on local or attached block
@@ -107,6 +126,9 @@ if ranked lexical queries, distributed replicas and search features justify
 the heavier image and working set.
 
 ## OCR qualification
+
+See [Windows CPU OCR measurements](ocr-windows-cpu-qualification.md) for the
+initial German model and image-size sweep.
 
 Use the same rendered pages and reference transcriptions for OCRS, CrispEmbed
 GGML Tesseract and PP-OCR. Compare German character and word error rates,
