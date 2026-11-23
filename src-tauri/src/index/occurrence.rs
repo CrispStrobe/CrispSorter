@@ -37,6 +37,24 @@ pub(crate) struct OccurrencePlan {
 }
 
 type Scope = (String, String);
+type IdsByScope = BTreeMap<Scope, BTreeSet<String>>;
+type OccurrenceRows = BTreeMap<Scope, BTreeMap<i32, (usize, usize, i64)>>;
+
+const OCCURRENCE_LOOKUP_BATCH: usize = 64;
+
+fn sql_string(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+fn document_id_filter<'a>(ids: impl IntoIterator<Item = &'a str>) -> String {
+    let ids = ids.into_iter().map(sql_string).collect::<Vec<_>>();
+    format!("doc_id IN ({})", ids.join(", "))
+}
+
+fn random_occurrence_id() -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(uuid::Uuid::new_v4().as_bytes()))
+}
 
 fn string_at(batch: &RecordBatch, name: &str, row: usize) -> String {
     str_col_opt(batch, name).filter(|c| !c.is_null(row)).map(|c| c.value(row).to_owned()).unwrap_or_default()
@@ -225,15 +243,47 @@ impl LocalIndex {
     }
 
     async fn available_occurrence_id(&self, candidate: &str, reserved: &mut BTreeSet<String>) -> Result<String> {
-        use sha2::{Digest, Sha256};
         let mut id = candidate.to_owned();
         loop {
             if !reserved.contains(&id) && self.document_occurrences(&id).await?.is_empty() {
                 reserved.insert(id.clone());
                 return Ok(id);
             }
-            id = format!("{:x}", Sha256::digest(uuid::Uuid::new_v4().as_bytes()));
+            id = random_occurrence_id();
         }
+    }
+
+    // Fetch IDs at the requested scopes and check canonical IDs for collisions
+    // elsewhere in the same snapshot under the paired writer lease.
+    async fn lookup_occurrence_ids(
+        &self,
+        representatives: &BTreeMap<String, &DocumentChunk>,
+    ) -> Result<(IdsByScope, BTreeSet<String>)> {
+        let entries = representatives.iter().collect::<Vec<_>>();
+        let mut by_scope = IdsByScope::new();
+        let mut occupied = BTreeSet::new();
+        for entries in entries.chunks(OCCURRENCE_LOOKUP_BATCH) {
+            let mut predicates = vec![document_id_filter(entries.iter().map(|(id, _)| id.as_str()))];
+            predicates.extend(entries.iter().filter(|(_, row)| !row.location_uri.is_empty()).map(|(_, row)| {
+                format!("(owner_id = {} AND location_uri = {})", sql_string(&row.owner_id), sql_string(&row.location_uri))
+            }));
+            let rows = self.table.query().only_if(predicates.join(" OR "))
+                .select(lancedb::query::Select::Columns(vec!["owner_id".into(), "location_uri".into(), "doc_id".into()]))
+                .execute().await?.try_collect::<Vec<RecordBatch>>().await?;
+            for batch in rows {
+                for row in 0..batch.num_rows() {
+                    let id = string_at(&batch, "doc_id", row);
+                    occupied.insert(id.clone());
+                    if let (Some(owner), Some(location)) = (str_col_opt(&batch, "owner_id"), str_col_opt(&batch, "location_uri")) {
+                        if !owner.is_null(row) && !location.is_null(row) {
+                            let scope = (owner.value(row).to_owned(), location.value(row).to_owned());
+                            by_scope.entry(scope).or_default().insert(id);
+                        }
+                    }
+                }
+            }
+        }
+        Ok((by_scope, occupied))
     }
 
     /// Resolve ordinary per-source writes. Explicit/imported IDs use the
@@ -248,24 +298,24 @@ impl LocalIndex {
         let mut resolved = BTreeMap::<String, String>::new();
         let mut affected = BTreeSet::<String>::new();
         let mut reserved = BTreeSet::<String>::new();
+        let (ids_by_scope, occupied) = self.lookup_occurrence_ids(&representatives).await?;
         for (canonical, chunk) in &representatives {
             let scope = (chunk.owner_id.clone(), chunk.location_uri.clone());
-            let mut filter = format!("owner_id = '{}' AND location_uri = '{}'", scope.0.replace('\'', "''"), scope.1.replace('\'', "''"));
-            if scope.1.is_empty() { filter.push_str(&format!(" AND doc_id = '{}'", canonical.replace('\'', "''"))); }
-            let rows: Vec<RecordBatch> = self.table.query().only_if(filter)
-                .select(lancedb::query::Select::Columns(vec!["doc_id".into()]))
-                .execute().await?.try_collect().await?;
-            let mut ids = BTreeSet::new();
-            for batch in rows { for row in 0..batch.num_rows() { ids.insert(string_at(&batch, "doc_id", row)); } }
-            let chosen = if ids.contains(canonical) { Some(canonical.clone()) }
-                else if ids.len() == 1 { ids.into_iter().next() }
-                else if ids.is_empty() { None }
+            let ids = ids_by_scope.get(&scope);
+            let chosen = if ids.is_some_and(|ids| ids.contains(canonical)) { Some(canonical.clone()) }
+                else if scope.1.is_empty() || ids.is_none() { None }
+                else if let Some(id) = ids.filter(|ids| ids.len() == 1).and_then(|ids| ids.first()) { Some(id.clone()) }
                 else { anyhow::bail!("Multiple stored identities share this owner and source URI; select the intended occurrence before refreshing {}", chunk.location_uri); };
             if let Some(old_id) = chosen {
                 selected.insert((old_id.clone(), scope), canonical.clone());
                 affected.insert(old_id);
             } else {
-                resolved.insert(canonical.clone(), self.available_occurrence_id(canonical, &mut reserved).await?);
+                let id = if !occupied.contains(canonical) && reserved.insert(canonical.clone()) {
+                    canonical.clone()
+                } else {
+                    self.available_occurrence_id(&random_occurrence_id(), &mut reserved).await?
+                };
+                resolved.insert(canonical.clone(), id);
             }
         }
         for occurrence in deletions { affected.insert(occurrence.doc_id.clone()); }
@@ -275,17 +325,23 @@ impl LocalIndex {
         let mut replace_ids = affected.clone();
         let mut identity_map = Vec::new();
         let mut member_roots = BTreeSet::new();
-        for old_id in &affected {
-            let batches: Vec<RecordBatch> = self.table.query().only_if(format!("doc_id = '{}'", old_id.replace('\'', "''")))
+        let affected_ids = affected.iter().collect::<Vec<_>>();
+        for ids in affected_ids.chunks(OCCURRENCE_LOOKUP_BATCH) {
+            let batches: Vec<RecordBatch> = self.table.query()
+                .only_if(document_id_filter(ids.iter().map(|id| id.as_str())))
                 .execute().await?.try_collect().await?;
-            let mut groups = BTreeMap::<Scope, BTreeMap<i32, (usize, usize, i64)>>::new();
+            let mut occurrences = BTreeMap::<String, OccurrenceRows>::new();
             for (batch_index, batch) in batches.iter().enumerate() { for row in 0..batch.num_rows() {
+                let id = string_at(batch, "doc_id", row);
                 let scope = (string_at(batch, "owner_id", row), string_at(batch, "location_uri", row));
                 let indexed = batch.column_by_name("indexed_at").and_then(|c| c.as_any().downcast_ref::<TimestampMillisecondArray>())
                     .filter(|c| !c.is_null(row)).map(|c| c.value(row)).unwrap_or(0);
-                let slot = groups.entry(scope).or_default().entry(number_at(batch, "chunk_index", row)).or_insert((batch_index, row, indexed));
+                let slot = occurrences.entry(id).or_default().entry(scope).or_default()
+                    .entry(number_at(batch, "chunk_index", row)).or_insert((batch_index, row, indexed));
                 if indexed >= slot.2 { *slot = (batch_index, row, indexed); }
             } }
+            for &old_id in ids {
+            let Some(groups) = occurrences.remove(old_id) else { continue; };
             let is_deleted = |scope: &Scope| deletions.iter().any(|d| d.doc_id == *old_id && d.owner_id == scope.0 && d.location_uri == scope.1);
             let surviving: Vec<Scope> = groups.keys().filter(|scope| !is_deleted(scope)).cloned().collect();
             // Keep one surviving stored identity stable. Other colliding
@@ -319,6 +375,7 @@ impl LocalIndex {
                 } else {
                     for (_, (batch, row, _)) in rows { preserved.push(copied_row(&batches[batch], row, &id, generation)?); }
                 }
+            }
             }
         }
         for chunk in chunks.iter_mut() {

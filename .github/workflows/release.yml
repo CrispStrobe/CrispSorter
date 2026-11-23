@@ -10,6 +10,10 @@ on:
         description: 'Flip the built draft to the PUBLIC Latest release. Leave OFF to only build/test (e.g. exercise the crispembed compile) and keep the draft unpublished. Also gates the REAL App Store upload (off = validate-only dry run).'
         type: boolean
         default: false
+      create_tag:
+        description: 'Create the exact version tag from main for an all-platform build-only draft.'
+        type: boolean
+        default: false
       mac_appstore:
         description: 'Run the macOS App Store job (build cloud-only sandbox .pkg, sign, validate). Upload to ASC only if publish is also ON.'
         type: boolean
@@ -215,6 +219,7 @@ jobs:
         if: env.CRISPSORTER_MOBILE_RELEASE_PROFILE != 'ocr-draft'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CREATE_TAG: ${{ inputs.create_tag || false }}
         run: |
           set -euo pipefail
           python3 scripts/check_release_versions.py
@@ -224,6 +229,20 @@ jobs:
             echo '::error::Tag does not match application version'; exit 1
           fi
           SOURCE=$(git rev-parse HEAD)
+          if [ "$CREATE_TAG" = true ]; then
+            if [ "$GITHUB_REF" != refs/heads/main ] || [ "$CRISPSORTER_RELEASE_SELECTOR" != all ] || [ "$CRISPSORTER_RELEASE_PUBLISH" = true ]; then
+              echo '::error::Creating a draft tag requires an all-platform build-only dispatch on main'
+              exit 1
+            fi
+            REF_API="repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG"
+            if EXISTING=$(gh api "$REF_API" --jq '.object.sha' 2>"$RUNNER_TEMP/tag-api.err"); then
+              [[ "$EXISTING" == "$SOURCE" ]] || { echo '::error::Existing tag targets another commit'; exit 1; }
+            else
+              grep -q 'HTTP 404' "$RUNNER_TEMP/tag-api.err" || { cat "$RUNNER_TEMP/tag-api.err" >&2; exit 1; }
+              # A ref created with GITHUB_TOKEN does not start a second tag-push workflow.
+              gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$TAG" -f sha="$SOURCE" >/dev/null
+            fi
+          fi
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft > "$RUNNER_TEMP/release.json" 2>/dev/null; then
             python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))["isDraft"] else 1)' "$RUNNER_TEMP/release.json" || { echo '::error::Existing release is public; refusing to overwrite assets'; exit 1; }
           else

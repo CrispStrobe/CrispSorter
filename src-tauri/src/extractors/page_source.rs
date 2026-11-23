@@ -329,12 +329,25 @@ fn unpack_gray(width: u32, height: u32, bits: u8, bytes: &[u8]) -> Option<image:
     }))
 }
 
-/// Rasterize a PDF into one PNG per page (for scanned / image-only PDFs).
-/// Requires the `pdf-render` feature (PDFium, bound at runtime). Returns an
-/// error when the feature is off or no libpdfium is available — the caller
-/// then keeps its text-layer / legacy fallback.
 #[cfg(feature = "pdf-render")]
-pub fn rasterize_pdf(path: &Path) -> Result<PageImages> {
+pub(super) fn pdfium() -> Result<std::sync::MutexGuard<'static, pdfium_render::prelude::Pdfium>> {
+    use pdfium_render::prelude::*;
+    use std::sync::{Mutex, OnceLock};
+
+    // The library wrapper serializes different PDFium instances, not
+    // concurrent calls on one instance. Hold the lock until the document
+    // and its pages have been dropped.
+    static PDFIUM: OnceLock<Option<Mutex<Pdfium>>> = OnceLock::new();
+    PDFIUM
+        .get_or_init(|| bind_pdfium().map(Mutex::new))
+        .as_ref()
+        .context("no libpdfium found (install it or use the bundled release lib)")?
+        .lock()
+        .map_err(|_| anyhow::anyhow!("PDFium access was interrupted"))
+}
+
+#[cfg(feature = "pdf-render")]
+fn bind_pdfium() -> Option<pdfium_render::prelude::Pdfium> {
     use pdfium_render::prelude::*;
 
     // Bind PDFium: prefer a libpdfium shipped with the app, else the
@@ -346,7 +359,7 @@ pub fn rasterize_pdf(path: &Path) -> Result<PageImages> {
     //   - `../Resources/bin` + `../Frameworks` (macOS .app)
     //   - `../lib/CrispSorter/bin` (the installed Linux .deb)
     //   - `../lib` (FHS-style installs)
-    let bindings = std::env::current_exe()
+    std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(|d| d.to_path_buf()))
         .and_then(|dir| {
@@ -367,9 +380,15 @@ pub fn rasterize_pdf(path: &Path) -> Result<PageImages> {
             })
         })
         .or_else(|| Pdfium::bind_to_system_library().ok())
-        .context("no libpdfium found (install it or use the bundled release lib)")?;
-    let pdfium = Pdfium::new(bindings);
+        .map(Pdfium::new)
+}
 
+/// Rasterize a PDF into one PNG per page for OCR.
+#[cfg(feature = "pdf-render")]
+pub fn rasterize_pdf(path: &Path) -> Result<PageImages> {
+    use pdfium_render::prelude::*;
+
+    let pdfium = pdfium()?;
     let doc = pdfium
         .load_pdf_from_file(path, None)
         .with_context(|| format!("loading PDF {}", path.display()))?;

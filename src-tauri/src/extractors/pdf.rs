@@ -1,17 +1,7 @@
-//! PDF extractor — wraps the existing `pdf-extract` dep so the
-//! per-filetype registry has a uniform call shape.
-//!
-//! No new dependency: `pdf-extract` is already pulled in for the
-//! existing `extract_pdf_native` Tauri command. This module just
-//! gives it the `Extractor`-like interface the registry uses.
-//!
-//! v106 — also opportunistically lifts a source URL from the PDF's
-//! Info dict / XMP packet via lopdf (already a dep).  Real-world
-//! coverage is low — only browser-saved PDFs and a subset of
-//! academic papers carry a meaningful URL — but when it's there it's
-//! exactly the kind of provenance we want.
+//! Native PDF text and source URL extraction. Use PDFium when available
+//! and fall back to the Rust extractor.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::path::Path;
 
 use super::ExtractedDocument;
@@ -23,17 +13,24 @@ pub fn extract(path: &Path) -> Result<ExtractedDocument> {
 /// Keep page boundaries until the OCR decision has been made. An adequate
 /// digital first page must not hide later image-only pages in a mixed PDF.
 pub fn extract_with_pages(path: &Path) -> Result<(ExtractedDocument, Vec<String>)> {
-    let pages = pdf_extract::extract_text_by_pages(path)?;
+    let bytes = std::fs::read(path).with_context(|| format!("reading PDF {}", path.display()))?;
+    extract_bytes_with_pages(&bytes)
+}
+
+pub(super) fn extract_bytes_with_pages(bytes: &[u8]) -> Result<(ExtractedDocument, Vec<String>)> {
+    #[cfg(feature = "pdf-render")]
+    let pdfium_pages = extract_pdfium_pages(bytes).ok();
+    #[cfg(not(feature = "pdf-render"))]
+    let pdfium_pages = None;
+
+    // Use the metadata parse for the Rust fallback too.
+    let rust_doc = lopdf::Document::load_mem(bytes);
+    let source_url = rust_doc.as_ref().ok().and_then(source_url_from_document);
+    let pages = extract_pages(pdfium_pages, rust_doc)?;
     let text = pages.join(super::page_source::PAGE_SEPARATOR);
-    let source_url = extract_source_url(path);
     Ok((ExtractedDocument {
         full_text: text,
-        // `pdf_extract` doesn't surface heading structure — leaving
-        // empty for now. A future improvement: lift heading-shaped
-        // lines (single-sentence-per-line, larger-than-body-font, …)
-        // via lopdf's content-stream walk. The existing
-        // `extract_pdf_metadata` already opens lopdf for /Info dict;
-        // reusing that load here would be a free win.
+        // Native PDF text extraction does not surface heading structure.
         headings: Vec::new(),
         // Filled in by the dispatcher.
         ext: String::new(),
@@ -53,6 +50,60 @@ pub fn extract_with_pages(path: &Path) -> Result<(ExtractedDocument, Vec<String>
         audio_pcm: None,
         ..Default::default()
     }, pages))
+}
+
+fn extract_pages(
+    pdfium_pages: Option<Vec<String>>,
+    rust_doc: lopdf::Result<lopdf::Document>,
+) -> Result<Vec<String>> {
+    if let Some(pages) = pdfium_pages {
+        if pages.iter().all(|page| page_needs_ocr(page, 1)) {
+            // Keep PDFium's blank page slots for OCR unless Rust recovers text
+            // with the same page boundaries.
+            if let Ok(recovered) = extract_rust_pages(rust_doc) {
+                if recovered.len() == pages.len()
+                    && recovered.iter().any(|page| !page_needs_ocr(page, 1))
+                {
+                    return Ok(recovered);
+                }
+            }
+        }
+        return Ok(pages);
+    }
+    extract_rust_pages(rust_doc)
+}
+
+#[cfg(feature = "pdf-render")]
+fn extract_pdfium_pages(bytes: &[u8]) -> Result<Vec<String>> {
+    let pdfium = super::page_source::pdfium()?;
+    let doc = pdfium.load_pdf_from_byte_slice(bytes, None)?;
+    let pages = doc.pages();
+    anyhow::ensure!(!pages.is_empty(), "PDFium found no PDF pages");
+    (0..pages.len())
+        .map(|index| Ok(pages.get(index)?.text()?.all().replace("\r\n", "\n")))
+        .collect()
+}
+
+fn extract_rust_pages(rust_doc: lopdf::Result<lopdf::Document>) -> Result<Vec<String>> {
+    let mut doc = rust_doc.context("loading PDF in the Rust extractor")?;
+    if doc.is_encrypted() {
+        doc.decrypt("")?;
+    }
+    // pdf-extract can panic on malformed streams and fonts. Isolate the
+    // failure so the remaining inputs and PDFium page slots can still be used.
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut pages = Vec::new();
+        loop {
+            let mut text = String::new();
+            let mut output = pdf_extract::PlainTextOutput::new(&mut text);
+            if pdf_extract::output_doc_page(&doc, &mut output, pages.len() as u32 + 1).is_err() {
+                break;
+            }
+            pages.push(text);
+        }
+        pages
+    }))
+    .map_err(|_| anyhow::anyhow!("Rust PDF text extraction failed on malformed content"))
 }
 
 pub fn page_needs_ocr(text: &str, min_chars: usize) -> bool {
@@ -87,12 +138,16 @@ pub(crate) fn merge_ocr_pages(
 /// caller treats it as opaque provenance.
 pub(crate) fn extract_source_url(path: &Path) -> Option<String> {
     let doc = lopdf::Document::load(path).ok()?;
+    source_url_from_document(&doc)
+}
+
+fn source_url_from_document(doc: &lopdf::Document) -> Option<String> {
     // 1. Info dict /URL
-    if let Some(url) = read_info_url(&doc) {
+    if let Some(url) = read_info_url(doc) {
         return Some(url);
     }
     // 2/3. XMP packet
-    if let Some(url) = read_xmp_url(&doc) {
+    if let Some(url) = read_xmp_url(doc) {
         return Some(url);
     }
     None
@@ -219,13 +274,21 @@ mod tests {
         doc.objects.insert(pages_id, Object::Dictionary(dictionary! {"Type"=>"Pages", "Count"=>2, "Kids"=>pages}));
         let catalog = doc.add_object(dictionary! {"Type"=>"Catalog", "Pages"=>pages_id});
         doc.trailer.set("Root", catalog);
+        let url = "https://example.org/mixed";
+        let info = doc.add_object(dictionary! {"URL"=>Object::string_literal(url)});
+        doc.trailer.set("Info", info);
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("mixed.pdf");
         doc.save(&path).unwrap();
-        let (_, pages) = extract_with_pages(&path).unwrap();
+        let (document, pages) = extract_with_pages(&path).unwrap();
+        assert_eq!(document.source_url.as_deref(), Some(url));
         assert_eq!(pages.len(), 2);
         assert!(pages[0].contains("Digital opening"));
         assert!(page_needs_ocr(&pages[1], 20));
+        let rust_pages = extract_pages(None, Document::load(&path)).unwrap();
+        assert_eq!(rust_pages, pdf_extract::extract_text_by_pages(&path).unwrap());
+        let recovered = extract_pages(Some(vec![String::new(); 2]), Document::load(&path)).unwrap();
+        assert_eq!(recovered, rust_pages);
         let mut calls = Vec::new();
         let merged = merge_ocr_pages(&pages, 20, |index| { calls.push(index); Ok("Scanned second page".into()) }).unwrap();
         assert_eq!(calls, vec![1]);

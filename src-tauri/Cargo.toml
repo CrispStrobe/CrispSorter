@@ -1,6 +1,6 @@
 [package]
 name = "crispsorter"
-version = "0.15.4"
+version = "0.15.5"
 description = "CrispSorter — local-first AI document organizer"
 authors = ["CrispSorter contributors"]
 license = "AGPL-3.0-or-later"
@@ -253,7 +253,7 @@ tiff = "0.11.3"
 # at runtime via libloading — compiles without the lib; degrades gracefully if
 # absent. Optional (the `pdf-render` feature); the release build bundles a
 # per-platform libpdfium next to the binary.
-pdfium-render = { version = "0.8", optional = true }
+pdfium-render = { version = "0.8", features = ["sync"], optional = true }
 # P13/A4 — perceptual hashing for the near-duplicate image view.
 # Active fork (qarmin/img_hash) of the original abonander/img_hash.
 # Default features only — `fast_image_resize` is a 2-3x speedup but

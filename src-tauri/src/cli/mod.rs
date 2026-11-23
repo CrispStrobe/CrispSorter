@@ -3355,6 +3355,12 @@ enum IndexCmd {
         /// Extract and index full text without loading an embedding model.
         #[arg(long)]
         text_only: bool,
+        /// Maximum documents per verified commit with --text-only.
+        #[arg(long, default_value_t = 128, value_parser = clap::value_parser!(u16).range(1..=256))]
+        text_batch_size: u16,
+        /// Concurrent file preparation jobs for text-only indexing without OCR.
+        #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u8).range(1..=8))]
+        prepare_jobs: u8,
         /// Embedder model. Default: bge-m3.
         #[arg(long, default_value = "bge-m3")]
         model: String,
@@ -3885,7 +3891,6 @@ fn cmd_index(out: OutFormat, data_dir: Option<PathBuf>, cmd: IndexCmd) -> Result
     rt.block_on(cmd_index_async(out, data_dir, cmd))
 }
 
-const TEXT_INGEST_BATCH_SIZE: usize = 32;
 const TEXT_INGEST_BATCH_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Default)]
@@ -3949,6 +3954,89 @@ impl IndexIngestReport {
             self.record(out, &path, result.map(|stats| stats.chunk_count));
         }
     }
+}
+
+fn prepare_index_document(
+    p: &Path,
+    owner: &str,
+    options: crate::extractors::ExtractOptions,
+    share_pdf_bytes: bool,
+) -> anyhow::Result<crate::index::RawDocument> {
+    use anyhow::Context;
+    use sha2::{Digest, Sha256};
+
+    let log = crate::operation_log::enabled("debug").then(|| {
+        crate::operation_log::OperationLog::start("index.prepare_source", serde_json::json!({"surface":"cli"}))
+    });
+    let bytes = if share_pdf_bytes
+        && options.anydoc != crate::extractors::AnydocMode::Prefer
+        && p.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
+    {
+        Some(std::fs::read(p).context("reading PDF source")?)
+    } else {
+        None
+    };
+    let source_hash = match &bytes {
+        Some(bytes) => hex::encode(Sha256::digest(bytes)),
+        None => crate::index::ingest::hash_local_source(p).context("hashing source")?,
+    };
+    if let Some(log) = &log {
+        log.step("source_hashed", serde_json::json!({"reused": bytes.is_some()}));
+    }
+    let extracted = match &bytes {
+        Some(bytes) => crate::extractors::extract_pdf_from_bytes(p, options, bytes),
+        None => crate::extractors::extract_text_from_path_with_opts(p, options),
+    }?;
+    drop(bytes);
+    if let Some(log) = &log {
+        log.step("text_extracted", serde_json::Value::Null);
+    }
+    let container = crate::index::container_extract::from_extraction(&extracted)?;
+    let indexed_text = crate::index::container_extract::indexed_text(&extracted).to_owned();
+    let loc = crate::index::location::FileLocation::Local {
+        user_id: uuid::Uuid::parse_str(owner).unwrap_or_else(|_| uuid::Uuid::nil()),
+        machine_id: uuid::Uuid::nil(),
+        path: p.to_path_buf(),
+    };
+    let meta = p.metadata().ok();
+    let raw = crate::index::RawDocument {
+        full_text: indexed_text, full_text_md: String::new(),
+        headings: extracted.headings, title: None, author: None, year: None,
+        filename: p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+        ext: extracted.ext, language: String::new(),
+        source_hash, location_uri: loc.to_uri(), owner_id: owner.to_owned(), tags: extracted.tags,
+        mtime_unix: meta.as_ref().and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64),
+        images_indexed: false,
+        file_size: meta.map(|m| m.len() as i64),
+        volume_id: crate::volume::volume_id_for_path(p),
+        parent_dir: p.parent().and_then(|d| d.to_str()).map(|s| s.to_owned()),
+        translated_text: extracted.translated_text,
+        translated_to_lang: extracted.translated_to_lang,
+        // P13.6 Step 7 — audio L2 from the symphonia probe.
+        audio_duration_seconds: extracted.audio.as_ref().and_then(|a| a.duration_seconds),
+        audio_codec: extracted.audio.as_ref().and_then(|a| a.codec.clone()),
+        audio_sample_rate_hz: extracted.audio.as_ref().and_then(|a| a.sample_rate_hz.map(|s| s as i32)),
+        audio_channels: extracted.audio.as_ref().and_then(|a| a.channels.map(|c| c as i32)),
+        audio_bitrate_kbps: extracted.audio.as_ref().and_then(|a| a.bitrate_kbps.map(|b| b as i32)),
+        // P13.6 Step 9 — image L2 (EXIF) curated subset.
+        image_camera_make:  extracted.image_exif.as_ref().and_then(|e| e.camera_make.clone()),
+        image_camera_model: extracted.image_exif.as_ref().and_then(|e| e.camera_model.clone()),
+        image_lens_model:   extracted.image_exif.as_ref().and_then(|e| e.lens_model.clone()),
+        image_taken_at_unix: extracted.image_exif.as_ref().and_then(|e| e.taken_at_unix),
+        image_iso:          extracted.image_exif.as_ref().and_then(|e| e.iso.map(|i| i as i32)),
+        multivec_packed: None,
+        multivec_n_tokens: None,
+        url: extracted.source_url,
+        embedding_omni: None,
+        embedding_vit: None,
+        container,
+    };
+    if let Some(log) = &log {
+        log.succeed(serde_json::Value::Null);
+    }
+    Ok(raw)
 }
 
 async fn cmd_index_async(
@@ -4360,6 +4448,8 @@ async fn cmd_index_async(
             paths,
             owner_id,
             text_only,
+            text_batch_size,
+            prepare_jobs,
             model,
             device,
             ocr,
@@ -4372,8 +4462,7 @@ async fn cmd_index_async(
             quant,
         } => {
             use crate::index::embedder::EmbedderConfig;
-            use crate::index::ingest::{IngestConfig, IngestPipeline, RawDocument};
-            use sha2::{Digest, Sha256};
+            use crate::index::ingest::{IngestConfig, IngestPipeline};
 
             let max_bytes = match max_file_size.as_deref() {
                 Some(s) => Some(parse_size_str(s)?),
@@ -4467,91 +4556,64 @@ async fn cmd_index_async(
             let mut report = IndexIngestReport::default();
             let mut batch = Vec::new();
             let mut batch_bytes = 0;
-            for p in &files {
-                let source_hash = match crate::index::ingest::hash_local_source(p) {
-                    Ok(hash) => hash, Err(e) => { eprintln!("skip {}: {e}", p.display()); report.errors += 1; continue; }
-                };
-                let extract_fut = tokio::task::spawn_blocking({
-                    let pp = p.clone();
-                    move || {
-                        // One options path now — `--anydoc` applies with or
-                        // without `--ocr`, so the old bare
-                        // `extract_text_from_path` shortcut would have
-                        // silently dropped the flag.
-                        crate::extractors::extract_text_from_path_with_opts(
-                            &pp,
-                            crate::extractors::ExtractOptions {
-                                try_ocr: ocr,
-                                ocr_pdf_min_chars: if ocr { ocr_min_chars } else { 0 },
-                                anydoc: anydoc_mode,
-                                ..Default::default()
-                            },
-                        )
+            let native_text_only = text_only && !ocr;
+            let jobs = if native_text_only { usize::from(prepare_jobs) } else { 1 };
+            let slots = std::sync::Arc::new(tokio::sync::Semaphore::new(jobs));
+            let options = crate::extractors::ExtractOptions {
+                try_ocr: ocr,
+                ocr_pdf_min_chars: if ocr { ocr_min_chars } else { 0 },
+                anydoc: anydoc_mode,
+                ..Default::default()
+            };
+
+            // Keep the input order for CLI output and the single index writer.
+            // Blocking work already in flight continues while a batch commits.
+            use futures::StreamExt;
+            let prepared = futures::stream::iter(files.into_iter().map(move |path| {
+                let source = path.clone();
+                let owner = owner.clone();
+                let options = options.clone();
+                let slots = slots.clone();
+                async move {
+                    let prepare = async move {
+                        let slot = slots.acquire_owned().await?;
+                        tokio::task::spawn_blocking(move || {
+                            // Hold the permit until the blocking work exits, even
+                            // if its caller has already reported a timeout.
+                            let _slot = slot;
+                            prepare_index_document(&source, &owner, options, native_text_only)
+                        })
+                        .await?
+                    };
+                    let result = if timeout == 0 {
+                        prepare.await
+                    } else {
+                        match tokio::time::timeout(std::time::Duration::from_secs(timeout), prepare).await {
+                            Ok(result) => result,
+                            Err(_) => Err(anyhow::anyhow!("source preparation timed out after {timeout}s")),
+                        }
+                    };
+                    (path, result)
+                }
+            })).buffered(jobs);
+            let (ready_tx, mut ready_rx) = tokio::sync::mpsc::channel(jobs);
+            let preparation = tokio::spawn(async move {
+                futures::pin_mut!(prepared);
+                while let Some(item) = prepared.next().await {
+                    if ready_tx.send(item).await.is_err() {
+                        break;
                     }
-                });
-                // `timeout` abandons the *await*, not the blocking thread —
-                // same as bg_ingest. The point is that the walk keeps going,
-                // not that the work stops.
-                let joined = if timeout == 0 {
-                    extract_fut.await.map_err(|e| e.to_string())
-                } else {
-                    match tokio::time::timeout(
-                        std::time::Duration::from_secs(timeout),
-                        extract_fut,
-                    ).await {
-                        Ok(j) => j.map_err(|e| e.to_string()),
-                        Err(_) => Err(format!("extraction timed out after {timeout}s")),
+                }
+            });
+            while let Some((path, result)) = ready_rx.recv().await {
+                let p = &path;
+                let raw = match result {
+                    Ok(raw) => raw,
+                    Err(error) => {
+                        eprintln!("skip {}: {error:#}", p.display());
+                        report.errors += 1;
+                        continue;
                     }
-                };
-                let extracted = match joined {
-                    Ok(Ok(e)) => e,
-                    Ok(Err(e)) => { eprintln!("skip {}: {e}", p.display()); report.errors += 1; continue; }
-                    Err(e)     => { eprintln!("skip {}: {e}", p.display()); report.errors += 1; continue; }
-                };
-                let container = match crate::index::container_extract::from_extraction(&extracted) {
-                    Ok(container) => container,
-                    Err(error) => { eprintln!("skip {}: {error:#}", p.display()); report.errors += 1; continue; }
-                };
-                let indexed_text = crate::index::container_extract::indexed_text(&extracted).to_owned();
-                let loc = crate::index::location::FileLocation::Local {
-                    user_id: uuid::Uuid::parse_str(&owner).unwrap_or_else(|_| uuid::Uuid::nil()),
-                    machine_id: uuid::Uuid::nil(),
-                    path: p.clone(),
-                };
-                let meta = p.metadata().ok();
-                let raw = RawDocument {
-                    full_text: indexed_text, full_text_md: String::new(),
-                    headings: extracted.headings, title: None, author: None, year: None,
-                    filename: p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
-                    ext: extracted.ext, language: String::new(),
-                    source_hash, location_uri: loc.to_uri(), owner_id: owner.clone(), tags: extracted.tags,
-                    mtime_unix: meta.as_ref().and_then(|m| m.modified().ok())
-                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(|d| d.as_secs() as i64),
-                    images_indexed: false,
-                    file_size: meta.map(|m| m.len() as i64),
-                    volume_id: crate::volume::volume_id_for_path(p),
-                    parent_dir: p.parent().and_then(|d| d.to_str()).map(|s| s.to_owned()),
-                    translated_text: extracted.translated_text,
-                    translated_to_lang: extracted.translated_to_lang,
-                    // P13.6 Step 7 — audio L2 from the symphonia probe.
-                    audio_duration_seconds: extracted.audio.as_ref().and_then(|a| a.duration_seconds),
-                    audio_codec: extracted.audio.as_ref().and_then(|a| a.codec.clone()),
-                    audio_sample_rate_hz: extracted.audio.as_ref().and_then(|a| a.sample_rate_hz.map(|s| s as i32)),
-                    audio_channels: extracted.audio.as_ref().and_then(|a| a.channels.map(|c| c as i32)),
-                    audio_bitrate_kbps: extracted.audio.as_ref().and_then(|a| a.bitrate_kbps.map(|b| b as i32)),
-                    // P13.6 Step 9 — image L2 (EXIF) curated subset.
-                    image_camera_make:  extracted.image_exif.as_ref().and_then(|e| e.camera_make.clone()),
-                    image_camera_model: extracted.image_exif.as_ref().and_then(|e| e.camera_model.clone()),
-                    image_lens_model:   extracted.image_exif.as_ref().and_then(|e| e.lens_model.clone()),
-                    image_taken_at_unix: extracted.image_exif.as_ref().and_then(|e| e.taken_at_unix),
-                    image_iso:          extracted.image_exif.as_ref().and_then(|e| e.iso.map(|i| i as i32)),
-                    multivec_packed: None,
-                    multivec_n_tokens: None,
-                    url: extracted.source_url,
-                    embedding_omni: None,
-                    embedding_vit: None,
-                    container,
                 };
                 let text_bytes = raw.full_text.len();
                 if text_only
@@ -4559,7 +4621,7 @@ async fn cmd_index_async(
                     && !raw.full_text.trim().is_empty()
                     && text_bytes <= TEXT_INGEST_BATCH_BYTES
                 {
-                    if batch.len() == TEXT_INGEST_BATCH_SIZE
+                    if batch.len() == usize::from(text_batch_size)
                         || batch_bytes > TEXT_INGEST_BATCH_BYTES - text_bytes
                     {
                         report.flush_text_batch(out, &pipeline, &mut batch).await;
@@ -4575,6 +4637,7 @@ async fn cmd_index_async(
                 let result = pipeline.ingest_verified_document(raw, p.clone()).await;
                 report.record(out, p, result.map(|stats| stats.chunk_count));
             }
+            preparation.await.map_err(|error| format!("source preparation task: {error}"))?;
             report.flush_text_batch(out, &pipeline, &mut batch).await;
             let IndexIngestReport { indexed: ok, errors: errs, empty_docs } = report;
             eprintln!(
