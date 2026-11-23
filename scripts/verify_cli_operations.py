@@ -134,7 +134,26 @@ def verify(executable: Path) -> None:
         assert [e["phase"] for e in receipts] == ["started", "failed"], receipts
         assert "private-" not in json.dumps(events), "PDF recipe receipts disclosed input/output content"
 
-    print("CLI operation contract passed: JSON, stderr receipts, verbosity, OCR policy, PDF export/edit, atomic failure and redaction")
+        docs = root / "bulk"
+        docs.mkdir()
+        sources = [docs / f"file-{i:02}.txt" for i in range(34)]
+        for i, file in enumerate(sources):
+            file.write_text(f"Full text batching fixture {i}", encoding="utf-8")
+        blank = docs / "blank.txt"
+        blank.write_text("", encoding="utf-8")
+        data = root / "text-index"
+        indexed = run("index", "ingest", "--text-only", "--data-dir", str(data),
+                      *(str(path) for path in [*sources, blank]))
+        assert indexed.returncode == 0, indexed.stderr
+        rows = [json.loads(line) for line in indexed.stdout.splitlines()]
+        assert rows == [{"path": str(path), "chunks": 1, "empty": False} for path in sources], rows
+        assert "1 errors" in indexed.stderr and blank.name in indexed.stderr, indexed.stderr
+        stats = run("index", "stats", "--data-dir", str(data))
+        assert stats.returncode == 0, stats.stderr
+        counts = json.loads(stats.stdout)
+        assert (counts["docs"], counts["chunks"], counts["fts_docs"]) == (34, 34, 34), counts
+
+    print("CLI operation contract passed: JSON, stderr receipts, OCR policy, PDF operations and full-text ingest")
 
 
 if __name__ == "__main__":

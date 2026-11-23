@@ -38,7 +38,7 @@
 mod smb_options;
 
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 mod ocr_options;
@@ -3885,6 +3885,72 @@ fn cmd_index(out: OutFormat, data_dir: Option<PathBuf>, cmd: IndexCmd) -> Result
     rt.block_on(cmd_index_async(out, data_dir, cmd))
 }
 
+const TEXT_INGEST_BATCH_SIZE: usize = 32;
+const TEXT_INGEST_BATCH_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Default)]
+struct IndexIngestReport {
+    indexed: usize,
+    errors: usize,
+    empty_docs: Vec<PathBuf>,
+}
+
+impl IndexIngestReport {
+    fn record(&mut self, out: OutFormat, path: &Path, result: anyhow::Result<usize>) {
+        let chunks = match result {
+            Ok(chunks) => chunks,
+            Err(error) => {
+                eprintln!("error {}: {error}", path.display());
+                self.errors += 1;
+                return;
+            }
+        };
+        let empty = chunks == 0;
+        if empty {
+            self.empty_docs.push(path.to_path_buf());
+        }
+        match out {
+            OutFormat::Json => println!("{}", serde_json::json!({
+                "path": path.display().to_string(),
+                "chunks": chunks,
+                "empty": empty,
+            })),
+            OutFormat::Text if empty => println!("∅ {} (no text extracted)", path.display()),
+            OutFormat::Text => println!("✓ {} ({chunks} chunks)", path.display()),
+        }
+        self.indexed += 1;
+    }
+
+    async fn flush_text_batch(
+        &mut self,
+        out: OutFormat,
+        pipeline: &crate::index::IngestPipeline,
+        batch: &mut Vec<(PathBuf, crate::index::RawDocument)>,
+    ) {
+        if batch.is_empty() {
+            return;
+        }
+        if batch.len() > 1 {
+            let raws = batch.iter().map(|(_, raw)| raw.clone()).collect();
+            let sources = batch.iter().map(|(path, raw)| (path.clone(), raw.source_hash.clone())).collect();
+            match pipeline.ingest_documents_batch_verified(raws, sources).await {
+                Ok(_) => {
+                    // Each plain text-only document contributes one searchable row.
+                    for (path, _) in batch.drain(..) {
+                        self.record(out, &path, Ok(1));
+                    }
+                    return;
+                }
+                Err(error) => eprintln!("[ingest] batch write failed; retrying each file: {error:#}"),
+            }
+        }
+        for (path, raw) in batch.drain(..) {
+            let result = pipeline.ingest_verified_document(raw, path.clone()).await;
+            self.record(out, &path, result.map(|stats| stats.chunk_count));
+        }
+    }
+}
+
 async fn cmd_index_async(
     out: OutFormat,
     data_dir: PathBuf,
@@ -4398,12 +4464,12 @@ async fn cmd_index_async(
             )
             .with_ner(ner);
 
-            let mut ok = 0usize;
-            let mut errs = 0usize;
-            let mut empty_docs: Vec<std::path::PathBuf> = Vec::new();
+            let mut report = IndexIngestReport::default();
+            let mut batch = Vec::new();
+            let mut batch_bytes = 0;
             for p in &files {
                 let source_hash = match crate::index::ingest::hash_local_source(p) {
-                    Ok(hash) => hash, Err(e) => { eprintln!("skip {}: {e}", p.display()); errs += 1; continue; }
+                    Ok(hash) => hash, Err(e) => { eprintln!("skip {}: {e}", p.display()); report.errors += 1; continue; }
                 };
                 let extract_fut = tokio::task::spawn_blocking({
                     let pp = p.clone();
@@ -4439,12 +4505,12 @@ async fn cmd_index_async(
                 };
                 let extracted = match joined {
                     Ok(Ok(e)) => e,
-                    Ok(Err(e)) => { eprintln!("skip {}: {e}", p.display()); errs += 1; continue; }
-                    Err(e)     => { eprintln!("skip {}: {e}", p.display()); errs += 1; continue; }
+                    Ok(Err(e)) => { eprintln!("skip {}: {e}", p.display()); report.errors += 1; continue; }
+                    Err(e)     => { eprintln!("skip {}: {e}", p.display()); report.errors += 1; continue; }
                 };
                 let container = match crate::index::container_extract::from_extraction(&extracted) {
                     Ok(container) => container,
-                    Err(error) => { eprintln!("skip {}: {error:#}", p.display()); errs += 1; continue; }
+                    Err(error) => { eprintln!("skip {}: {error:#}", p.display()); report.errors += 1; continue; }
                 };
                 let indexed_text = crate::index::container_extract::indexed_text(&extracted).to_owned();
                 let loc = crate::index::location::FileLocation::Local {
@@ -4487,38 +4553,30 @@ async fn cmd_index_async(
                     embedding_vit: None,
                     container,
                 };
-                match pipeline.ingest_verified_document(raw, p.clone()).await {
-                    Ok(stats) => {
-                        // Zero chunks means nothing searchable was written:
-                        // the row lands in the FTS index but never in
-                        // LanceDB, so the document is absent from
-                        // `index list` and matchable by no query. A scanned
-                        // PDF does this every time. Reporting it as a plain
-                        // "✓ … (0 chunks)" is how a folder of scans indexes
-                        // as an empty corpus without anyone noticing.
-                        let empty = stats.chunk_count == 0;
-                        if empty {
-                            empty_docs.push(p.clone());
-                        }
-                        match out {
-                            OutFormat::Json => println!("{}", serde_json::json!({
-                                "path": p.display().to_string(),
-                                "chunks": stats.chunk_count,
-                                "empty": empty,
-                            })),
-                            OutFormat::Text => {
-                                if empty {
-                                    println!("∅ {} (no text extracted)", p.display());
-                                } else {
-                                    println!("✓ {} ({} chunks)", p.display(), stats.chunk_count);
-                                }
-                            }
-                        }
-                        ok += 1;
+                let text_bytes = raw.full_text.len();
+                if text_only
+                    && raw.container.is_none()
+                    && !raw.full_text.trim().is_empty()
+                    && text_bytes <= TEXT_INGEST_BATCH_BYTES
+                {
+                    if batch.len() == TEXT_INGEST_BATCH_SIZE
+                        || batch_bytes > TEXT_INGEST_BATCH_BYTES - text_bytes
+                    {
+                        report.flush_text_batch(out, &pipeline, &mut batch).await;
+                        batch_bytes = 0;
                     }
-                    Err(e) => { eprintln!("error {}: {e}", p.display()); errs += 1; }
+                    batch_bytes += text_bytes;
+                    batch.push((p.clone(), raw));
+                    continue;
                 }
+
+                report.flush_text_batch(out, &pipeline, &mut batch).await;
+                batch_bytes = 0;
+                let result = pipeline.ingest_verified_document(raw, p.clone()).await;
+                report.record(out, p, result.map(|stats| stats.chunk_count));
             }
+            report.flush_text_batch(out, &pipeline, &mut batch).await;
+            let IndexIngestReport { indexed: ok, errors: errs, empty_docs } = report;
             eprintln!(
                 "{ok} ingested ({} searchable, {} with no text), {errs} errors",
                 ok - empty_docs.len(),
