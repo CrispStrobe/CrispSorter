@@ -142,6 +142,8 @@ def verify(executable: Path) -> None:
             file.write_text(f"Full text batching fixture {i}", encoding="utf-8")
         blank = docs / "blank.txt"
         blank.write_text("", encoding="utf-8")
+        whitespace = docs / "whitespace.txt"
+        whitespace.write_text(" \n\t", encoding="utf-8")
         data = root / "text-index"
         pdfs = [source, *(docs / f"copy-{i}.pdf" for i in range(3))]
         for copy in pdfs[1:]:
@@ -149,7 +151,8 @@ def verify(executable: Path) -> None:
         inputs = [*sources, *pdfs]
         ingest_args = [
             "index", "ingest", "--text-only", "--text-batch-size", "32",
-            "--data-dir", str(data), *(str(path) for path in [*inputs, blank]),
+            "--data-dir", str(data),
+            *(str(path) for path in [*inputs[:4], blank, *inputs[4:22], whitespace, *inputs[22:]]),
         ]
         indexed = run("--log-verbosity", "debug", *ingest_args)
         assert indexed.returncode == 0, indexed.stderr
@@ -160,7 +163,10 @@ def verify(executable: Path) -> None:
                         and event.get("stage") == "source_hashed"
                         and event["context"].get("reused")]
         assert len(shared_reads) == len(pdfs), shared_reads
-        assert "1 errors" in indexed.stderr and blank.name in indexed.stderr, indexed.stderr
+        commits = [event for event in operations(indexed.stderr)
+                   if event["operation"] == "index.write_batch" and event["phase"] == "completed"]
+        assert len(commits) == 2, commits
+        assert "2 errors" in indexed.stderr and blank.name in indexed.stderr and whitespace.name in indexed.stderr
 
         list_args = ["--format", "json", "index", "list", "--data-dir", str(data)]
         before = run(*list_args)
