@@ -24,9 +24,9 @@ on:
         options: [standard, ocr]
         default: standard
       platform:
-        description: 'Build all platforms, retry Linux, Windows or macOS, upload/resume an IPA, or prepare an OCR draft. Upload-only and OCR draft selectors require publish=false and mac_appstore=false.'
+        description: 'Build all platforms, retry Linux, Windows, macOS or Android, upload/resume an IPA, or prepare an OCR draft. Upload-only and OCR draft selectors require publish=false and mac_appstore=false.'
         type: choice
-        options: [all, linux, windows, macos, testflight, testflight_resume, testflight_current, testflight_current_resume, certificate_audit, android_ocr_draft, ios_ocr_draft]
+        options: [all, linux, windows, macos, android, testflight, testflight_resume, testflight_current, testflight_current_resume, certificate_audit, android_ocr_draft, ios_ocr_draft]
         default: all
 
 # ── Sibling-repo version pins (single source of truth) ──────────────
@@ -200,7 +200,7 @@ jobs:
           python scripts/testflight_distribute.py --platform IOS --mode internal --version "$BUILD_NUMBER" --uploaded-after "$UPLOADED_AFTER" --marketing-version "$IPA_VERSION" --wait-minutes 35 --notes 'Test library search, cited chat, document review, and mobile navigation.'
 
   release-draft-preflight:
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'android_ocr_draft' || inputs.platform == 'ios_ocr_draft' || (!inputs.mac_appstore && (inputs.platform == 'all' || inputs.platform == 'linux' || inputs.platform == 'windows' || inputs.platform == 'macos')) }}
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'android_ocr_draft' || inputs.platform == 'ios_ocr_draft' || (!inputs.mac_appstore && (inputs.platform == 'all' || inputs.platform == 'linux' || inputs.platform == 'windows' || inputs.platform == 'macos' || inputs.platform == 'android')) }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -209,7 +209,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
       - name: Check requested mobile release profile
-        if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'android_ocr_draft' || inputs.platform == 'ios_ocr_draft'
+        if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'android' || inputs.platform == 'android_ocr_draft' || inputs.platform == 'ios_ocr_draft'
         run: python3 scripts/check_mobile_release_profile.py
       - name: Require a draft release before uploading artifacts
         if: env.CRISPSORTER_MOBILE_RELEASE_PROFILE != 'ocr-draft'
@@ -1132,7 +1132,7 @@ jobs:
 
   release-android:
     needs: release-draft-preflight
-    if: ${{ github.event_name != 'workflow_dispatch' || (!inputs.mac_appstore && (inputs.platform == 'all' || (inputs.platform == 'android_ocr_draft' && !inputs.publish))) }}
+    if: ${{ github.event_name != 'workflow_dispatch' || (!inputs.mac_appstore && (inputs.platform == 'all' || inputs.platform == 'android' || (inputs.platform == 'android_ocr_draft' && !inputs.publish))) }}
     defaults:
       run:
         working-directory: repos/CrispSorter
@@ -1933,7 +1933,7 @@ jobs:
     # skipped it entirely, so a tagged release produced no App Store build
     # and therefore nothing for the macOS TestFlight step to distribute —
     # silently, since a skipped job is not a failed one.
-    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mac_appstore && inputs.platform != 'linux' && inputs.platform != 'testflight_current' && inputs.platform != 'testflight_current_resume' && inputs.platform != 'android_ocr_draft' && inputs.platform != 'ios_ocr_draft')
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.mac_appstore && inputs.platform != 'linux' && inputs.platform != 'android' && inputs.platform != 'testflight_current' && inputs.platform != 'testflight_current_resume' && inputs.platform != 'android_ocr_draft' && inputs.platform != 'ios_ocr_draft')
             || (github.event_name != 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v')) }}
     permissions:
       contents: write

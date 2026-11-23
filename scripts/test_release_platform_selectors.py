@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Linux-only retries keep normal checks and never start other platform jobs."""
+"""Platform retries keep normal checks and run only the selected build."""
 from pathlib import Path
 import re
 import unittest
 
 ROOT=Path(__file__).resolve().parents[1]
 
-class LinuxRelease(unittest.TestCase):
+class ReleasePlatformSelectors(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.workflow=(ROOT/'.github/workflows/release.yml').read_text()
@@ -50,6 +50,17 @@ class LinuxRelease(unittest.TestCase):
                       'Qualify licensed OCR presets before publication (Linux)']:
             self.assertIn(check,steps)
         self.assertIn("runner.os == 'Linux' && (github.event_name != 'workflow_dispatch' || inputs.publish)",steps)
+
+    def test_android_selector_runs_only_standard_preflight_and_android(self):
+        for publish in [False, True]:
+            selected = {name for name in self.jobs if self.admitted(name, platform='android', publish=publish)}
+            self.assertEqual(selected, {'release-draft-preflight', 'release-android'})
+            self.assertFalse(any(self.admitted(name, platform='android', publish=publish, mac_appstore=True)
+                                 for name in self.jobs))
+        self.assertIn("inputs.platform == 'android'", self.jobs['release-draft-preflight'])
+        self.assertTrue(self.admitted('release-android', platform='all'))
+        self.assertTrue(self.admitted('release-android', platform='android_ocr_draft'))
+        self.assertFalse(self.admitted('release-android', platform='android_ocr_draft', publish=True))
 
     def test_regular_all_and_other_desktop_routes_still_work(self):
         self.assertTrue(self.admitted('release-required',platform='all'))
