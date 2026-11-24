@@ -1870,6 +1870,7 @@ jobs:
           # ITSAppUsesNonExemptEncryption written into Info.plist above.
           ASC_USES_NON_EXEMPT_ENCRYPTION: "false"
         run: |
+          python3 -m pip install 'cryptography==44.0.3'
           python3 scripts/testflight_distribute.py \
             --platform IOS --mode internal \
             --version "$IOS_BUILD_NUMBER" --uploaded-after "$IOS_UPLOADED_AFTER" \
@@ -2311,6 +2312,7 @@ jobs:
           # with "Beta contract is missing" *after* a perfectly good upload.
           # Internal testing needs no review at all. Switch back to
           # `--mode external --public-link` once that agreement is signed.
+          python3 -m pip install 'cryptography==44.0.3'
           python3 scripts/testflight_distribute.py \
             --platform MAC_OS --mode internal \
             --version "$BV" --uploaded-after "$MACOS_UPLOADED_AFTER" \
