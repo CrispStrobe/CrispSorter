@@ -94,14 +94,18 @@ fn load_engine(det_path: &Path, rec_path: &Path) -> Result<ocrs::OcrEngine> {
 /// Run ocrs on a single image file. Missing models are reported with the
 /// `MODEL_DOWNLOAD_REQUIRED:` error the app turns into its download dialog;
 /// nothing is downloaded here.
-pub fn ocr_via_ocrs(path: &Path) -> Result<ExtractedDocument> {
+pub fn ocr_via_ocrs(path: &Path, page_log: Option<&crate::operation_log::OperationLog>) -> Result<ExtractedDocument> {
     use crate::operation_log::OperationLog;
     use serde_json::json;
     let log = OperationLog::start("ocr.ocrs", json!({"engine": "ocrs", "kind": "image"}));
     let result = recognize_ocrs(path, &log);
     match &result {
-        Ok((doc, lines, cache_hit)) => log.succeed(json!({"pages": 1, "regions": lines,
-            "characters": doc.full_text.chars().count(), "cache_hit": cache_hit})),
+        Ok((doc, lines, cache_hit)) => {
+            // OCRS exposes decoded characters and geometry. Its public result carries no scores.
+            super::ocr_quality::record(page_log.unwrap_or(&log), Some("ocrs"), "line", *lines, std::iter::empty());
+            log.succeed(json!({"pages": 1, "regions": lines,
+                "characters": doc.full_text.chars().count(), "cache_hit": cache_hit}));
+        }
         Err(error) => {
             let text = format!("{error:#}");
             log.fail(if text.contains(crate::ocr_models::MODEL_DOWNLOAD_REQUIRED) || text.contains("not installed") { "model_missing" }
@@ -225,7 +229,7 @@ mod tests {
     fn missing_models_ask_for_the_pinned_downloads() {
         if is_ocrs_available() { return; }
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/quality/ocr-task.png");
-        let (result, events) = crate::operation_log::capture(|| ocr_via_ocrs(&fixture));
+        let (result, events) = crate::operation_log::capture(|| ocr_via_ocrs(&fixture, None));
         let error = format!("{:#}", result.unwrap_err());
         assert!(error.contains(crate::ocr_models::MODEL_DOWNLOAD_REQUIRED) || error.contains("not installed"), "{error}");
         let last = events.last().unwrap();
@@ -239,13 +243,20 @@ mod tests {
     #[ignore = "live: downloads the ocrs models"]
     fn live_ocrs_installs_and_recognises_the_fixture_sentence() {
         use crate::ocr_builtin_models as builtin;
+        crate::operation_log::set_verbosity("debug").unwrap();
         crate::ocr_models::install_models(&[builtin::OCRS_DET.into(), builtin::OCRS_REC.into()], None, &|_| {})
             .expect("install pinned ocrs models");
         assert!(is_ocrs_available());
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/quality/ocr-task.png");
-        let text = ocr_via_ocrs(&fixture).expect("ocrs runs").full_text.to_lowercase();
+        let (doc, events) = crate::operation_log::capture(|| ocr_via_ocrs(&fixture, None));
+        let text = doc.expect("ocrs runs").full_text.to_lowercase();
         for word in ["cobalt", "warranty", "november", "2031"] {
             assert!(text.contains(word), "missing {word:?} in {text:?}");
         }
+        let quality = events.iter().find(|e| e.stage.as_deref() == Some("recognition_quality")).expect("recognition receipt");
+        assert_eq!(quality.context["score_unit"], "line");
+        assert!(quality.context["count"].as_u64().unwrap() > 0);
+        assert_eq!(quality.context["scored_units"], 0);
+        assert!(quality.context["confidence_mean"].is_null());
     }
 }
