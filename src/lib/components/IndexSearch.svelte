@@ -1138,8 +1138,8 @@
     }
 
     onMount(async () => {
-        const activeId = await getSetting<string | null>('activeCatalogId', null).catch(() => null);
-        const savedIndexes = await getSetting<{ id: string; name: string }[]>('catalogs', []).catch(() => []);
+        const activeId = await getSetting('activeCatalogId', null).catch(() => null);
+        const savedIndexes: { id: string; name: string }[] = await getSetting('catalogs', []).catch(() => []);
         activeIndexName = savedIndexes.find(index => index.id === activeId)?.name ?? '';
         try {
             const config = await invoke<{ use_vector?: boolean; backend_type?: 'local' | 'remote' | 'hybrid' }>('index_get_config');
