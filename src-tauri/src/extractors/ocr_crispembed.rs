@@ -828,14 +828,12 @@ fn run_prepared_pipeline(path: &Path, cfg: &super::OcrPipelineConfig, capture_re
 pub fn ocr_via_pipeline(
     path: &Path,
     cfg: &super::OcrPipelineConfig,
+    log: Option<&OperationLog>,
 ) -> Result<ExtractedDocument> {
-    let (res, detected_lang, _, _) = run_prepared_pipeline(path, cfg, false, true)?;
-    if res.mean_confidence > 0.0 {
-        crate::app_log("debug", format!(
-            "[ocr] pipeline: {} regions, mean confidence {:.2}",
-            res.regions.len(),
-            res.mean_confidence,
-        ));
+    let capture_quality = log.is_some() && crate::operation_log::enabled("debug");
+    let (res, detected_lang, snapshot, _) = run_prepared_pipeline(path, cfg, capture_quality, true)?;
+    if let Some(log) = log {
+        super::ocr_quality::record_crispembed(log, snapshot.as_ref(), cfg.engine.as_deref(), res.regions.len());
     }
     // Capture the LID result (ISO 639-1) detected during the pipeline run,
     // if a lid_model was configured. Populates the `language` field so
@@ -1749,6 +1747,7 @@ fn build_pipeline(cfg: &super::OcrPipelineConfig) -> Result<crispembed::CrispOcr
 pub fn ocr_via_pipeline(
     path: &Path,
     _cfg: &super::OcrPipelineConfig,
+    _log: Option<&OperationLog>,
 ) -> Result<ExtractedDocument> {
     Err(anyhow::anyhow!(
         "CrispEmbed OCR pipeline requires --features crispembed; skipped {}",
@@ -2110,7 +2109,7 @@ mod tests {
             enabled: true,
             ..Default::default()
         };
-        let doc = ocr_via_pipeline(&img_path, &cfg)
+        let doc = ocr_via_pipeline(&img_path, &cfg, None)
             .expect("orchestrator pipeline should run end-to-end without crashing");
         println!("pipeline full_text len: {}", doc.full_text.len());
     }
@@ -2254,7 +2253,7 @@ mod tests {
             min_chars: 1,
             min_confidence: 0.0,
         });
-        let doc = ocr_via_pipeline(&img_path, &cfg)
+        let doc = ocr_via_pipeline(&img_path, &cfg, None)
             .expect("tesseract-stage pipeline should run without crashing");
         println!("tesseract pipeline full_text len: {}", doc.full_text.len());
     }

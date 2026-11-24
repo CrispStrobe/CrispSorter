@@ -18,6 +18,7 @@ use std::sync::{
 use std::time::Instant;
 
 use anyhow::{Context, Result};
+use futures::{stream, StreamExt};
 use tokio::sync::Mutex;
 
 use super::embedder::Embedder;
@@ -39,6 +40,8 @@ pub struct IngestConfig {
     pub batch_size: usize,
     /// Explicitly store searchable text without embeddings.
     pub text_only: bool,
+    /// Maximum concurrent source reads while holding the writer lease.
+    pub source_verify_jobs: u8,
 }
 
 impl Default for IngestConfig {
@@ -48,6 +51,7 @@ impl Default for IngestConfig {
             chunk_stride: 200,
             batch_size: 32,
             text_only: false,
+            source_verify_jobs: 2,
         }
     }
 }
@@ -650,17 +654,25 @@ pub(crate) fn hash_local_source(path: &std::path::Path) -> std::io::Result<Strin
     Ok(hex::encode(digest.finalize()))
 }
 
-async fn verify_source_receipts(receipts: Vec<SourceReceipt>) -> Result<()> {
-    if receipts.is_empty() { return Ok(()); }
-    tokio::task::spawn_blocking(move || -> Result<()> {
-        for receipt in receipts {
+async fn verify_source_receipts(receipts: Vec<SourceReceipt>, jobs: usize) -> Result<()> {
+    let mut checks = stream::iter(receipts).map(|receipt| {
+        tokio::task::spawn_blocking(move || -> Result<()> {
             let actual = hash_local_source(&receipt.path)
                 .with_context(|| format!("Verifying source before commit: {}", receipt.path.display()))?;
             anyhow::ensure!(actual == receipt.expected_sha256,
                 "Source changed before index commit: {}. The previous index is retained; retry the file.", receipt.path.display());
+            Ok(())
+        })
+    }).buffered(jobs);
+    // Join every scheduled read while the lease is held, even if a hash fails.
+    let mut result = Ok(());
+    while let Some(check) = checks.next().await {
+        let check = check.context("Source verification task failed").and_then(|check| check);
+        if result.is_ok() {
+            result = check;
         }
-        Ok(())
-    }).await.context("Source verification task failed")?
+    }
+    result
 }
 
 // ── Pipeline ─────────────────────────────────────────────────────────────────
@@ -702,6 +714,7 @@ impl IngestPipeline {
         let vector_w = vector.clone();
         let pending_w = pending.clone();
         let write_lock = write_lock_for(vector.ingest_journal_path());
+        let source_verify_jobs = usize::from(config.source_verify_jobs.clamp(1, 4));
         tokio::spawn(async move {
             // Recover a crash between the vector and full-text commits before
             // accepting another generation. Failure keeps the durable intent;
@@ -733,8 +746,8 @@ impl IngestPipeline {
                     // A slow embedding job can outlive a newer extraction of
                     // the same source. Verify after taking the writer lease,
                     // before creating an intent or replacing any good rows.
-                    verify_source_receipts(job.verified_sources).await?;
-                    if let Some(log) = &log { log.step("verified_source_hashes", serde_json::Value::Null); }
+                    verify_source_receipts(job.verified_sources, source_verify_jobs).await?;
+                    if let Some(log) = &log { log.step("verified_source_hashes", serde_json::json!({"readers": source_verify_jobs})); }
                     let mut doc_ids = Vec::new();
                     if job.tantivy_inputs.is_empty() {
                         vector_w.upsert_metadata_rows(&job.all_chunks).await?;
@@ -2638,6 +2651,36 @@ mod tests {
         std::fs::remove_file(path.clone()).unwrap();
         assert!(pipeline.ingest_verified_document(latest.clone(), path).await.is_err());
         assert_eq!(local.fetch_full_text(&doc_id_for(&latest)).await.unwrap(), latest.full_text);
+    }
+
+    #[tokio::test]
+    async fn changed_file_aborts_a_parallel_verified_batch() {
+        let (directory, fts, local, pipeline) = test_indexes().await;
+        let mut originals = Vec::new();
+        for name in ["one", "two", "three"] {
+            let path = directory.path().join(format!("{name}.txt"));
+            std::fs::write(&path, name).unwrap();
+            let mut raw = sample_raw();
+            raw.location_uri = path.to_string_lossy().into_owned();
+            raw.source_hash = hash_local_source(&path).unwrap();
+            raw.full_text = format!("Original passage {name}");
+            originals.push((raw, path));
+        }
+        let receipts = originals.iter().map(|(raw, path)| (path.clone(), raw.source_hash.clone())).collect::<Vec<_>>();
+        pipeline.ingest_documents_batch_verified(originals.iter().map(|(raw, _)| raw.clone()).collect(), receipts.clone()).await.unwrap();
+
+        std::fs::write(&originals[1].1, b"new").unwrap();
+        let replacements = originals.iter().map(|(raw, _)| {
+            let mut raw = raw.clone();
+            raw.full_text = "Unverified replacement".into();
+            raw
+        }).collect();
+        assert!(pipeline.ingest_documents_batch_verified(replacements, receipts).await.is_err());
+        for (raw, _) in originals {
+            assert_eq!(local.fetch_full_text(&doc_id_for(&raw)).await.unwrap(), raw.full_text);
+        }
+        assert!(fts.search("unverified", &Default::default(), 10).unwrap().is_empty());
+        assert!(pending_fts_writes(local.ingest_journal_path()).unwrap().is_empty());
     }
 
     #[tokio::test]

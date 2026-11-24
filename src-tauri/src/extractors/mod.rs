@@ -104,6 +104,7 @@ pub mod ocr_paddle;
 pub mod ocr_render;
 pub mod ocr_presets;
 pub mod ocr_policy;
+mod ocr_quality;
 pub mod page_source;
 pub mod pdf;
 pub mod pptx;
@@ -935,7 +936,11 @@ fn cached_layout_detector(
 /// detected, ordered, and OCR'd individually (column-aware reading order);
 /// otherwise the whole page goes through the smart pipeline / tier ladder.
 pub fn ocr_image_page(path: &Path, opts: &ExtractOptions) -> Result<ExtractedDocument> {
-    let log = OperationLog::start("ocr.image", json!({"engine":opts.ocr_pipeline.engine,"kind":"image"}));
+    ocr_image_page_numbered(path, opts, None)
+}
+
+fn ocr_image_page_numbered(path: &Path, opts: &ExtractOptions, page: Option<usize>) -> Result<ExtractedDocument> {
+    let log = OperationLog::start("ocr.image", json!({"engine":opts.ocr_pipeline.engine,"kind":"image","page":page}));
     let result = ocr_image_page_inner(path, opts, &log);
     match &result {
         Ok(document) => log.succeed(json!({"characters":document.full_text.chars().count()})),
@@ -973,7 +978,7 @@ fn ocr_image_page_inner(path: &Path, opts: &ExtractOptions, log: &OperationLog) 
         return ocr_with_layout(&prepared.path, &resolved).context("Run configured OCR layout pass");
     }
     log.step("recognizing", Value::Null);
-    ocr_one_image(&prepared.path, &resolved)
+    ocr_one_image(&prepared.path, &resolved, Some(log))
 }
 
 /// Own every transformed image until recognition/rendering finishes. A render
@@ -1111,7 +1116,7 @@ fn ocr_with_layout(path: &Path, opts: &ExtractOptions) -> Result<ExtractedDocume
         image::DynamicImage::ImageRgb8(crop)
             .save(tmp.path())
             .context("saving layout region crop")?;
-        match ocr_one_image(tmp.path(), opts) {
+        match ocr_one_image(tmp.path(), opts, None) {
             Ok(d) => {
                 let t = d.full_text.trim();
                 if !t.is_empty() {
@@ -1191,18 +1196,23 @@ fn layout_table_text(html: &str) -> Option<String> {
 
 /// Recognize a prepared page with the resolved engine. A failed selection is
 /// reported to the caller; it never runs another engine behind the user's back.
-fn ocr_one_image(path: &Path, opts: &ExtractOptions) -> Result<ExtractedDocument> {
+fn ocr_one_image(path: &Path, opts: &ExtractOptions, log: Option<&OperationLog>) -> Result<ExtractedDocument> {
     let config = &opts.ocr_pipeline;
     match config.engine.as_deref().unwrap_or("auto") {
         "system_tesseract" => {
             let result = crate::ocr_word_evidence::recognize(path, config.language.as_deref())
                 .map_err(anyhow::Error::msg)?;
+            if let Some(log) = log {
+                let words = result.regions.iter().flat_map(|region| &region.word_evidence.words);
+                ocr_quality::record(log, Some("system_tesseract"), "word", words.clone().count(),
+                    words.map(|word| word.confidence.map(f64::from)));
+            }
             Ok(ExtractedDocument { full_text: result.full_text, ..Default::default() })
         }
         "ocrs" => ocr_ocrs::ocr_via_ocrs(path),
         "paddle" => ocr_paddle::ocr_via_paddle(path, ocr_policy::paddle_language(config, opts.ocr_rec_lang)),
         engine if engine == "auto" || ocr_policy::EMBEDDED_ENGINES.contains(&engine) =>
-            ocr_crispembed::ocr_via_pipeline(path, config),
+            ocr_crispembed::ocr_via_pipeline(path, config, log),
         engine => anyhow::bail!("Unsupported OCR engine: {engine}"),
     }
 }
@@ -1285,7 +1295,7 @@ fn extract_text_from_path_with_opts_inner(
                 let mut pages = Vec::with_capacity(images.len());
                 for (index, image) in images.paths().iter().enumerate() {
                     log.step("recognizing_page", json!({"page":index+1,"pages":images.len()}));
-                    pages.push(ocr_image_page(image, &opts)
+                    pages.push(ocr_image_page_numbered(image, &opts, Some(index + 1))
                         .with_context(|| format!("OCR failed on PDF page {}/{}", index + 1, images.len()))?.full_text);
                 }
                 Ok(ExtractedDocument { full_text:pages.join(page_source::PAGE_SEPARATOR), ext:ext.clone(),
@@ -1308,7 +1318,7 @@ fn extract_text_from_path_with_opts_inner(
                     "PDF text and rendered page counts disagree; no partial OCR result was accepted");
                 let pages = pdf::merge_ocr_pages(&page_text, opts.ocr_pdf_min_chars, |index| {
                     log.step("recognizing_page", json!({"page":index+1,"pages":page_text.len()}));
-                    ocr_image_page(&images.paths()[index], &opts).map(|document| document.full_text)
+                    ocr_image_page_numbered(&images.paths()[index], &opts, Some(index + 1)).map(|document| document.full_text)
                 })?;
                 doc.full_text = pages.join(page_source::PAGE_SEPARATOR);
             }

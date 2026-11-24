@@ -24,14 +24,18 @@ mod ocr_word_evidence {
     include!(concat!(env!("OUT_DIR"), "/words.rs"));
 }
 mod operation_log {
+    pub fn enabled(_: &str) -> bool { false }
     pub struct OperationLog;
     impl OperationLog {
         pub fn start(_: &str, _: serde_json::Value) -> Self {
             Self
         }
         pub fn succeed(&self, _: serde_json::Value) {}
+        pub fn step(&self, _: &str, _: serde_json::Value) {}
     }
 }
+#[path = "../../src-tauri/src/extractors/ocr_quality.rs"]
+mod production_ocr_quality;
 fn app_log(_: &str, _: String) {}
 #[path = "../../src-tauri/src/extractors/ovis_input.rs"]
 pub mod production_ovis_input;
@@ -44,6 +48,7 @@ mod extractors {
         include!(concat!(env!("OUT_DIR"), "/container.rs"));
     }
     pub use crate::production_ovis_input as ovis_input;
+    pub(crate) use crate::production_ocr_quality as ocr_quality;
     pub mod ocr_render {
         include!(concat!(env!("OUT_DIR"), "/render.rs"));
     }
@@ -170,7 +175,7 @@ mod tests {
         let mut legacy = cfg.clone();
         legacy.router = true;
         legacy.stages.clear();
-        let doc = production::ocr_via_pipeline(file.path(), &legacy).unwrap();
+        let doc = production::ocr_via_pipeline(file.path(), &legacy, None).unwrap();
         assert_eq!(doc.full_text, "Grüße");
         let detailed = production::ocr_regions_detailed(file.path(), &legacy).unwrap();
         assert_eq!(detailed[0].w, 1280.);
@@ -239,7 +244,7 @@ mod tests {
             assert_eq!(detailed[0].h, 2077.);
             let rendered = production::ocr_regions_via_pipeline(file.path(), &cfg).unwrap();
             assert_eq!(rendered[0].w, 1280.);
-            let doc = production::ocr_via_pipeline(file.path(), &cfg).unwrap();
+            let doc = production::ocr_via_pipeline(file.path(), &cfg, None).unwrap();
             assert_eq!(doc.full_text, "Grüße");
             assert_private_and_cleaned(file.path());
             for mode in 0..7 {

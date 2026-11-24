@@ -3361,6 +3361,9 @@ enum IndexCmd {
         /// Concurrent file preparation jobs for text-only indexing without OCR.
         #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u8).range(1..=8))]
         prepare_jobs: u8,
+        /// Concurrent SHA-256 reads under the writer lease. Use 1 for serial verification.
+        #[arg(long, default_value_t = crate::index::ingest::IngestConfig::default().source_verify_jobs, value_parser = clap::value_parser!(u8).range(1..=4))]
+        source_verify_jobs: u8,
         /// Embedder model. Default: bge-m3.
         #[arg(long, default_value = "bge-m3")]
         model: String,
@@ -4450,6 +4453,7 @@ async fn cmd_index_async(
             text_only,
             text_batch_size,
             prepare_jobs,
+            source_verify_jobs,
             model,
             device,
             ocr,
@@ -4549,7 +4553,7 @@ async fn cmd_index_async(
                 std::sync::Arc::new(fts),
                 std::sync::Arc::new(local),
                 embedder_arc,
-                IngestConfig { text_only, ..Default::default() },
+                IngestConfig { text_only, source_verify_jobs, ..Default::default() },
             )
             .with_ner(ner);
 
