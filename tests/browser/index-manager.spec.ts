@@ -43,7 +43,22 @@ test('opens existing full-text indexes and preserves the active index on failure
         config: { mode: 'text_only', use_vector: false, backend_type: 'local' },
     });
     await manager.getByRole('button', { name: 'Search in Library' }).click();
-    await expect(page.getByRole('textbox', { name: 'Search indexed documents' })).toBeVisible();
+    const search = page.getByRole('textbox', { name: 'Search indexed documents' });
+    await search.fill('warranty');
+    await search.press('Enter');
+    await expect(page.locator('.result-card').first()).toBeVisible();
+
+    await page.getByRole('button', { name: 'Open index manager · meeting-index', exact: true }).click();
+    await expect(manager).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Search Index', exact: true })).toBeFocused();
+    await manager.getByRole('button', { name: /second-index/ }).click();
+    await manager.getByRole('button', { name: 'Open index' }).click();
+    await manager.getByRole('button', { name: 'Search in Library' }).click();
+    await expect(page.getByRole('button', { name: 'Open index manager · second-index', exact: true })).toBeVisible();
+    await expect(search).toHaveValue('warranty');
+    await expect(search).toBeFocused();
+    await expect(page.locator('.result-card')).toHaveCount(0);
+    expect(await page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'index_search').length)).toBe(1);
 });
 
 test('keeps reporting and document tools collapsed until opened', async ({ page }) => {
@@ -69,4 +84,14 @@ test('keeps reporting and document tools collapsed until opened', async ({ page 
     await expect(page.getByRole('button', { name: 'Count all full-text matches' })).toHaveCount(0);
     await page.getByText('All matches and reports', { exact: true }).click();
     await expect(page.getByRole('button', { name: 'Count all full-text matches' })).toBeVisible();
+});
+
+test('opens the index manager directly from German Library search', async ({ page }) => {
+    await fixtures(page);
+    await page.goto('/?fixtureLanguage=de');
+    await page.locator('nav.main-nav').getByRole('button', { name: 'Bibliothek', exact: true }).waitFor();
+    await page.keyboard.press('Control+Shift+f');
+    await page.getByRole('button', { name: 'Indexverwaltung öffnen', exact: true }).click();
+    await expect(page.getByRole('region', { name: 'Indexverwaltung', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Such-Index', exact: true })).toBeFocused();
 });

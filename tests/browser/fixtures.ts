@@ -22,7 +22,8 @@ export async function fixtures(page: Page) {
             Object.assign(items[1], { isAccepted: true, targetPath: '/fixtures/sorted/warranty.txt' });
         }
         const settings: Record<string, any> = {
-            language: 'en', providers: [{ id: 'ollama', name: 'Ollama (Local)', baseUrl: 'http://localhost:11434/v1', apiKey: 'ollama', models: ['fixture-model'], selectedModel: 'fixture-model', isConfigured: true }],
+            language: new URLSearchParams(location.search).get('fixtureLanguage') === 'de' ? 'de' : 'en',
+            providers: [{ id: 'ollama', name: 'Ollama (Local)', baseUrl: 'http://localhost:11434/v1', apiKey: 'ollama', models: ['fixture-model'], selectedModel: 'fixture-model', isConfigured: true }],
             activeProviderId: 'ollama', localModels: ['fixture-model'], llmContextLimit: 4096,
             experimentalCrispEmbed: { endpoint: 'http://127.0.0.1:18080', moedern: false, decisions: true },
         };

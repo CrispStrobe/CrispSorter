@@ -493,8 +493,10 @@ to make it active. A new local entry starts in full-text mode with embeddings
 off. Removing an entry from the manager leaves its files on disk.
 
 Use **Search in Library** or **Ctrl/⌘+Shift+F** to jump to the active index's
-search box. Query help, full-corpus reports and document actions are available
-in the information disclosures.
+search box. Select the active index name in Search to open the Index Manager.
+Your typed query stays in the search box as you switch indexes. Run it when
+you are ready to search the newly opened index. Query help, full-corpus
+reports and document actions are available in the information disclosures.
 
 ### Two backends
 

@@ -115,7 +115,11 @@
      *  Stapel/sorter flow handles "import unsorted files". The Hinzufügen tab
      *  is for users who want to add files DIRECTLY to the catalog without
      *  going through the AI sort step. */
-    let { searchRequest = 0 }: { searchRequest?: number } = $props();
+    let { searchRequest = 0, searchQuery = $bindable(''), openIndexManager }: {
+        searchRequest?: number;
+        searchQuery?: string;
+        openIndexManager: () => void;
+    } = $props();
     let activeTab   = $state<Tab>('overview');
     $effect(() => {
         if (searchRequest > 0) activeTab = 'search';
@@ -4179,7 +4183,7 @@
 
     <!-- ══════════════════ SUCHE (semantic + full-text) ══════════════════ -->
     {#if activeTab === 'search'}
-        <IndexSearch focusRequest={searchRequest} />
+        <IndexSearch focusRequest={searchRequest} bind:query={searchQuery} {openIndexManager} />
     {/if}
 
     <!-- ══════════════════ DASHBOARD (corpus stats) ══════════════════ -->
