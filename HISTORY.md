@@ -16,6 +16,15 @@ source bytes and overlaps file preparation with writing. See
 The release workflow can stamp a version tag on an all-platform build-only
 dispatch from main. Public publication uses the existing signing gates.
 
+The [v0.15.5 qualification run](https://github.com/CrispStrobe/CrispSorter/actions/runs/45269518878)
+built and uploaded a Windows x64 portable ZIP, Linux amd64 DEB, macOS arm64
+DMG and app archive, Android arm64 APK and iOS arm64 IPA. The run created
+the tag at `52e6d36a`. The draft contains 17 assets including the packages,
+checksums and receipts. The Windows package is unsigned. Public Windows and
+macOS distribution requires the production signing and notarization credentials.
+The [follow-up ingest optimization](https://github.com/CrispStrobe/CrispSorter/pull/100)
+was merged after the release source was tagged.
+
 ## CrispEmbed v0.17.20 pin (2026-11-21)
 
 Every live CrispEmbed v0.17.19 pin now points at v0.17.20

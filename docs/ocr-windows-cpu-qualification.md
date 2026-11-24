@@ -1,4 +1,4 @@
-# Windows CPU OCR qualification
+# Windows OCR qualification
 
 The test used the pinned CrispEmbed 0.17.20 Windows CPU bundle and four
 generated German A4 layouts: ordinary printed text, dense small type, a
@@ -28,18 +28,68 @@ measurements for both engines are required for a performance ranking.
 All completed profiles produced output for all 12 pages. The small PP-OCRv6
 pair timed out on its first full-page 200 DPI request at the 60 s bound on
 this CPU path. Four CrispEmbed threads preserved accuracy and delivered
-mixed timing results. On the constrained CPU start with two threads.
+mixed timing results.
 
-**Candidate settings for printed German.** A first pass at 200 DPI using
+## Tesseract worker sweep
+
+A separate Windows CPU run used the tiny detector and German recognizer on
+the same four full-page layouts at 200 and 300 DPI. These results compare
+settings within the same run. Accuracy matched across the three profiles.
+Peak RSS is the server's Windows peak working set over both resolutions.
+
+| Threads per worker | Tesseract workers | 200 DPI median | 300 DPI median | Peak RSS |
+| ---: | ---: | ---: | ---: | ---: |
+| 2 | 1 | 3.01 s | 3.89 s | 624 MiB |
+| 1 | 2 | 2.60 s | 3.46 s | 626 MiB |
+| 2 | 2 | 2.50 s | 3.48 s | 626 MiB |
+
+## Bounded page crops
+
+On the generated scans, cropping to the ink box with a 16-point margin
+reduced mean decoded raster size from 3.87 to 0.48 MB at 200 DPI and from
+8.70 to 1.08 MB at 300 DPI. Mean cropped PNG sizes were 53.2 and 97.8 kB.
+The benchmark kept the full text reference for each page. All three CPU
+profiles used two threads and one recognizer worker.
+
+| Detector and recognizer | 200 DPI median / CER / WER | 300 DPI median / CER / WER | Peak RSS |
+| --- | ---: | ---: | ---: |
+| PP-OCRv6 tiny detector + Tesseract German | 2.37 s / 1.77% / 11.90% | 2.50 s / 0.79% / 5.67% | 492 MiB |
+| DBNet + Tesseract German | 1.98 s / 3.11% / 17.56% | 2.07 s / 1.06% / 3.97% | 813 MiB |
+| PP-OCRv6 small detector and recognizer | 12.19 s / 0.32% / 2.27% | 12.21 s / 0.16% / 1.13% | 1,014 MiB |
+
+The small pair is a candidate for a selective high-accuracy pass on known
+page regions. Its two models total 26.2 MB. Qualify the crop margin on scans
+with marginalia, diagrams and tables before using automatic cropping.
+
+## Vulkan and bundle size
+
+The pinned Windows x64 CPU, Vulkan and CUDA archives are 12.7 MB, 28.7 MB
+and 682.0 MB respectively. See [the CrispEmbed 0.17.20 release](https://github.com/CrispStrobe/CrispEmbed/releases/tag/v0.17.20).
+
+On the Vulkan bundle, the automatic adapter selection used the integrated
+GPU for native PP-OCRv6 recognition. The repeat with one visible discrete
+GPU confirmed the selected adapter in the server log. In that repeat, the
+tiny detector and German recognizer produced the same error rates as the
+CPU run and took 3.25 s at 200 DPI and 4.36 s at 300 DPI. The native small
+pair took 4.04 s and 4.91 s, with 100% WER at both resolutions. The discrete
+adapter's sampled device-wide memory peaked at 255 MiB during these two
+profiles. The automatic Vulkan run also had 100% WER for the native tiny and
+small pairs. Use CPU for the selective cropped PP-OCRv6 small profile
+until Vulkan passes output parity.
+
+## Candidate settings for printed German
+
+A first pass at 200 DPI using
 `tesseract-deu` with the PP-OCRv6 tiny detector limits model download and
-decoded pixels. For dense copy or poor recognition, the 300 DPI DBNet
-and Tesseract German pairing gave substantially better word accuracy.
+decoded pixels. The measured low-CPU setting is `-t 1` and
+`CRISPEMBED_TESSERACT_WORKERS=2`. For dense copy or poor recognition, the
+300 DPI DBNet and Tesseract German pairing gave better word accuracy.
 Apply the higher DPI selectively to pages that need it. Treat the native
-PP-OCRv6 tiny recognizer as a failed German qualification for this bundle.
+PP-OCRv6 tiny recognizer as a failed German qualification for this fixture.
 
 The current CrispSorter renderer defaults to 200 DPI when source DPI is
 unavailable. With the embedded source-DPI probe, the current range is
 150–400 DPI. The fixture supports testing a 200 DPI first pass and a
 bounded 300 DPI retry. Apply a production default after real scan
-transcriptions and tests on the CUDA/Vulkan and Metal builds. See
+transcriptions and CUDA and Metal tests. See
 [the pinned model registry](https://github.com/CrispStrobe/CrispEmbed/blob/d842065436fddae00a89bbc89db56b92293a1b23/examples/cli/model_mgr.cpp).
