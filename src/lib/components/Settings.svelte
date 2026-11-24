@@ -173,6 +173,8 @@
     let { section = null, openLibrary }: { section?: string | null; openLibrary: () => void } = $props();
     let selectedProviderId = $state('global');
     $effect(() => { if (section) selectedProviderId = section; });
+    let indexHeading = $state<HTMLHeadingElement>();
+    $effect(() => { if (section === 'index') indexHeading?.focus(); });
     let selectedProvider = $derived(providers.find(p => p.id === selectedProviderId) || providers[0]);
 
     // Global App Settings
@@ -4320,7 +4322,7 @@
 
         {:else if selectedProviderId === 'index'}
             <div class="header">
-                <h1>{i18n.t.settings.index.title}</h1>
+                <h1 tabindex="-1" bind:this={indexHeading}>{i18n.t.settings.index.title}</h1>
                 <div class="save-area">
                     {#if saveIndicator}<span class="save-badge"><CheckCircle size={14} /> {i18n.t.settings.saved}</span>{/if}
                 </div>

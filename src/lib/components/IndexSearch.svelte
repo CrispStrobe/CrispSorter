@@ -106,9 +106,12 @@
 
     // ── State ──────────────────────────────────────────────────────────────────
 
-    let query       = $state('');
     let searchRoot = $state<HTMLDivElement>();
-    let { focusRequest = 0 }: { focusRequest?: number } = $props();
+    let { focusRequest = 0, query = $bindable(''), openIndexManager }: {
+        focusRequest?: number;
+        query?: string;
+        openIndexManager: () => void;
+    } = $props();
     let queryInput = $state<HTMLInputElement>();
     $effect(() => {
         if (focusRequest > 0) {
@@ -118,6 +121,7 @@
     });
     let mode        = $state<'hybrid' | 'text' | 'vector'>('hybrid');
     let activeIndexName = $state('');
+    const indexManagerAction = $derived(i18n.lang === 'de' ? 'Indexverwaltung öffnen' : 'Open index manager');
     let queryIntent = $state<'advanced' | 'natural'>('advanced');
     let vectorEnabled = $state(true);
     let activeBackend = $state<string | null>(null);
@@ -2026,9 +2030,12 @@
 
     <!-- ── Mode chips ─────────────────────────────────────────────────────────── -->
     <div class="search-controls">
-        {#if activeIndexName}
-            <span class="search-index-name">Index · {activeIndexName}</span>
-        {/if}
+        <button type="button" class="search-index-control" onclick={openIndexManager}
+            title={indexManagerAction}
+            aria-label={activeIndexName ? `${indexManagerAction} · ${activeIndexName}` : indexManagerAction}>
+            <HardDrive size={14} />
+            {activeIndexName ? `Index · ${activeIndexName}` : (i18n.lang === 'de' ? 'Indexverwaltung' : 'Index manager')}
+        </button>
         {#if vectorEnabled}
             <div class="mode-row">
         {#each (['hybrid', 'text', 'vector'] as const) as m}
@@ -3379,7 +3386,14 @@
     .document-details { margin-top: .3rem; }
     .document-details .result-right { justify-content: start; margin: .35rem 0; }
     .result-card > .chunk-preview { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; }
-    .search-index-name { color: var(--color-text-secondary, #a1a1aa); font-size: .8rem; overflow-wrap: anywhere; }
+    .search-index-control {
+        display: inline-flex; align-items: center; gap: .35rem; max-width: 100%; padding: .3rem .5rem;
+        border: 1px solid var(--border-color, #454545); border-radius: .35rem;
+        background: transparent; color: inherit; font-size: .8rem; text-align: start;
+        overflow-wrap: anywhere; cursor: pointer;
+    }
+    .search-index-control:hover { background: var(--bg-secondary, #242424); }
+    .search-index-control :global(svg) { flex-shrink: 0; }
 
     .query-intent-control { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; font-size: 0.75rem; }
     .query-intent-control select { max-width: 100%; border: 1px solid var(--border-color, #454545); border-radius: 0.35rem; padding: 0.25rem 0.4rem; color: inherit; background: var(--bg-secondary, #242424); }

@@ -83,6 +83,7 @@
     /** Settings section to open next, e.g. Secret storage from the banner. */
     let settingsSection = $state<string | null>(null);
     let librarySearchRequest = $state(0);
+    let librarySearchQuery = $state('');
     let navCollapsed = $state(false);
     let showMobileTools = $state(false);
     let showLogs = $state(false);
@@ -212,8 +213,14 @@
 
     function navigate(tab: string) {
         showMobileTools = false;
+        if (tab === 'settings') settingsSection = null;
         if (tab === 'logs') showLogs = true;
         else activeTab = tab;
+    }
+
+    function openIndexManager() {
+        navigate('settings');
+        settingsSection = 'index';
     }
 
     function openLibrarySearch() {
@@ -845,7 +852,7 @@
             {:else if activeTab === 'history'}
                 <History onResumeBatch={switchToBatch} />
             {:else if activeTab === 'catalog'}
-                <IndexIngest searchRequest={librarySearchRequest} />
+                <IndexIngest searchRequest={librarySearchRequest} bind:searchQuery={librarySearchQuery} {openIndexManager} />
             {:else if activeTab === 'translate'}
                 <Translate initialPath={$documentToolRequest?.tool === 'translate' ? uriToPath($documentToolRequest.locationUri) || '' : ''} />
             <!-- PLAN P36.16 — the AIToolkit panels only exist in builds that

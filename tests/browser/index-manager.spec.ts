@@ -43,7 +43,22 @@ test('opens existing full-text indexes and preserves the active index on failure
         config: { mode: 'text_only', use_vector: false, backend_type: 'local' },
     });
     await manager.getByRole('button', { name: 'Search in Library' }).click();
-    await expect(page.getByRole('textbox', { name: 'Search indexed documents' })).toBeVisible();
+    const search = page.getByRole('textbox', { name: 'Search indexed documents' });
+    await search.fill('warranty');
+    await search.press('Enter');
+    await expect(page.locator('.result-card').first()).toBeVisible();
+
+    await page.getByRole('button', { name: 'Open index manager · meeting-index', exact: true }).click();
+    await expect(manager).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Search Index', exact: true })).toBeFocused();
+    await manager.getByRole('button', { name: /second-index/ }).click();
+    await manager.getByRole('button', { name: 'Open index' }).click();
+    await manager.getByRole('button', { name: 'Search in Library' }).click();
+    await expect(page.getByRole('button', { name: 'Open index manager · second-index', exact: true })).toBeVisible();
+    await expect(search).toHaveValue('warranty');
+    await expect(search).toBeFocused();
+    await expect(page.locator('.result-card')).toHaveCount(0);
+    expect(await page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'index_search').length)).toBe(1);
 });
 
 test('keeps reporting and document tools collapsed until opened', async ({ page }) => {
