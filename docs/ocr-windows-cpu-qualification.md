@@ -96,16 +96,20 @@ transcriptions and CUDA and Metal tests. See
 
 ## Recognition evidence and selective resolution
 
-With `--log-verbosity debug`, whole-page CrispEmbed runs with review diagnostics
-and system Tesseract runs record `recognition_quality` in the page operation.
-The record carries the PDF page number, engine, scoring unit, count of scored
-units, mean and lower-tail score. A missing score is reported as null. The
-log carries numeric summaries and engine identifiers. CrispEmbed's review
-snapshot marks the source of each score, and system Tesseract contributes
-word scores from its TSV output. OCRS and the current Paddle integration
-return text without recognition evidence to this extraction path. Some
-embedded vision models expose generation-token scores, whose units and
-calibration differ from Tesseract word or line scores.
+With `--log-verbosity debug`, the page operation can include a
+`recognition_quality` event. It carries the PDF page number, engine,
+count of recognized units, count of scored units, mean and lower-tail score.
+The log carries numeric summaries and engine identifiers.
+
+| Engine | Unit | Score source |
+| --- | --- | --- |
+| System Tesseract | Word | Recognition score from TSV |
+| PaddleOCR (`paddle-ocr` feature) | Line | SVTR mean of the retained CTC token scores for each nonempty line |
+| OCRS | Line | Recognized line count, zero scored units and null scores because the OCRS API exposes text and geometry |
+| CrispEmbed | Region | Scores explicitly marked as recognizer scores in the review snapshot |
+
+Some embedded vision models expose generation-token scores. Compare scores
+within the same engine and model profile when evaluating retry thresholds.
 
 The Tesseract and tiny detector profile's dense page improved from **26.4%**
 word error at 200 DPI to **6.9%** at 300 DPI. Its 200 DPI mean recognition score

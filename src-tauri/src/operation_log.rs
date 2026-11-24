@@ -64,7 +64,7 @@ pub fn safe_context(value: Value) -> Map<String, Value> {
         | "width" | "height" | "revision" | "diagnostic_lines" | "event_count" | "attempt" | "job_id"
         | "skipped" | "readers" | "scored_units" => value.as_u64().is_some(),
         "confidence_mean" | "confidence_p10" => value.is_null() || value.as_f64().is_some_and(|v| (0.0..=1.0).contains(&v)),
-        "score_unit" => value.as_str().is_some_and(|unit| ["region", "word"].contains(&unit)),
+        "score_unit" => value.as_str().is_some_and(|unit| ["line", "region", "word"].contains(&unit)),
         "cpu_budget" | "cpuBudget" | "forced" | "partial" | "saved" | "reused" | "pipeline"
         | "cache_hit" | "nativeContinues" | "cleanup" | "denoise" | "dewarp" | "restore"
         | "upscale" | "layout" | "overwrite" | "accepted" => value.is_boolean(),

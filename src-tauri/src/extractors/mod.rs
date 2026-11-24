@@ -1209,8 +1209,8 @@ fn ocr_one_image(path: &Path, opts: &ExtractOptions, log: Option<&OperationLog>)
             }
             Ok(ExtractedDocument { full_text: result.full_text, ..Default::default() })
         }
-        "ocrs" => ocr_ocrs::ocr_via_ocrs(path),
-        "paddle" => ocr_paddle::ocr_via_paddle(path, ocr_policy::paddle_language(config, opts.ocr_rec_lang)),
+        "ocrs" => ocr_ocrs::ocr_via_ocrs(path, log),
+        "paddle" => ocr_paddle::ocr_via_paddle(path, ocr_policy::paddle_language(config, opts.ocr_rec_lang), log),
         engine if engine == "auto" || ocr_policy::EMBEDDED_ENGINES.contains(&engine) =>
             ocr_crispembed::ocr_via_pipeline(path, config, log),
         engine => anyhow::bail!("Unsupported OCR engine: {engine}"),
