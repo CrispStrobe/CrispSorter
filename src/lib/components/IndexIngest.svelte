@@ -4179,7 +4179,7 @@
 
     <!-- ══════════════════ SUCHE (semantic + full-text) ══════════════════ -->
     {#if activeTab === 'search'}
-        <IndexSearch {searchRequest} />
+        <IndexSearch focusRequest={searchRequest} />
     {/if}
 
     <!-- ══════════════════ DASHBOARD (corpus stats) ══════════════════ -->

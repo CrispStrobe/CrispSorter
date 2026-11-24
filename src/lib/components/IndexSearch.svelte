@@ -108,10 +108,10 @@
 
     let query       = $state('');
     let searchRoot = $state<HTMLDivElement>();
-    let { searchRequest = 0 }: { searchRequest?: number } = $props();
+    let { focusRequest = 0 }: { focusRequest?: number } = $props();
     let queryInput = $state<HTMLInputElement>();
     $effect(() => {
-        if (searchRequest > 0) {
+        if (focusRequest > 0) {
             queryInput?.focus();
             queryInput?.select();
         }
