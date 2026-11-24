@@ -76,7 +76,7 @@ mod tempfile { use super::*; pub struct Builder; pub struct Temp;
  impl Temp { pub fn path(&self)->&Path{Path::new("crop.png")} }
 }
 mod math_ocr { use super::*; pub fn is_math_ocr_available()->bool{false} pub fn recognize_formula_from_pixels(_: &[u8],_:i32,_:i32)->Result<Option<String>>{Ok(None)} }
-fn ocr_one_image(_: &Path, _: &ExtractOptions)->Result<ExtractedDocument> {
+fn ocr_one_image(_: &Path, _: &ExtractOptions, _: Option<&()>)->Result<ExtractedDocument> {
  let y=Y.with(|v|v.get()); CALLS.with(|c|c.borrow_mut().push(format!("ocr:{y}")));
  if y == 0 && MODE.with(|m|m.get()) == 8 { return Err("text OCR failed".into()); }
  if y == 10 && MODE.with(|m|m.get()) == 4 { return Err("crop OCR failed".into()); }

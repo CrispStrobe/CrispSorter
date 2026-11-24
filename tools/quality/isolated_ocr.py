@@ -118,7 +118,7 @@ pub fn install_models(_names: &[String], _request_id: Option<&str>, _emit: &(dyn
     rust += 'pub mod container { use super::ExtractedDocument; use crisp_index_protocol::container::ContainerEntry;\n' + fragments['ExtractedMember'] + '}\n'
     rust += 'pub mod ocr_render {\n' + fragments['OcrRegion'] + '}\n'
     for name in ['context_cache', 'image_input', 'layout', 'ocr_crispembed', 'ocr_ocrs',
-                 'ocr_paddle', 'ocr_policy', 'ocr_presets', 'ocr_worker', 'ovis_input', 'page_source']:
+                 'ocr_paddle', 'ocr_policy', 'ocr_presets', 'ocr_quality', 'ocr_worker', 'ovis_input', 'page_source']:
         rust += module(name, 'src-tauri/src/extractors/' + name + '.rs')
     rust += fragments['image_dispatch'] + fragments['operation_logging_tests'] + '}\n'
     (destination / 'lib.rs').write_text(rust)

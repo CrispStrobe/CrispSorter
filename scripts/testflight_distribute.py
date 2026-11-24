@@ -78,7 +78,7 @@ def make_token(key_id: str, issuer_id: str, p8: bytes) -> str:
     This mirrors `../appstore.md` Step 1's `gen_token.py` deliberately, down
     to the 1190-second expiry: that implementation is *proven* against this
     exact key, and reimplementing it with PyJWT added a variable for no gain.
-    Signing with `cryptography` also drops a pip install from the CI step.
+    The release jobs install the pinned `cryptography` signing dependency.
 
     The key is a **team** key — the App Store Connect page showed both a Key
     ID and an Issuer ID when it was generated with Role: Admin, and only team
