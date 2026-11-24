@@ -129,3 +129,11 @@ four exactly and missed one character on the fifth. CrispEmbed tiny failed
 all five at F32, F16 and head-only Q8. The small ONNX and small GGUF both read
 all five exactly. See [the official tiny ONNX export](https://huggingface.co/PaddlePaddle/PP-OCRv6_tiny_rec_onnx/tree/2612ab37152ae0a677521bae4e1e3d4fb4cf7c30)
 and [the native review schema](https://github.com/CrispStrobe/CrispEmbed/blob/d842065436fddae00a89bbc89db56b92293a1b23/docs/ocr-review-snapshot.md).
+
+The CrispEmbed correction preserves horizontal resolution at two backbone
+downsampling stages. The patched scalar and GGML CPU recognizers read all
+five lines exactly with the shipped tiny weights. Windows Vulkan still failed
+the line checks on both tiny and small, so the correction routes recognition
+to CPU on that backend and verified both tiers again. The CrispSorter runtime
+pin needs a new qualified CrispEmbed build to pick up these source changes.
+[CrispEmbed fix and regression fixture](https://github.com/CrispStrobe/CrispEmbed/pull/273).
