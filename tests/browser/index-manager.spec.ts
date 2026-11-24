@@ -85,3 +85,13 @@ test('keeps reporting and document tools collapsed until opened', async ({ page 
     await page.getByText('All matches and reports', { exact: true }).click();
     await expect(page.getByRole('button', { name: 'Count all full-text matches' })).toBeVisible();
 });
+
+test('opens the index manager directly from German Library search', async ({ page }) => {
+    await fixtures(page);
+    await page.goto('/?fixtureLanguage=de');
+    await page.locator('nav.main-nav').getByRole('button', { name: 'Bibliothek', exact: true }).waitFor();
+    await page.keyboard.press('Control+Shift+f');
+    await page.getByRole('button', { name: 'Indexverwaltung öffnen', exact: true }).click();
+    await expect(page.getByRole('region', { name: 'Indexverwaltung', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Such-Index', exact: true })).toBeFocused();
+});

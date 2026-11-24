@@ -109,11 +109,7 @@ test('mobile capabilities also gate searchable destinations', async ({ page }) =
 test('expanded quick-navigation labels fit beside the icon with the shortcut below in both languages', async ({ page }) => {
     await page.setViewportSize({ width: 1100, height: 600 });
     for (const [language, label] of [['en', 'Quick navigation'], ['de', 'Schnellnavigation']] as const) {
-        await page.evaluate(async language => {
-            const modulePath = '/src/lib/i18n.svelte.ts';
-            const { i18n } = await import(modulePath);
-            i18n.setLanguage(language);
-        }, language);
+        await page.goto(`/?fixtureLanguage=${language}`);
         const trigger = page.locator('.main-nav').getByRole('button', { name: label, exact: true });
         await expect(trigger.locator('span')).toHaveText(label);
         await expect(trigger.locator('span')).toBeVisible();
