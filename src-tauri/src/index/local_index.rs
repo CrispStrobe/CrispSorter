@@ -36,7 +36,7 @@ use super::IndexBackend;
 
 // ── Constant ───────────────────────────────────────────────────────────────
 
-const TABLE_NAME: &str = "documents";
+pub(super) const TABLE_NAME: &str = "documents";
 
 #[path = "occurrence.rs"]
 mod occurrence;

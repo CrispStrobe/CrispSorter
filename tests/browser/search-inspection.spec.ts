@@ -1,6 +1,6 @@
 // Browser interaction/IPC contracts; real text-index matching has native tests.
 import { test, expect, type Page } from '@playwright/test';
-import { fixtures } from './fixtures';
+import { fixtures, openSearchPanel } from './fixtures';
 
 async function openSearch(page: Page) {
     await page.getByRole('button', { name: 'Library', exact: true }).first().click();
@@ -49,12 +49,15 @@ test('sorts the returned window with unknown years last and a compact view', asy
     await search(page);
     const cards = page.locator('.result-card');
     await expect(cards.first()).toHaveAttribute('data-document-id', 'z');
+    await openSearchPanel(page, '.result-inspection');
     await page.getByRole('combobox', { name: 'Sort results', exact: true }).selectOption('year-desc');
     await expect(cards.first()).toHaveAttribute('data-document-id', 'a');
     await expect(cards.last()).toHaveAttribute('data-document-id', 'u');
+    await openSearchPanel(page, '.result-inspection');
     await page.getByRole('combobox', { name: 'Sort results', exact: true }).selectOption('year-asc');
     await expect(cards.first()).toHaveAttribute('data-document-id', 'z');
     await expect(cards.last()).toHaveAttribute('data-document-id', 'u');
+    await openSearchPanel(page, '.result-inspection');
     await page.getByLabel('Compact results', { exact: true }).check();
     await expect(page.locator('.results-area')).toHaveClass(/compact-results/);
     await expect(page.locator('.search-window-note')).toContainText('returned window');
@@ -62,9 +65,12 @@ test('sorts the returned window with unknown years last and a compact view', asy
 
 test('exports selected results with the executed query after the search box changes', async ({ page }) => {
     await search(page);
+    await openSearchPanel(page.locator('.result-card[data-document-id="a"]'), '.document-details');
     await page.locator('.result-card[data-document-id="a"]').getByTitle('Select for batch sorter', { exact: true }).click();
+    await openSearchPanel(page, '.result-inspection');
     await page.getByRole('combobox', { name: 'Report format', exact: true }).selectOption('json');
     await page.getByRole('textbox', { name: 'Search indexed documents' }).fill('edited but not searched');
+    await openSearchPanel(page, '.result-inspection');
     await page.getByRole('button', { name: 'Export selected (1)', exact: true }).click();
     await expect.poll(() => page.evaluate(() => (window as any).__writtenReports?.length || 0)).toBe(1);
     const report = await page.evaluate(() => JSON.parse((window as any).__writtenReports[0]));
@@ -79,6 +85,7 @@ test('exports selected results with the executed query after the search box chan
 
 test('failed report writing keeps results and selection and offers a working retry', async ({ page }) => {
     await search(page);
+    await openSearchPanel(page, '.result-inspection');
     await page.getByRole('button', { name: 'Select displayed', exact: true }).click();
     await page.evaluate(() => {
         const root = window as any, original = root.__TAURI_INTERNALS__.invoke;
@@ -88,6 +95,7 @@ test('failed report writing keeps results and selection and offers a working ret
             return original(command, ...args);
         };
     });
+    await openSearchPanel(page, '.result-inspection');
     await page.getByRole('button', { name: 'Export selected (3)', exact: true }).click();
     await expect(page.getByRole('alert')).toContainText('Fixture disk full');
     await expect(page.locator('.result-card')).toHaveCount(3);
@@ -98,6 +106,7 @@ test('failed report writing keeps results and selection and offers a working ret
 
 test('inspects stored passage text safely and navigates occurrences and documents', async ({ page }) => {
     await search(page);
+    await openSearchPanel(page.locator('.result-card[data-document-id="z"]'), '.document-details');
     await page.locator('.result-card[data-document-id="z"]').getByTitle('Inspect indexed passage', { exact: true }).click();
     const passage = page.getByRole('region', { name: 'Indexed passage', exact: true });
     await expect(passage).toContainText('Passage for z');
@@ -114,7 +123,9 @@ test('inspects stored passage text safely and navigates occurrences and document
 });
 
 test('builds a field phrase query and inserts reserved indexed words as literal terms', async ({ page }) => {
+    await openSearchPanel(page, '.query-options');
     await page.getByText('Query help, builder, and indexed words', { exact: true }).click();
+    await openSearchPanel(page, '.query-options');
     const builder = page.getByRole('region', { name: 'Query builder', exact: true });
     await builder.getByLabel('Exact phrase', { exact: true }).fill('annual report');
     await builder.getByLabel('Without these words', { exact: true }).fill('draft');
@@ -136,6 +147,7 @@ test('changing the indexed-word prefix discards an older pending response', asyn
             ? new Promise(resolve => { root.__finishOldVocabulary = () => resolve([{ term: 'old', doc_freq: 1 }]); })
             : original(command, ...args);
     });
+    await openSearchPanel(page, '.query-options');
     await page.getByText('Query help, builder, and indexed words', { exact: true }).click();
     const vocabulary = page.getByRole('region', { name: 'Indexed words', exact: true });
     await vocabulary.getByRole('textbox', { name: 'Word prefix', exact: true }).fill('old');
@@ -148,6 +160,7 @@ test('changing the indexed-word prefix discards an older pending response', asyn
 test('phone results retain reachable report controls and indexed-passage close navigation', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await search(page);
+    await openSearchPanel(page, '.result-inspection');
     await page.getByRole('button', { name: 'Select displayed', exact: true }).click();
     const report = page.getByRole('button', { name: 'Export selected (3)', exact: true });
     await report.scrollIntoViewIfNeeded();
@@ -155,6 +168,7 @@ test('phone results retain reachable report controls and indexed-passage close n
     expect(box).not.toBeNull();
     expect(box!.x).toBeGreaterThanOrEqual(0);
     expect(box!.x + box!.width).toBeLessThanOrEqual(390);
+    await openSearchPanel(page.locator('.result-card[data-document-id="z"]'), '.document-details');
     const inspect = page.locator('.result-card[data-document-id="z"]').getByTitle('Inspect indexed passage', { exact: true });
     await inspect.click();
     await expect(page.getByRole('region', { name: 'Indexed passage' })).toContainText('Passage for z');
@@ -179,7 +193,9 @@ test('source promotion keeps the selected owner for audio and image occurrences'
         };
     });
     await search(page);
+    await openSearchPanel(page.locator('.result-card[data-document-id="z"]'), '.document-details');
     await page.locator('.result-card[data-document-id="z"]').getByRole('button', { name: 'Transcribe (.mp3)', exact: true }).click();
+    await openSearchPanel(page.locator('.result-card[data-document-id="a"]'), '.document-details');
     await page.locator('.result-card[data-document-id="a"]').getByRole('button', { name: 'Re-OCR (.png)', exact: true }).click();
     expect(await page.evaluate(() => (window as any).__promotionCalls)).toEqual([
         { command: 'index_audio_promote_l3', args: { locationUri: '/z.txt', ownerId: 'audio-owner' } },

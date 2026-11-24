@@ -1,6 +1,6 @@
 // Result-action feedback and retry behavior use explicit IPC/clipboard fixtures.
 import { test, expect, type Page } from '@playwright/test';
-import { fixtures } from './fixtures';
+import { fixtures, openSearchPanel } from './fixtures';
 
 async function search(page: Page) {
     await page.getByRole('button', { name: 'Library', exact: true }).first().click();
@@ -72,6 +72,7 @@ test.beforeEach(async ({ page }) => {
 test('copy failure and action retry preserve results, preview and selected documents', async ({ page }) => {
     await search(page);
     const card = page.locator('.result-card');
+    await openSearchPanel(card, '.document-details');
     await card.getByTitle('Select for batch sorter', { exact: true }).click();
     await card.getByTitle('Vorschau (Preview)', { exact: true }).click();
     await page.evaluate(() => { (window as any).__libraryClipboardFailures = 1; });
@@ -112,6 +113,8 @@ test('adding selected documents waits for persistence and retries without counti
     await search(page);
     const localCard = page.locator('.result-card').filter({ hasText: 'New.txt' });
     const cloudCard = page.locator('.result-card').filter({ hasText: 'Cloud.txt' });
+    await openSearchPanel(localCard, '.document-details');
+    await openSearchPanel(cloudCard, '.document-details');
     await localCard.getByTitle('Select for batch sorter', { exact: true }).click();
     await cloudCard.getByTitle('Select for batch sorter', { exact: true }).click();
     const addSelected = page.getByTitle('Add selected local results to batch sorter', { exact: true });
@@ -154,6 +157,7 @@ test('excerpt export and reading-list failures have visible action recovery', as
     await search(page);
     const card = page.locator('.result-card');
     const feedback = page.locator('.result-action-feedback');
+    await openSearchPanel(card, '.document-details');
     await card.getByTitle('Export search excerpt as HTML', { exact: true }).click();
     await expect(feedback).toHaveAttribute('role', 'alert');
     await expect(feedback).toContainText('Could not export search excerpt');
@@ -188,6 +192,8 @@ test('share clipboard retry reuses the provider link and respects unsupported sh
     const sharedCard = page.locator('.result-card').filter({ hasText: 'Shared.txt' });
     const privateCard = page.locator('.result-card').filter({ hasText: 'Private.txt' });
     const feedback = page.locator('.result-action-feedback');
+    await openSearchPanel(sharedCard, '.document-details');
+    await openSearchPanel(privateCard, '.document-details');
     await sharedCard.getByTitle('Share link kopieren', { exact: true }).click();
     await expect(feedback).toContainText('Fixture clipboard unavailable');
     await expect(page.locator('.result-card')).toHaveCount(2);

@@ -1,6 +1,6 @@
 // These tests verify UI/IPC behavior. Native filtering has separate Rust fixtures.
 import { test, expect, type Page } from '@playwright/test';
-import { fixtures } from './fixtures';
+import { fixtures, openSearchPanel } from './fixtures';
 
 async function openSearch(page: Page) {
     await page.getByRole('button', { name: 'Library', exact: true }).first().click();
@@ -42,6 +42,7 @@ test('search sends metadata filters and restores distinct complete bookmarks', a
     await options.getByLabel('Synonyms', { exact: true }).check();
     await resultLimit.selectOption('50');
     await expect(resultLimit).toHaveValue('50');
+    await openSearchPanel(page, '.query-options');
     await page.getByRole('button', { name: 'Save this search', exact: true }).click();
     await expect(page.locator('.search-root').getByRole('status')).toContainText('Search saved with filters.');
     await page.locator('.search-btn').click();
@@ -53,7 +54,9 @@ test('search sends metadata filters and restores distinct complete bookmarks', a
     });
     await page.getByRole('button', { name: 'Reset filters', exact: true }).click();
     await resultLimit.selectOption('20');
+    await openSearchPanel(page, '.query-options');
     await page.getByRole('button', { name: 'Save this search', exact: true }).click();
+    await openSearchPanel(page, '.query-options');
     await page.getByRole('button', { name: 'Saved searches', exact: true }).click();
     await expect(page.locator('.saved-dropdown .saved-name')).toHaveCount(2);
     await page.locator('.saved-dropdown .saved-name').first().click();
@@ -77,6 +80,7 @@ test('legacy bookmarks clear active filters instead of inheriting them', async (
     await openSearch(page);
     await page.getByRole('button', { name: 'Search filters', exact: true }).click();
     await page.getByLabel('Language', { exact: true }).fill('de');
+    await openSearchPanel(page, '.query-options');
     await page.getByRole('button', { name: 'Saved searches', exact: true }).click();
     await page.locator('.saved-dropdown .saved-name').filter({ hasText: 'Legacy warranty' }).click();
     await expect(page.getByLabel('Language', { exact: true })).toHaveValue('');
@@ -154,6 +158,7 @@ test('bookmark persistence finishes before accepting the next save', async ({ pa
     const input = page.getByRole('textbox', { name: 'Search indexed documents' });
     const save = page.getByRole('button', { name: 'Save this search', exact: true });
     await input.fill('first query');
+    await openSearchPanel(page, '.query-options');
     await save.click();
     await input.fill('second query');
     await expect(save).toBeDisabled();
@@ -161,6 +166,7 @@ test('bookmark persistence finishes before accepting the next save', async ({ pa
     await expect(save).toBeEnabled();
     await save.click();
     await expect(save).toBeEnabled();
+    await openSearchPanel(page, '.query-options');
     await page.getByRole('button', { name: 'Saved searches', exact: true }).click();
     await expect(page.locator('.saved-dropdown .saved-name')).toHaveCount(2);
     await expect(page.locator('.saved-dropdown')).toContainText('first query');
@@ -177,7 +183,8 @@ test('clearing image search prevents its late response from replacing the empty 
             : original(command, args);
     });
     await page.getByRole('textbox', { name: 'Search indexed documents' }).fill('warranty');
-    await page.getByTitle('Search by image similarity (ViT + omni embeddings)', { exact: true }).click();
+    await openSearchPanel(page, '.query-options');
+    await page.getByTitle('Search similar images', { exact: true }).click();
     await expect(page.locator('.search-root').getByRole('status')).toContainText('Searching…');
     await page.getByRole('button', { name: 'Clear search', exact: true }).click();
     await page.evaluate(() => (window as any).__resolveImageSearch());
@@ -200,12 +207,14 @@ test('initial bookmark loading preserves existing searches before allowing a new
     });
     await openSearch(page);
     await page.getByRole('textbox', { name: 'Search indexed documents' }).fill('new query');
+    await openSearchPanel(page, '.query-options');
     const save = page.getByRole('button', { name: 'Save this search', exact: true });
     await expect(save).toBeDisabled();
     await page.evaluate(() => (window as any).__finishBookmarkLoad());
     await expect(save).toBeEnabled();
     await save.click();
     await expect(save).toBeEnabled();
+    await openSearchPanel(page, '.query-options');
     await page.getByRole('button', { name: 'Saved searches', exact: true }).click();
     await expect(page.locator('.saved-dropdown .saved-name')).toHaveCount(2);
     await expect(page.locator('.saved-dropdown')).toContainText('Existing');

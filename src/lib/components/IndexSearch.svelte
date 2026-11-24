@@ -34,7 +34,7 @@
         type OpenedContainerMember } from '$lib/containers';
     import {
         Search, X, ChevronDown, ChevronRight,
-        SlidersHorizontal, ExternalLink, Loader2, Clock,
+        SlidersHorizontal, ExternalLink, Loader2, Clock, Info,
         FileText, FolderOpen, HardDrive, Eye, Bookmark, BookmarkPlus, Trash2, Globe, Tag, Share2, ListPlus, Download, Copy,
         Image as ImageIcon
     } from 'lucide-svelte';
@@ -108,8 +108,16 @@
 
     let query       = $state('');
     let searchRoot = $state<HTMLDivElement>();
+    let { focusRequest = 0 }: { focusRequest?: number } = $props();
     let queryInput = $state<HTMLInputElement>();
+    $effect(() => {
+        if (focusRequest > 0) {
+            queryInput?.focus();
+            queryInput?.select();
+        }
+    });
     let mode        = $state<'hybrid' | 'text' | 'vector'>('hybrid');
+    let activeIndexName = $state('');
     let queryIntent = $state<'advanced' | 'natural'>('advanced');
     let vectorEnabled = $state(true);
     let activeBackend = $state<string | null>(null);
@@ -326,7 +334,7 @@
     });
     let resultSort = $state<ResultSort>('relevance');
     let reportFormat = $state<'json' | 'csv' | 'html'>('html');
-    let compactResults = $state(false);
+    let compactResults = $state(true);
     let shareBusy    = $state<string | null>(null);
     let downloadBusy = $state<string | null>(null);
     let mutationBusy = $state<string | null>(null);
@@ -949,10 +957,6 @@
     function handleWorkspaceKeydown(event: KeyboardEvent) {
         if (event.defaultPrevented || event.isComposing || !searchRoot?.contains(event.target as Node)) return;
         const target = event.target as HTMLElement;
-        // Ctrl/⌘ K belongs to the application's quick navigation palette.
-        if (event.ctrlKey !== event.metaKey && event.shiftKey && !event.altKey && event.key.toLowerCase() === 'f') {
-            event.preventDefault(); queryInput?.focus(); queryInput?.select(); return;
-        }
         if (event.key === 'Escape') {
             if (showSavedDropdown || showHistory) {
                 showSavedDropdown = false; showHistory = false;
@@ -1134,6 +1138,9 @@
     }
 
     onMount(async () => {
+        const activeId = await getSetting('activeCatalogId', null).catch(() => null);
+        const savedIndexes: { id: string; name: string }[] = await getSetting('catalogs', []).catch(() => []);
+        activeIndexName = savedIndexes.find(index => index.id === activeId)?.name ?? '';
         try {
             const config = await invoke<{ use_vector?: boolean; backend_type?: 'local' | 'remote' | 'hybrid' }>('index_get_config');
             activeBackend = config.backend_type ?? null;
@@ -2000,7 +2007,6 @@
                 aria-label={labels.query}
                 aria-keyshortcuts="Control+Shift+f Meta+Shift+f ArrowDown"
                 placeholder={labels.placeholder}
-                title={'Operatoren: AND OR NOT, "Phrase", w/N (proximity), pre/N (ordered), foo* (wildcard), foo~2 (fuzzy), title:karl, headings:foo, body:foo, (Klammern). Großschreibung der Operatoren beliebig.'}
                 autofocus
             />
             {#if query}
@@ -2011,13 +2017,39 @@
             {#if loading}<Loader2 size={15} class="spin" />{:else}<Search size={15} />{/if}
             {labels.search}
         </button>
+        <button class="filter-toggle" class:active={showFilters}
+            onclick={() => showFilters = !showFilters} title={labels.filters}
+            aria-label={labels.filters} aria-expanded={showFilters} aria-controls="library-search-filters">
+            <SlidersHorizontal size={15} />
+        </button>
+    </div>
+
+    <!-- ── Mode chips ─────────────────────────────────────────────────────────── -->
+    <div class="search-controls">
+        {#if activeIndexName}
+            <span class="search-index-name">Index · {activeIndexName}</span>
+        {/if}
+        {#if vectorEnabled}
+            <div class="mode-row">
+        {#each (['hybrid', 'text', 'vector'] as const) as m}
+            <button class="mode-chip" class:active={mode === m} disabled={!vectorEnabled && m !== 'text'}
+                    title={!vectorEnabled && m !== 'text' ? 'Enable vector embeddings in Search Index settings.' : ''}
+                    onclick={() => mode = m}>
+                {labels[m]}
+            </button>
+        {/each}
+            </div>
+        {/if}
+        <details class="search-disclosure query-options">
+            <summary><Info size={14} /> {i18n.lang === 'de' ? 'Suchoptionen und Hilfe' : 'Search options and help'}</summary>
+            <div class="query-secondary">
         <!-- P13.7 Stage M — search the cloud-backup VPS over HTTPS.
              Uses the same query string; the server runs FTS5 + a
              server-side embedding pass and RRF-fuses both arms. -->
         {#if $caps.cloud_backup}
         <button class="filter-toggle" onclick={runRemoteSearch}
                 disabled={remoteLoading || !query.trim()}
-                title="Search the cloud-backup VPS over HTTPS">
+                title={i18n.lang === 'de' ? 'Cloud-Backup durchsuchen' : 'Search cloud backup'}>
             {#if remoteLoading}<Loader2 size={15} class="spin" />{:else}🌐{/if}
             Cloud
         </button>
@@ -2025,14 +2057,14 @@
         <!-- Stage S — federated search across all backends. -->
         <button class="filter-toggle fed-btn" onclick={runFederatedSearch}
                 disabled={fedLoading || !query.trim() || fedBackendsActive.length === 0}
-                title="Search all backends (local + cloud-backup + CrispLens) with RRF merge">
+                title={i18n.lang === 'de' ? 'Alle konfigurierten Suchdienste durchsuchen' : 'Search all configured services'}>
             {#if fedLoading}<Loader2 size={15} class="spin" />{:else}🔀{/if}
-            Alle
+            {i18n.lang === 'de' ? 'Alle Dienste' : 'All services'}
         </button>
         <!-- P21 — search by image similarity via ViT + omni embeddings. -->
         <button class="filter-toggle" onclick={searchByImage}
                 disabled={imageSearchLoading}
-                title="Search by image similarity (ViT + omni embeddings)">
+                title={i18n.lang === 'de' ? 'Nach ähnlichen Bildern suchen' : 'Search similar images'}>
             {#if imageSearchLoading}<Loader2 size={15} class="spin" />{:else}<ImageIcon size={15} />{/if}
         </button>
         <button
@@ -2144,18 +2176,11 @@
                 </div>
             {/if}
         </div>
-        <label class="smart-toggle" title="Smart search: auto-extract year, language, file type, etc. from your query">
+        <label class="smart-toggle" title={i18n.lang === 'de' ? 'Jahr, Sprache und Dateityp aus der Abfrage erkennen' : 'Infer year, language and file type from the query'}>
             <input type="checkbox" bind:checked={smartSearch} />
-            <span class="smart-label">Smart</span>
+            <span class="smart-label">{i18n.lang === 'de' ? 'Automatische Filter' : 'Automatic filters'}</span>
         </label>
-        <button class="filter-toggle" class:active={showFilters}
-            onclick={() => showFilters = !showFilters} title={labels.filters}
-            aria-label={labels.filters} aria-expanded={showFilters} aria-controls="library-search-filters">
-            <SlidersHorizontal size={15} />
-        </button>
-    </div>
-
-    <!-- ── Mode chips ─────────────────────────────────────────────────────────── -->
+            </div>
     <SearchQueryTools bind:query onapply={() => { queryIntent = 'advanced'; void runSkeletonSearch(query); }} />
     <div class="mode-row">
         <label class="query-intent-control">
@@ -2165,21 +2190,17 @@
                 <option value="natural">{i18n.lang === 'de' ? 'Natürliche Sprache' : 'Natural language'}</option>
             </select>
         </label>
-        {#each (['hybrid', 'text', 'vector'] as const) as m}
-            <button class="mode-chip" class:active={mode === m} disabled={!vectorEnabled && m !== 'text'}
-                    title={!vectorEnabled && m !== 'text' ? 'Enable vector embeddings in Search Index settings.' : ''}
-                    onclick={() => mode = m}>
-                {labels[m]}
-            </button>
-        {/each}
+
     </div>
 
-    <p class="search-help">{labels.modesHint}</p>
+
     {#if mode !== 'vector' && queryIntent === 'natural'}
         <p class="search-help">{i18n.lang === 'de'
             ? 'Wörter und Satzzeichen werden als normaler Text behandelt. Volltext findet beliebige enthaltene Wörter; Hybrid ergänzt inhaltlich ähnliche Dokumente. Alle gesetzten Filter gelten weiterhin.'
             : 'Words and punctuation are treated as ordinary text. Full text matches any of the indexed words; Hybrid adds related documents. All selected filters still apply.'}</p>
     {/if}
+        </details>
+    </div>
     {#if activeFilterKeys.length || refinementScope.length || ownerScope !== null || smartSearch}
         <div class="active-filters" aria-label={labels.active}>
             {#each activeFilterKeys as key}
@@ -2339,6 +2360,8 @@
     <div class="results-and-preview">
     <div class="results-area" class:with-preview={previewing !== null} class:compact-results={compactResults}>
         {#if executedRecipe && !loading && !error}
+            <details class="search-disclosure corpus-disclosure">
+                <summary><Info size={14} /> {i18n.lang === 'de' ? 'Gesamttreffer und Berichte' : 'All matches and reports'}</summary>
             <section class="corpus-summary" aria-label={i18n.lang === 'de' ? 'Vollständige Texttreffer' : 'Complete full-text matches'}>
                 {#if canCountLexicalMatches(executedRecipe, activeBackend)}
                     <div class="corpus-summary-heading">
@@ -2420,6 +2443,7 @@
                         : 'Exact totals are available for Full text search in local and supported remote indexes. Semantic and hybrid searches show the returned window.'}</p>
                 {/if}
             </section>
+            </details>
         {/if}
         {#if loading}
             <div class="state-msg" role="status"><Loader2 size={22} class="spin" /> {labels.loading}</div>
@@ -2487,7 +2511,7 @@
                             : 'Refinement requires indexed documents from one owner. Use a single-owner search first.'}
                         aria-label={i18n.lang === 'de' ? 'Angezeigte Dokumente durchsuchen' : 'Search within displayed documents'}
                     >
-                        Refine
+                        {i18n.lang === 'de' ? 'Ergebnisse durchsuchen' : 'Refine'}
                     </button>
                 {/if}
                 {#if !activeFilterKeys.length && !refinementScope.length && ownerScope === null && !smartSearch && !searchTags.size && !searchOptionsChanged}
@@ -2496,7 +2520,7 @@
                     onclick={openSearchResultsContext}
                     title="Open search results in context"
                 >
-                    <FolderOpen size={11} /> Context
+                    <FolderOpen size={11} /> {i18n.lang === 'de' ? 'Dateikontext' : 'Context'}
                 </button>
                 {/if}
                 {#if selectedDisplayedCount > 0}
@@ -2514,6 +2538,12 @@
                 {/if}
             </div>
 
+            <div class="result-controls">
+                {#if executedRecipe && results.length >= executedRecipe.limit && executedRecipe.limit < resultLimitMaximum}
+                    <button class="reset-filters" onclick={loadMoreResults} disabled={searchOptionsChanged || loading}>{i18n.lang === 'de' ? 'Mehr Ergebnisse laden' : 'Load more results'}</button>
+                {/if}
+                <details class="search-disclosure result-inspection">
+                    <summary><Info size={14} /> {i18n.lang === 'de' ? 'Ansicht und Export' : 'View and export'}</summary>
             <section class="inspection-toolbar" aria-label={i18n.lang === 'de' ? 'Ergebnisse prüfen und exportieren' : 'Inspect and export results'}>
                 <label>{i18n.lang === 'de' ? 'Sortieren' : 'Sort results'}<select bind:value={resultSort}>
                     <option value="relevance">{i18n.lang === 'de' ? 'Relevanz' : 'Relevance'}</option>
@@ -2535,9 +2565,7 @@
                 ? 'Sortierung, Tags, Textstellenzählung und Export gelten für das gelieferte Ergebnisfenster, nicht für alle Treffer im Korpus.'
                 : 'Sorting, tags, passage counts, and exports apply to this returned window, not every match in the corpus.'}
                 {#if executedRecipe} · {elapsedMs} ms · {i18n.lang === 'de' ? 'Angefordertes Limit' : 'Requested limit'} {executedRecipe.limit}{/if}
-                {#if executedRecipe && results.length >= executedRecipe.limit && executedRecipe.limit < resultLimitMaximum}
-                    <button class="reset-filters" onclick={loadMoreResults} disabled={searchOptionsChanged || loading}>{i18n.lang === 'de' ? 'Mehr Ergebnisse laden' : 'Load more results'}</button>
-                {/if}
+
             </p>
             <p class="search-keyboard-note">{i18n.lang === 'de'
                 ? 'Tastatur: Strg/⌘ Umschalt F zur Suche · ↓ zu Ergebnissen · ↑/↓ zwischen Dokumenten · Enter zur Vorschau · Alt ↑/↓ in der Vorschau · Esc zum Schließen.'
@@ -2546,6 +2574,8 @@
                 ? 'Für eine genaue Suche innerhalb dieser Ergebnisse müssen die indexierten Dokumente einem einzigen Besitzer zugeordnet sein.'
                 : 'Refining these results requires indexed documents from one owner so the document scope remains exact.'}</p>{/if}
 
+                </details>
+            </div>
             {#if searchTags.size}
                 <div class="active-filters display-filters" aria-label={i18n.lang === 'de' ? 'Tags für angezeigte Ergebnisse' : 'Displayed-result tag filters'}>
                     <span>{i18n.lang === 'de' ? 'Angezeigte Ergebnisse:' : 'Displayed results:'}</span>
@@ -2653,6 +2683,16 @@
                                     : (i18n.lang === 'de' ? 'Dokumentmetadaten' : 'Document metadata')}</span>
                         </div>
 
+                    </div>
+
+                    {#if r.snippet}
+                        <div class="chunk-preview">
+                            <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+                            {@html highlightSnippet(r.snippet, executedRecipe ? executedQuery : '')}
+                        </div>
+                    {/if}
+                    <details class="search-disclosure document-details">
+                        <summary><Info size={14} /> {i18n.lang === 'de' ? 'Dokumentdetails und Aktionen' : 'Document details and actions'}</summary>
                         <div class="result-right" role="group" aria-label={i18n.lang === 'de' ? `Aktionen für ${resultName}` : `Actions for ${resultName}`}>
                             <div class="score-wrap" title="Score {r.score.toFixed(4)}">
                                 <div class="score-bar"><div class="score-fill" style="width:{scoreBarPct(r.score)}%"></div></div>
@@ -2795,7 +2835,7 @@
                                     <Globe size={13} />
                                 </button>
                             {/if}
-                            <button class="open-btn similar-btn"
+                            <button class="open-btn similar-btn" disabled={!vectorEnabled}
                                 onclick={(e) => { e.stopPropagation(); findSimilar(r); }}
                                 title="Find similar documents">
                                 ≈
@@ -2815,28 +2855,12 @@
                                 ★
                             </button>
                         </div>
-                    </div>
-
-                    <!-- P22.3 — Auto-summary (when available, shows above snippet) -->
-                    {#if r.summary}
-                        <div class="result-summary">
-                            {r.summary}
-                        </div>
-                    {/if}
-
-                    <!-- Best chunk snippet with highlighted terms -->
-                    {#if r.snippet}
-                        <div class="chunk-preview">
-                            <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-                            {@html highlightSnippet(r.snippet, executedRecipe ? executedQuery : '')}{#if r.snippet.length >= 400}…{/if}
-                        </div>
-                    {:else}
-                        <div class="chunk-preview no-snippet">(Kein Textauszug verfügbar)</div>
-                    {/if}
-
-                    {#if wallabagBodies.has(r.doc_id)}
-                        <details open><summary>Indexed article</summary><pre class="indexed-body">{wallabagBodies.get(r.doc_id)}</pre></details>
-                    {/if}
+                        {#if r.summary && !r.snippet}
+                            <p class="result-summary">{r.summary}</p>
+                        {/if}
+                        {#if wallabagBodies.has(r.doc_id)}
+                            <details><summary>{i18n.lang === 'de' ? 'Indizierter Artikel' : 'Indexed article'}</summary><pre class="indexed-body">{wallabagBodies.get(r.doc_id)}</pre></details>
+                        {/if}
 
                     <!-- P13.5 on-demand translation surface.  Renders three
                          states in sequence: idle (button), loading
@@ -2945,7 +2969,7 @@
                                  notice inside this strip and not over the results. -->
                             <IntendedPurposeGate blocking={false} />
                             <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
-                                <span style="font-size:0.75rem; color:#a1a1aa;">Doc tools:</span>
+                                <span style="font-size:0.75rem; color:#a1a1aa;">{i18n.lang === 'de' ? 'Dokumentwerkzeuge' : 'Document tools'}</span>
                                 <button type="button" class="translate-btn" disabled={dt?.busy != null}
                                     onclick={() => handleOcrExport(r, 'pdf')}
                                     title="OCR → searchable PDF, written beside the source file">Searchable PDF</button>
@@ -3002,7 +3026,7 @@
                                     onclick={() => handleTranslate(r)}
                                     title="Translate this snippet to {translateTargetLang} via m2m100"
                                 >
-                                    Translate to {translateTargetLang}
+                                    {i18n.lang === 'de' ? 'Übersetzen nach' : 'Translate to'} {translateTargetLang}
                                 </button>
                             {:else if ts.loading}
                                 <div class="translate-loading">
@@ -3068,6 +3092,7 @@
                             {/each}
                         </div>
                     {/if}
+                    </details>
                 </div>
             {/each}
         {/if}
@@ -3343,6 +3368,19 @@
 </div>
 
 <style>
+
+    .search-controls, .query-secondary, .result-controls { display: flex; gap: .55rem; align-items: center; flex-wrap: wrap; }
+    .search-controls { margin: .15rem 0 .35rem; }
+    .search-disclosure > summary { display: flex; align-items: center; gap: .35rem; cursor: pointer; list-style: none; color: var(--color-text-secondary, #a1a1aa); font-size: .8rem; padding: .25rem 0; }
+    .search-disclosure[open] > summary { color: var(--color-text-primary, #f4f4f5); }
+    .query-options[open], .result-inspection[open] { flex-basis: 100%; }
+    .query-secondary { margin: .35rem 0; position: relative; }
+    .corpus-disclosure { margin: .15rem 0 .35rem; }
+    .document-details { margin-top: .3rem; }
+    .document-details .result-right { justify-content: start; margin: .35rem 0; }
+    .result-card > .chunk-preview { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; }
+    .search-index-name { color: var(--color-text-secondary, #a1a1aa); font-size: .8rem; overflow-wrap: anywhere; }
+
     .query-intent-control { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; font-size: 0.75rem; }
     .query-intent-control select { max-width: 100%; border: 1px solid var(--border-color, #454545); border-radius: 0.35rem; padding: 0.25rem 0.4rem; color: inherit; background: var(--bg-secondary, #242424); }
 

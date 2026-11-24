@@ -518,6 +518,19 @@ impl SearchEngine {
             .fetch_best_chunk_per_keys(&keys, &term_refs, &score_map, filters)
             .await?;
 
+        let name_terms = super::fts_query::plain_ranking_terms(effective_query);
+        if !name_terms.is_empty() {
+            for result in &mut results {
+                let Some(filename) = result.filename.as_deref() else { continue };
+                let stem = filename.rsplit_once('.').map_or(filename, |(stem, _)| stem);
+                let words = super::fts_query::simple_tokenize(stem);
+                if name_terms.iter().all(|term| words.contains(term)) {
+                    // A matching filename is a modest signal within the BM25
+                    // candidate window, even when embedded title metadata is absent.
+                    result.score *= 1.15;
+                }
+            }
+        }
         results.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)

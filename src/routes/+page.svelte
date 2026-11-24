@@ -82,6 +82,7 @@
     let secretStoreAlertDismissed = $state(false);
     /** Settings section to open next, e.g. Secret storage from the banner. */
     let settingsSection = $state<string | null>(null);
+    let librarySearchRequest = $state(0);
     let navCollapsed = $state(false);
     let showMobileTools = $state(false);
     let showLogs = $state(false);
@@ -215,6 +216,11 @@
         else activeTab = tab;
     }
 
+    function openLibrarySearch() {
+        librarySearchRequest += 1;
+        navigate('catalog');
+    }
+
     function openQuickNavigation() {
         // A mobile menu action is about to disappear; restore its persistent
         // trigger first so the dialog has somewhere useful to return focus.
@@ -237,7 +243,12 @@
     }
 
     function onWindowKey(event: KeyboardEvent) {
-        if (isNavigationShortcut(event)) {
+        if (event.ctrlKey !== event.metaKey && event.shiftKey && !event.altKey && event.key.toLowerCase() === 'f'
+            && !event.defaultPrevented && !event.isComposing
+            && !document.querySelector('dialog[open], [aria-modal="true"]')) {
+            event.preventDefault();
+            openLibrarySearch();
+        } else if (isNavigationShortcut(event)) {
             // Respect another modal's keyboard scope and content editors' link
             // shortcut. Ordinary text inputs can still open quick navigation.
             if (!showQuickNavigation && (document.querySelector('dialog[open], [aria-modal="true"]')
@@ -824,7 +835,7 @@
         {/if}
         <div class="content-area">
             {#if activeTab === 'settings'}
-                <Settings section={settingsSection} />
+                <Settings section={settingsSection} openLibrary={openLibrarySearch} />
             {:else if activeTab === 'batch'}
                 <BatchReview workflow="inbox" />
             {:else if activeTab === 'review'}
@@ -834,7 +845,7 @@
             {:else if activeTab === 'history'}
                 <History onResumeBatch={switchToBatch} />
             {:else if activeTab === 'catalog'}
-                <IndexIngest />
+                <IndexIngest searchRequest={librarySearchRequest} />
             {:else if activeTab === 'translate'}
                 <Translate initialPath={$documentToolRequest?.tool === 'translate' ? uriToPath($documentToolRequest.locationUri) || '' : ''} />
             <!-- PLAN P36.16 — the AIToolkit panels only exist in builds that

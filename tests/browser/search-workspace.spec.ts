@@ -1,6 +1,6 @@
 // UI state and IPC contracts. Retrieval correctness is covered by native suites.
 import { test, expect, type Page } from '@playwright/test';
-import { fixtures } from './fixtures';
+import { fixtures, openSearchPanel } from './fixtures';
 
 async function search(page: Page, query = 'warranty') {
     await page.getByRole('textbox', { name: 'Search indexed documents' }).fill(query);
@@ -98,13 +98,16 @@ test('container members expose nested provenance and open only an owner-scoped v
     await containerFixture(page); await search(page);
     const card = page.locator(`.result-card[data-document-id="${'1'.repeat(64)}"]`);
     await expect(card.locator('.result-path')).toHaveText('/records/mail.zip › inbox.mbox › First message.eml');
+    await openSearchPanel(card, '.document-details');
     await card.getByTitle('Open verified member copy', { exact: true }).click();
     await expect.poll(() => page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'index_open_container_member').at(-1)?.args))
         .toEqual({ ownerId: 'owner-a', docId: '1'.repeat(64) });
     await expect.poll(() => page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'plugin:opener|open_path').at(-1)?.args.path))
         .toBe('/app/container-cache/member-1.txt');
+    await openSearchPanel(card, '.document-details');
     await card.getByTitle('Copy path', { exact: true }).click();
     await expect.poll(() => page.evaluate(() => (window as any).__copiedText)).toBe('/records/mail.zip › inbox.mbox › First message.eml');
+    await openSearchPanel(card, '.document-details');
     await card.getByTitle('Copy citation', { exact: true }).click();
     await expect.poll(() => page.evaluate(() => (window as any).__copiedText)).toContain(`Container SHA-256: ${'a'.repeat(64)}`);
 });
@@ -138,23 +141,32 @@ test('changed containers show an opening failure while the indexed passage remai
 
 test('bookmarks restore sort, compact layout, report format, display tags and preview preference', async ({ page }) => {
     await search(page);
+    await openSearchPanel(page, '.result-inspection');
     await page.getByRole('combobox', { name: 'Sort results', exact: true }).selectOption('year-desc');
+    await openSearchPanel(page, '.result-inspection');
     await page.getByLabel('Compact results', { exact: true }).check();
+    await openSearchPanel(page, '.result-inspection');
     await page.getByRole('combobox', { name: 'Report format', exact: true }).selectOption('json');
     await page.getByRole('button', { name: 'Tags in returned results', exact: true }).click();
     await page.locator('.search-tagcloud-wrap .tc-chip').filter({ hasText: /^reviewed/ }).click();
+    await openSearchPanel(page.locator('.result-card[data-document-id="a"]'), '.document-details');
     await page.locator('.result-card[data-document-id="a"]').getByTitle('Inspect indexed passage', { exact: true }).click();
     await page.getByRole('button', { name: 'Close preview', exact: true }).click();
+    await openSearchPanel(page, '.query-options');
     await page.getByRole('button', { name: 'Save this search', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Save this search', exact: true })).toBeEnabled();
     await page.getByRole('button', { name: 'Clear display filters', exact: true }).click();
+    await openSearchPanel(page, '.result-inspection');
     await page.getByRole('combobox', { name: 'Sort results', exact: true }).selectOption('filename');
     await page.getByLabel('Compact results', { exact: true }).uncheck();
+    await openSearchPanel(page, '.result-inspection');
     await page.getByRole('combobox', { name: 'Report format', exact: true }).selectOption('csv');
+    await openSearchPanel(page, '.query-options');
     await page.getByRole('button', { name: 'Saved searches', exact: true }).click();
     await page.locator('.saved-dropdown .saved-name').first().click();
     await expect(page.locator('.result-card')).toHaveCount(2);
     await expect(page.locator('.result-card').first()).toHaveAttribute('data-document-id', 'a');
+    await openSearchPanel(page, '.result-inspection');
     await expect(page.getByLabel('Compact results', { exact: true })).toBeChecked();
     await expect(page.getByRole('combobox', { name: 'Report format', exact: true })).toHaveValue('json');
     await expect(page.getByRole('combobox', { name: 'Sort results', exact: true })).toHaveValue('year-desc');
@@ -227,6 +239,7 @@ test('citation and source path retain indexed provenance and the executed query'
     await expect(card.locator('.result-path')).toHaveText('/research/zeta.txt');
     await expect(card.locator('.result-origin')).toHaveText('Indexed passage 3');
     await page.getByRole('textbox', { name: 'Search indexed documents' }).fill('unexecuted edit');
+    await openSearchPanel(card, '.document-details');
     await card.getByTitle('Copy citation', { exact: true }).click();
     const citation = await page.evaluate(() => (window as any).__copiedText);
     expect(citation).toContain('Zeta report\nA. Researcher · 2020');
@@ -235,16 +248,19 @@ test('citation and source path retain indexed provenance and the executed query'
     expect(citation).toContain(`Source SHA-256: ${'a'.repeat(64)}`);
     expect(citation).toContain('Search: warranty');
     expect(citation).not.toContain('unexecuted edit');
+    await openSearchPanel(card, '.document-details');
     await card.getByTitle('Copy path', { exact: true }).click();
     expect(await page.evaluate(() => (window as any).__copiedText)).toBe('/research/zeta.txt');
 });
 
 test('a new or cleared search closes an obsolete desktop preview', async ({ page }) => {
     await search(page);
+    await openSearchPanel(page.locator('.result-card[data-document-id="z"]'), '.document-details');
     await page.locator('.result-card[data-document-id="z"]').getByTitle('Inspect indexed passage', { exact: true }).click();
     await expect(page.locator('.preview-pane')).toBeVisible();
     await search(page, 'renewal');
     await expect(page.locator('.preview-pane')).toHaveCount(0);
+    await openSearchPanel(page.locator('.result-card[data-document-id="a"]'), '.document-details');
     await page.locator('.result-card[data-document-id="a"]').getByTitle('Inspect indexed passage', { exact: true }).click();
     await page.getByRole('button', { name: 'Clear search', exact: true }).click();
     await expect(page.locator('.preview-pane')).toHaveCount(0);
@@ -260,12 +276,15 @@ test('loading a larger returned window keeps current presentation and exact requ
     await page.getByRole('textbox', { name: 'Search indexed documents' }).fill('warranty');
     await page.locator('.search-btn').click();
     await expect(page.locator('.result-card')).toHaveCount(20);
+    await openSearchPanel(page, '.result-inspection');
     await page.getByRole('combobox', { name: 'Sort results', exact: true }).selectOption('filename');
+    await openSearchPanel(page, '.result-inspection');
     await page.getByLabel('Compact results', { exact: true }).check();
     const more = page.getByRole('button', { name: 'Load more results', exact: true });
     await expect(more).toBeEnabled();
     await more.click();
     await expect.poll(() => lastSearch(page)).toMatchObject({ query: 'warranty', limit: 50 });
+    await openSearchPanel(page, '.result-inspection');
     await expect(page.getByRole('combobox', { name: 'Sort results', exact: true })).toHaveValue('filename');
     await expect(page.getByLabel('Compact results', { exact: true })).toBeChecked();
     await expect(page.locator('.search-window-note')).toContainText('Requested limit 50');
@@ -291,6 +310,7 @@ test('an active remote index visibly caps a saved request and its report at 200 
         };
     });
     await page.locator('.tab-bar').getByRole('button', { name: 'Search', exact: true }).click();
+    await openSearchPanel(page, '.query-options');
     await page.getByRole('button', { name: 'Saved searches', exact: true }).click();
     await page.locator('.saved-dropdown .saved-name').filter({ hasText: 'Large saved window' }).click();
     await expect.poll(() => lastSearch(page)).toMatchObject({ query: 'warranty', limit: 200 });
@@ -301,10 +321,13 @@ test('an active remote index visibly caps a saved request and its report at 200 
     const limits = page.getByRole('combobox', { name: 'Maximum results', exact: true });
     await expect(limits).toHaveValue('200');
     await expect(limits.locator('option[value="500"]')).toHaveCount(0);
+    await openSearchPanel(page, '.result-inspection');
     await page.getByRole('combobox', { name: 'Report format', exact: true }).selectOption('json');
+    await openSearchPanel(page, '.result-inspection');
     await page.getByRole('button', { name: 'Export displayed', exact: true }).click();
     await expect.poll(() => page.evaluate(() => (window as any).__remoteWindowReport?.recipe.limit)).toBe(200);
     expect(await page.evaluate(() => (window as any).__remoteWindowReport.coverage.requestedLimit)).toBe(200);
+    await openSearchPanel(page, '.query-options');
     await page.getByRole('button', { name: 'Save this search', exact: true }).click();
     await expect.poll(() => page.evaluate(async () => {
         const [saved] = await (window as any).__TAURI_INTERNALS__.invoke('plugin:store|get', { key: 'savedSearches' });
@@ -320,6 +343,7 @@ test('explicit full-corpus counts remain separate from returned-window counts an
     await page.getByRole('button', { name: 'Full text', exact: true }).click();
     await search(page);
     expect(await page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'index_search_summary'))).toHaveLength(0);
+    await openSearchPanel(page, '.corpus-disclosure');
     await page.getByRole('button', { name: 'Count all full-text matches', exact: true }).click();
     await expect(page.locator('.corpus-total')).toContainText('633 matching indexed documents in total');
     await expect(page.locator('.corpus-total')).toContainText('3 in the returned window');
@@ -337,18 +361,21 @@ test('obsolete and cancelled scans cannot replace a newer query and focus invali
     await page.getByRole('button', { name: 'Full text', exact: true }).click();
     await search(page);
     await page.evaluate(() => { (window as any).__holdSummary = true; });
+    await openSearchPanel(page, '.corpus-disclosure');
     await page.getByRole('button', { name: 'Count all full-text matches', exact: true }).click();
     await expect.poll(() => page.evaluate(() => (window as any).__pendingSummaries.length)).toBe(1);
     await search(page, 'renewal');
     await expect.poll(() => page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'index_cancel_search_summary').length)).toBe(1);
     await page.evaluate(() => { const root = window as any; root.__pendingSummaries.shift()(); root.__holdSummary = false; });
     await expect(page.locator('.corpus-total')).toHaveCount(0);
+    await openSearchPanel(page, '.corpus-disclosure');
     await page.getByRole('button', { name: 'Count all full-text matches', exact: true }).click();
     await expect(page.locator('.corpus-total')).toContainText('633');
     await page.evaluate(() => { (window as any).__summaryGeneration = 'snapshot-2'; window.dispatchEvent(new Event('focus')); });
     await expect(page.locator('.corpus-notice')).toHaveText('The index or source scope changed. Count again to refresh the totals.');
     await expect(page.locator('.corpus-total')).toHaveCount(0);
     await page.evaluate(() => { (window as any).__holdSummary = true; });
+    await openSearchPanel(page, '.corpus-disclosure');
     await page.getByRole('button', { name: 'Count all full-text matches', exact: true }).click();
     await page.getByRole('button', { name: 'Cancel match count', exact: true }).click();
     await page.evaluate(() => (window as any).__pendingSummaries.shift()());
@@ -381,12 +408,15 @@ test('same document IDs from distinct owners retain separate selection, preview 
     await page.locator('.search-btn').click();
     await expect(page.locator('.result-card')).toHaveCount(2);
     const alpha = page.locator('.result-card[data-owner-id="alpha"]'), beta = page.locator('.result-card[data-owner-id="beta"]');
+    await openSearchPanel(alpha, '.document-details');
     await alpha.getByTitle('Select for batch sorter', { exact: true }).click();
     await expect(alpha.getByTitle('Remove from batch selection', { exact: true })).toHaveAttribute('aria-pressed', 'true');
     await expect(beta.getByTitle('Select for batch sorter', { exact: true })).toHaveAttribute('aria-pressed', 'false');
     await expect(page.getByRole('button', { name: 'Search within displayed documents', exact: true })).toBeDisabled();
+    await openSearchPanel(alpha, '.document-details');
     await alpha.getByTitle('Inspect indexed passage', { exact: true }).click();
     await expect.poll(() => page.evaluate(() => (window as any).__passageOwners)).toEqual(['alpha']);
+    await openSearchPanel(beta, '.document-details');
     await beta.getByTitle('Inspect indexed passage', { exact: true }).click();
     await expect(page.getByRole('region', { name: 'Indexed passage', exact: true })).toContainText('Stored content for beta');
     await page.evaluate(() => (window as any).__resolveAlphaPassage());
@@ -415,8 +445,11 @@ test('complete export captures exact query scope and reports completion when pub
     await page.getByRole('button', { name: 'Tags in returned results', exact: true }).click();
     await page.locator('.search-tagcloud-wrap .tc-chip').filter({ hasText: /^reviewed/ }).click();
     await expect(page.locator('.result-card')).toHaveCount(2);
+    await openSearchPanel(page, '.corpus-disclosure');
     await page.getByRole('combobox', { name: 'Complete report format', exact: true }).selectOption('json');
+    await openSearchPanel(page, '.corpus-disclosure');
     await page.getByRole('combobox', { name: 'Complete report sort', exact: true }).selectOption('title');
+    await openSearchPanel(page, '.corpus-disclosure');
     await page.getByRole('button', { name: 'Export all full-text matches', exact: true }).click();
     await expect.poll(() => page.evaluate(() => (window as any).__completeExport)).toMatchObject({ query: 'warranty', mode: 'text',
         tag: null, docIdScope: null, format: 'json', sort: 'title', expectedGeneration: 'snapshot-1', path: '/reports/all.json' });
@@ -449,6 +482,7 @@ test('an index switch during the Save dialog cannot silently export a different 
     });
     await page.getByRole('button', { name: 'Full text', exact: true }).click();
     await search(page);
+    await openSearchPanel(page, '.corpus-disclosure');
     await page.getByRole('button', { name: 'Export all full-text matches', exact: true }).click();
     await expect.poll(() => page.evaluate(() => Boolean((window as any).__finishReportDialog))).toBe(true);
     await page.evaluate(() => { const root = window as any; root.__summaryGeneration = 'different-index'; root.__finishReportDialog(); });
@@ -471,6 +505,7 @@ test('a report filename containing cancelled remains an error with a failed life
     });
     await page.getByRole('button', { name: 'Full text', exact: true }).click();
     await search(page);
+    await openSearchPanel(page, '.corpus-disclosure');
     await page.getByRole('button', { name: 'Export all full-text matches', exact: true }).click();
     await expect(page.locator('.corpus-export-feedback')).toHaveAttribute('role', 'alert');
     await expect(page.locator('.corpus-export-feedback')).toContainText('Cannot write cancelled-report.csv');
@@ -491,6 +526,7 @@ test('accepted cancellation reports no completed full-corpus file', async ({ pag
     });
     await page.getByRole('button', { name: 'Full text', exact: true }).click();
     await search(page);
+    await openSearchPanel(page, '.corpus-disclosure');
     await page.getByRole('button', { name: 'Export all full-text matches', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Cancel complete export', exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Cancel complete export', exact: true }).click();
@@ -524,6 +560,7 @@ test('remote corpus totals are owner scoped, exceed the result window and apply 
     // Remount to restore the saved recipe through the real store adapter.
     await page.locator('.tab-bar').getByRole('button', { name: 'Add', exact: true }).click();
     await page.locator('.tab-bar').getByRole('button', { name: 'Search', exact: true }).click();
+    await openSearchPanel(page, '.query-options');
     await page.getByRole('button', { name: 'Saved searches', exact: true }).click();
     await page.locator('.saved-dropdown .saved-name').filter({ hasText: 'Remote owner scope' }).click();
     await expect(page.locator('.result-card')).toHaveCount(3);
@@ -531,6 +568,7 @@ test('remote corpus totals are owner scoped, exceed the result window and apply 
     await expect(page.locator('label[title="Include hits from drives that aren\'t currently mounted"]')).toHaveCount(0);
     await expect(page.locator('.corpus-summary')).toContainText('Entire remote text index');
     await expect(page.locator('.corpus-summary')).toContainText('Desktop drive mounts do not change this scope.');
+    await openSearchPanel(page, '.corpus-disclosure');
     await page.getByRole('button', { name: 'Count all full-text matches', exact: true }).click();
     await expect(page.locator('.corpus-total')).toContainText('633 matching indexed documents in total');
     await expect.poll(() => page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'index_search_summary_generation').at(-1)?.args))
@@ -547,6 +585,7 @@ test('unsupported remote totals fail visibly and a wrong backend scope cannot be
     await summaryFixture(page, 'local_indexed_documents');
     await remoteIndex(page);
     await search(page);
+    await openSearchPanel(page, '.corpus-disclosure');
     await page.getByRole('button', { name: 'Count all full-text matches', exact: true }).click();
     await expect(page.locator('.corpus-notice')).toContainText('invalid matching-document summary');
     await expect(page.locator('.corpus-total')).toHaveCount(0);
@@ -559,8 +598,10 @@ test('unsupported remote totals fail visibly and a wrong backend scope cannot be
             return original(command, args, options);
         };
     });
+    await openSearchPanel(page, '.corpus-disclosure');
     await page.getByRole('button', { name: 'Count all full-text matches', exact: true }).click();
     await expect(page.locator('.corpus-notice')).toContainText('Upgrade the server.');
+    await openSearchPanel(page, '.corpus-disclosure');
     await page.getByRole('button', { name: 'Export all full-text matches', exact: true }).click();
     await expect(page.locator('.corpus-export-feedback')).toContainText('Upgrade the server.');
     expect(await page.evaluate(() => Boolean((window as any).__unsupportedSave))).toBe(false);
@@ -584,7 +625,9 @@ test('remote complete export captures generation before Save and accepts only th
         };
     });
     await search(page);
+    await openSearchPanel(page, '.corpus-disclosure');
     await page.getByRole('combobox', { name: 'Complete report format', exact: true }).selectOption('json');
+    await openSearchPanel(page, '.corpus-disclosure');
     await page.getByRole('button', { name: 'Export all full-text matches', exact: true }).click();
     await expect.poll(() => page.evaluate(() => Boolean((window as any).__finishRemoteSave))).toBe(true);
     await page.getByRole('textbox', { name: 'Search indexed documents' }).fill('edited draft');
