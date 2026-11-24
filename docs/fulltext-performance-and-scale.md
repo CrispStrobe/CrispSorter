@@ -144,8 +144,8 @@ justify the heavier footprint.
 
 ## OCR qualification
 
-See [Windows CPU OCR measurements](ocr-windows-cpu-qualification.md) for the
-initial German model and image-size sweep.
+See [Windows OCR measurements](ocr-windows-cpu-qualification.md) for the
+German model, image size, worker, cropping and Vulkan sweeps.
 
 Use the same rendered pages and reference transcriptions for OCRS, CrispEmbed
 GGML Tesseract and PP-OCR. Compare German character and word error rates,
