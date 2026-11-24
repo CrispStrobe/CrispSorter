@@ -158,6 +158,7 @@ test('bookmark persistence finishes before accepting the next save', async ({ pa
     const input = page.getByRole('textbox', { name: 'Search indexed documents' });
     const save = page.getByRole('button', { name: 'Save this search', exact: true });
     await input.fill('first query');
+    await openSearchPanel(page, '.query-options');
     await save.click();
     await input.fill('second query');
     await expect(save).toBeDisabled();
@@ -206,6 +207,7 @@ test('initial bookmark loading preserves existing searches before allowing a new
     });
     await openSearch(page);
     await page.getByRole('textbox', { name: 'Search indexed documents' }).fill('new query');
+    await openSearchPanel(page, '.query-options');
     const save = page.getByRole('button', { name: 'Save this search', exact: true });
     await expect(save).toBeDisabled();
     await page.evaluate(() => (window as any).__finishBookmarkLoad());

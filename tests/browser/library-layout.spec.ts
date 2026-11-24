@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { fixtures } from './fixtures';
+import { fixtures, openSearchPanel } from './fixtures';
 
 const longFilename = 'Warranty coverage and service terms for international business equipment.txt';
 
@@ -56,6 +56,7 @@ test.beforeEach(async ({ page }) => { await fixtures(page); });
 test('matching passages use a native expansion button while result actions keep independent keyboard behavior', async ({ page }) => {
     await openSearch(page);
     const card = page.locator('.result-card').first();
+    await openSearchPanel(card, '.document-details');
     const expand = card.getByRole('button', { name: '2 matching passages for Warranty.txt', exact: true });
     const passages = card.locator('.chunk-list');
     await expect(card.locator('.result-header')).not.toHaveAttribute('role');
@@ -102,6 +103,7 @@ test('phone result titles and local and cloud actions fit without horizontal scr
     await expect(page.getByRole('textbox', { name: 'Search indexed documents' })).toBeInViewport({ ratio: 1 });
 
     for (const card of await page.locator('.result-card').all()) {
+        await openSearchPanel(card, '.document-details');
         await expectNoHorizontalOverflow(card);
         await expectNoHorizontalOverflow(card.locator('.result-right'));
         expect((await card.locator('.result-title').boundingBox())!.width).toBeGreaterThan(160);
@@ -129,6 +131,7 @@ test('phone preview fills the results area and returns to the selected expanded 
     await openSearch(page, true);
     const root = page.locator('.search-root');
     const card = page.locator('.result-card').first();
+    await openSearchPanel(card, '.document-details');
     const expand = card.getByRole('button', { name: `2 matching passages for ${longFilename}`, exact: true });
     await expand.click();
     await card.getByTitle('Select for batch sorter', { exact: true }).click();
