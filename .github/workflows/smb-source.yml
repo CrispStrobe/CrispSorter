@@ -67,7 +67,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: CrispStrobe/CrispEmbed
-          ref: d842065436fddae00a89bbc89db56b92293a1b23
+          ref: e93b58b89dfcf1919097360812c3e40a42b5fe81
           path: repos/CrispEmbed
       - uses: actions/checkout@v4
         with:

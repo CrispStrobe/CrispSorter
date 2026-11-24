@@ -1,3 +1,8 @@
+## v0.15.6 (2026-11-24)
+
+- Pin the CrispEmbed v0.17.21 native runtime and bindings for the PP-OCRv6 tiny stride and Vulkan fixes.
+- Report PaddleOCR line confidence and OCRS line coverage in debug OCR receipts.
+
 # CrispSorter — History & Archived Plans
 
 This file collects historical planning documents that are no longer
