@@ -1,6 +1,13 @@
 <script lang="ts">
+    import { i18n } from '../i18n.svelte';
+    function tr(en: string, de: string): string { return i18n.lang === 'de' ? de : en; }
     import { onMount } from 'svelte';
     import { invoke } from '@tauri-apps/api/core';
+
+    function actionLabel(action: string): string {
+        const labels: Record<string, string> = { unchanged: 'Unverändert', manual_review: 'Manuell prüfen', use_remote: 'Entfernte Version verwenden', remote_only: 'Nur entfernt', use_local: 'Lokale Version verwenden', local_only: 'Nur lokal' };
+        return i18n.lang === 'de' ? (labels[action] ?? action.replaceAll('_', ' ')) : action.replaceAll('_', ' ');
+    }
 
     type Pair = {
         id: string;
@@ -90,30 +97,30 @@
 <div class="sync-pair-panel">
     <div class="panel-heading">
         <div>
-            <strong>Sync-pair comparison</strong>
-            <p class="hint">Read-only metadata comparison. No files are changed.</p>
+            <strong>{tr('Sync-pair comparison', 'Synchronisationspaare vergleichen')}</strong>
+            <p class="hint">{tr('Read-only metadata comparison. No files are changed.', 'Schreibgeschützter Metadatenvergleich. Es werden keine Dateien geändert.')}</p>
         </div>
-        <button type="button" onclick={refreshPairs}>Refresh</button>
+        <button type="button" onclick={refreshPairs}>{tr('Refresh', 'Aktualisieren')}</button>
     </div>
     {#if pairs.length === 0}
-        <p class="hint">No sync pairs configured.</p>
+        <p class="hint">{tr('No sync pairs configured.', 'Keine Synchronisationspaare eingerichtet.')}</p>
     {:else}
         <div class="controls">
-            <select bind:value={selectedId} aria-label="Sync pair">
+            <select bind:value={selectedId} aria-label={tr('Sync pair', 'Synchronisationspaar')}>
                 {#each pairs as pair (pair.id)}
                     <option value={pair.id}>{pair.id} · {pair.local_root} ↔ {pair.remote_root}</option>
                 {/each}
             </select>
-            <select bind:value={policy} aria-label="Comparison policy">
-                <option value="manual">Manual review</option>
-                <option value="newest_wins">Newest wins</option>
-                <option value="local_wins">Local wins</option>
-                <option value="remote_wins">Remote wins</option>
-                <option value="keep_both">Keep both</option>
+            <select bind:value={policy} aria-label={tr('Comparison policy', 'Vergleichsregel')}>
+                <option value="manual">{tr('Manual review', 'Manuell prüfen')}</option>
+                <option value="newest_wins">{tr('Newest wins', 'Neueste Version gewinnt')}</option>
+                <option value="local_wins">{tr('Local wins', 'Lokale Version gewinnt')}</option>
+                <option value="remote_wins">{tr('Remote wins', 'Entfernte Version gewinnt')}</option>
+                <option value="keep_both">{tr('Keep both', 'Beide behalten')}</option>
             </select>
-            <button type="button" onclick={compare} disabled={loading || applying}>{loading ? 'Comparing…' : 'Compare'}</button>
+            <button type="button" onclick={compare} disabled={loading || applying}>{loading ? tr('Comparing…', 'Vergleichen…') : tr('Compare', 'Vergleichen')}</button>
             <button type="button" onclick={applyPolicy} disabled={loading || applying || rows.length === 0}>
-                {applying ? 'Applying…' : 'Apply policy'}
+                {applying ? tr('Applying…', 'Anwenden…') : tr('Apply policy', 'Regel anwenden')}
             </button>
         </div>
     {/if}
@@ -122,21 +129,21 @@
     {#if rows.length > 0}
         <div class="comparison-table-wrap">
             <table>
-                <thead><tr><th>Path</th><th>Local</th><th>Remote</th><th>Result</th></tr></thead>
+                <thead><tr><th>{tr('Path', 'Pfad')}</th><th>{tr('Local', 'Lokal')}</th><th>{tr('Remote', 'Entfernt')}</th><th>{tr('Result', 'Ergebnis')}</th></tr></thead>
                 <tbody>
                     {#each rows as row (row.relative_path)}
                         <tr>
                             <td title={row.relative_path}>{row.relative_path}</td>
                             <td>{formatSide(row.local)}</td>
                             <td>{formatSide(row.remote)}</td>
-                            <td><span class="action action-{row.action}">{row.action.replaceAll('_', ' ')}</span></td>
+                            <td><span class="action action-{row.action}">{actionLabel(row.action)}</span></td>
                         </tr>
                     {/each}
                 </tbody>
             </table>
         </div>
     {:else if selectedId && !loading}
-        <p class="hint">Run Compare to inspect local and remote metadata.</p>
+        <p class="hint">{tr('Run Compare to inspect local and remote metadata.', 'Starten Sie den Vergleich, um lokale und entfernte Metadaten zu prüfen.')}</p>
     {/if}
 </div>
 

@@ -26,6 +26,7 @@
     import { caps } from '../capabilities';
     import { onMount } from 'svelte';
     import { i18n } from '$lib/i18n.svelte';
+    function tr(en: string, de: string): string { return i18n.lang === 'de' ? de : en; }
     import DocumentViewer from './viewer/DocumentViewer.svelte';
     import { uriToPath } from './viewer/types';
     import { localPathFromSearchUri } from '$lib/drives/browser';
@@ -114,7 +115,11 @@
      *  Stapel/sorter flow handles "import unsorted files". The Hinzufügen tab
      *  is for users who want to add files DIRECTLY to the catalog without
      *  going through the AI sort step. */
+    let { searchRequest = 0 }: { searchRequest?: number } = $props();
     let activeTab   = $state<Tab>('overview');
+    $effect(() => {
+        if (searchRequest > 0) activeTab = 'search';
+    });
     let entries     = $state<IngestEntry[]>([]);
     let running     = $state(false);
     let paused      = $state(false);
@@ -3069,11 +3074,11 @@
         {#if mountedCidx}
             <button class="tab cidx-tab" class:active={activeTab === 'cidxArchive'}
                     onclick={() => { activeTab = 'cidxArchive'; loadCidxContents(); }}>
-                <Database size={14} /> Archiv ({mountedCidx.docs})
+                <Database size={14} /> {tr('Archive', 'Archiv')} ({mountedCidx.docs})
             </button>
         {/if}
         <button class="tab tb-btn-flat" onclick={mountCidxArchive} disabled={cidxBusy}
-                title=".cidx-Archiv einlesen (offline-Index)">
+                title={tr('Open .cidx archive (offline index)', '.cidx-Archiv einlesen (Offline-Index)')}>
             {#if cidxBusy}<Loader2 size={12} class="spin" />{:else}+.cidx{/if}
         </button>
     </div>
@@ -3662,7 +3667,7 @@
                 <label class="queue-filter">Anzeigen
                     <select aria-label="Warteschlange filtern" bind:value={queueFilter} disabled={queueBusy}
                         onchange={() => { queueOffset = 0; refreshQueue(); }}>
-                        <option value="all">Alle</option><option value="error">Fehler</option>
+                        <option value="all">{tr('All', 'Alle')}</option><option value="error">Fehler</option>
                         <option value="pending">Ausstehend</option><option value="done">Fertig</option>
                     </select>
                 </label>
@@ -4189,8 +4194,8 @@
             <div style="padding: 8px 16px; background: #0f172a; border-bottom: 1px solid #1e293b; font-size: 0.8125rem;">
                 <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
                     <AlertTriangle size={14} style="color: #f59e0b;" />
-                    <strong style="color: #fbbf24;">URL Duplicates</strong>
-                    <span style="color: #71717a; font-size: 0.75rem;">{urlDupGroups.length} groups</span>
+                    <strong style="color: #fbbf24;">{tr('URL Duplicates', 'URL-Duplikate')}</strong>
+                    <span style="color: #71717a; font-size: 0.75rem;">{urlDupGroups.length} {tr('groups', 'Gruppen')}</span>
                 </div>
                 {#if urlDupError}
                     <div style="color: #f87171; font-size: 0.75rem;">{urlDupError}</div>
@@ -4206,7 +4211,7 @@
                     </div>
                 {/each}
                 {#if urlDupGroups.length > 10}
-                    <div style="color: #71717a; font-size: 0.7rem;">… and {urlDupGroups.length - 10} more groups</div>
+                    <div style="color: #71717a; font-size: 0.7rem;">… {tr('and', 'und')} {urlDupGroups.length - 10} {tr('more groups', 'weitere Gruppen')}</div>
                 {/if}
             </div>
         {/if}
@@ -4215,14 +4220,14 @@
             <div class="query-input-wrap" style="flex:1">
                 <Search size={14} style="color:#71717a;" />
                 <input type="text" bind:value={contentsQuery}
-                    placeholder="Name / Titel / Autor filtern …" class="query-input" />
+                    placeholder={tr('Filter name / title / author …', 'Name / Titel / Autor filtern …')} class="query-input" />
             </div>
             <button class="tb-btn" onclick={() => loadContents(false)} disabled={contentsLoading}>
                 {#if contentsLoading}<Loader2 size={13} class="spin" />{:else}<RefreshCw size={13} />{/if}
                 Aktualisieren
             </button>
             <button class="tb-btn" onclick={loadUrlDuplicates} disabled={urlDupLoading}
-                title="Find documents with the same source URL (cross-corpus dedup)">
+                title={tr('Find documents with the same source URL (cross-corpus dedup)', 'Dokumente mit derselben Quell-URL finden (korpusübergreifend)')}>
                 {#if urlDupLoading}<Loader2 size={13} class="spin" />{:else}<AlertTriangle size={13} />{/if}
                 URL-Duplikate
             </button>
@@ -4237,7 +4242,7 @@
                     <button
                         class="crumb root"
                         onclick={() => { clearFolder(); loadFolderChildren(''); folderTreeOpen = true; }}
-                        title="Alle Ordner anzeigen"
+                        title={tr('Show all folders', 'Alle Ordner anzeigen')}
                     >/</button>
                     {#each folderSegments(contentsFolder) as seg}
                         <span class="crumb-sep">›</span>
@@ -4250,12 +4255,12 @@
                             if (!folderTreeOpen) void loadFolderChildren(contentsFolder);
                             folderTreeOpen = !folderTreeOpen;
                         }}
-                        title="Unterordner anzeigen"
+                        title={tr('Show subfolders', 'Unterordner anzeigen')}
                     >▾</button>
                     {#if contentsFolder}
                         <button class="chip ghost" style="margin-left:4px" onclick={clearFolder}>×</button>
                     {/if}
-                    <button class="chip" onclick={pickContentsFolder} title="Ordner auswählen" style="margin-left:2px">
+                    <button class="chip" onclick={pickContentsFolder} title={tr('Choose folder', 'Ordner auswählen')} style="margin-left:2px">
                         <FolderOpen size={11} />
                     </button>
                 </div>
@@ -4264,7 +4269,7 @@
                         {#if folderTreeLoading}
                             <div class="folder-item muted"><Loader2 size={11} class="spin" /> …</div>
                         {:else if folderChildren.length === 0}
-                            <div class="folder-item muted">Keine Unterordner</div>
+                            <div class="folder-item muted">{tr('No subfolders', 'Keine Unterordner')}</div>
                         {:else}
                             {#each folderChildren as child}
                                 <button class="folder-item" onclick={() => navigateFolder(child.path)}>
@@ -4279,7 +4284,7 @@
             </div>
 
             <span class="filter-label" style="margin-left:8px;">Tiefe:</span>
-            <button class="chip" class:active={contentsLevel === 'all'} onclick={() => contentsLevel = 'all'}>Alle</button>
+            <button class="chip" class:active={contentsLevel === 'all'} onclick={() => contentsLevel = 'all'}>{tr('All', 'Alle')}</button>
             <button class="chip" class:active={contentsLevel === 1} onclick={() => contentsLevel = 1}>L1</button>
             <button class="chip" class:active={contentsLevel === 3} onclick={() => contentsLevel = 3}>L3</button>
 
@@ -4291,17 +4296,17 @@
                     </button>
                 {/each}
                 {#if contentsExt.size > 0}
-                    <button class="chip ghost" onclick={() => contentsExt = new Set()}>Reset</button>
+                    <button class="chip ghost" onclick={() => contentsExt = new Set()}>{tr('Reset', 'Zurücksetzen')}</button>
                 {/if}
             {/if}
 
             <span class="filter-label" style="margin-left:8px;">Vollständigkeit:</span>
             <select bind:value={contentsCompleteness} class="filter-select">
-                <option value="any">Egal</option>
-                <option value="has_title">Titel</option>
-                <option value="has_author">Autor</option>
-                <option value="has_year">Jahr</option>
-                <option value="has_all">Alle</option>
+                <option value="any">{tr('Any', 'Egal')}</option>
+                <option value="has_title">{tr('Title', 'Titel')}</option>
+                <option value="has_author">{tr('Author', 'Autor')}</option>
+                <option value="has_year">{tr('Year', 'Jahr')}</option>
+                <option value="has_all">{tr('All', 'Alle')}</option>
             </select>
 
             <!-- Tag-cloud toggle — hidden by default, opt-in. -->
@@ -4309,7 +4314,7 @@
                 class="chip"
                 class:active={showTagCloud}
                 onclick={toggleTagCloud}
-                title="Tag-Wolke ein-/ausblenden"
+                title={tr('Show or hide tag cloud', 'Tag-Wolke ein-/ausblenden')}
                 style="margin-left:8px;"
             >
                 <Tag size={11} /> Tags{#if contentsTags.size > 0} ({contentsTags.size}){/if}
@@ -4345,8 +4350,8 @@
         {:else if contents.length === 0}
             <div class="empty-state">
                 <Database size={32} style="color:#3f3f46" />
-                <p>{indexStats?.doc_count === 0 ? 'Index ist leer' : 'Keine Treffer'}</p>
-                <p class="hint-sub">{indexStats?.doc_count === 0 ? 'Indexiere Dokumente über den "Hinzufügen"-Tab' : 'Filter anpassen oder leeren'}</p>
+                <p>{indexStats?.doc_count === 0 ? tr('Index is empty', 'Index ist leer') : tr('No results', 'Keine Treffer')}</p>
+                <p class="hint-sub">{indexStats?.doc_count === 0 ? tr('Index documents using the Add tab', 'Indexiere Dokumente über den Hinzufügen-Tab') : tr('Adjust or clear filters', 'Filter anpassen oder leeren')}</p>
             </div>
         {:else}
             <!-- Selection toolbar (shown when items are selected) -->

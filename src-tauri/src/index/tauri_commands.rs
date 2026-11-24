@@ -2198,17 +2198,68 @@ async fn index_build_ivf_pq_inner(state: State<'_, AppState>,
 /// only need the LocalIndex (LanceDB) + FtsIndex. Saves multi-GB
 /// downloads + minutes of init time when the user just wants to scan
 /// a drive.
+#[derive(Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IndexDirectoryMode {
+    Existing,
+    New,
+}
+
+fn check_index_directory(path: &std::path::Path, mode: IndexDirectoryMode) -> Result<(), String> {
+    if !path.is_absolute() {
+        return Err("invalid_index_directory".into());
+    }
+    match mode {
+        IndexDirectoryMode::Existing => {
+            let table = format!("{}.lance", super::local_index::TABLE_NAME);
+            if !path.join("lance").join(table).is_dir() {
+                return Err("existing_index_not_found".into());
+            }
+        }
+        IndexDirectoryMode::New => {
+            let mut entries = std::fs::read_dir(path).map_err(|_| "invalid_index_directory")?;
+            if entries.next().is_some() {
+                return Err("new_index_directory_not_empty".into());
+            }
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
-pub async fn index_init(app: tauri::AppHandle, state: State<'_, AppState>, data_dir: String, with_embedder: Option<bool>) -> Result<(), String> {
+pub async fn index_init(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    data_dir: String,
+    with_embedder: Option<bool>,
+    config: Option<IndexConfig>,
+    directory_mode: Option<IndexDirectoryMode>,
+) -> Result<(), String> {
     let log = crate::operation_log::OperationLog::start("index.init", serde_json::json!({"surface":"gui"}));
-    let result = index_init_inner(&log, app, state, data_dir, with_embedder).await;
+    let result = index_init_inner(&log, app, state, data_dir, with_embedder, config, directory_mode).await;
     crate::index::finish_logged(log, result, "init_failed", |_| serde_json::Value::Null)
 }
 
 async fn index_init_inner(log: &crate::operation_log::OperationLog, app: tauri::AppHandle,
     state: State<'_, AppState>,
     data_dir: String,
-    with_embedder: Option<bool>) -> Result<(), String> {
+    with_embedder: Option<bool>,
+    config: Option<IndexConfig>,
+    directory_mode: Option<IndexDirectoryMode>,
+) -> Result<(), String> {
+    if let Some(mode) = directory_mode {
+        let path = std::path::PathBuf::from(&data_dir);
+        tokio::task::spawn_blocking(move || check_index_directory(&path, mode))
+            .await.map_err(|e| e.to_string())??;
+    }
+    let switch_index = config.is_some();
+    let settings_dir = if switch_index { state.data_dir.lock().await.clone() } else { None };
+    if switch_index {
+        let queue = state.bg_ingest.lock().await.snapshot();
+        if queue.active > 0 || queue.pending > 0 {
+            return Err("index_ingest_pending".into());
+        }
+    }
     // Reserve the init slot atomically. If another init is already
     // running, bail out instead of starting a second multi-GB download.
     let config = {
@@ -2218,7 +2269,7 @@ async fn index_init_inner(log: &crate::operation_log::OperationLog, app: tauri::
             return Err("Index initialisation is already in progress".to_owned());
         }
         lock.initializing = true;
-        lock.config.clone()
+        config.unwrap_or_else(|| lock.config.clone())
     };
 
     // Four-way decision tree for whether to load a local embedder:
@@ -2237,11 +2288,21 @@ async fn index_init_inner(log: &crate::operation_log::OperationLog, app: tauri::
 
     let path = std::path::PathBuf::from(&data_dir);
     let init_result = init_index(&path, config, Some(app), load_embedder).await;
+    let ingest_guard = if switch_index { Some(state.bg_ingest.lock().await) } else { None };
 
     let mut lock = state.index.lock().await;
     lock.initializing = false;
+    if ingest_guard.as_ref().is_some_and(|ingest| {
+        let queue = ingest.snapshot();
+        queue.active > 0 || queue.pending > 0
+    }) {
+        return Err("index_ingest_pending".into());
+    }
     match init_result {
         Ok(new_state) => {
+            if let Some(dir) = settings_dir {
+                crate::index::config_persist::save(&dir, &new_state.config).map_err(|e| e.to_string())?;
+            }
             *lock = new_state;
             Ok(())
         }
@@ -2660,6 +2721,10 @@ pub async fn index_set_config(
         "backend": if config.backend_type == super::BackendType::Remote { "remote" } else { "local" },
     }));
     let mut lock = state.index.lock().await;
+    if lock.initializing {
+        log.fail("already_running");
+        return Err("Index initialisation is already in progress".into());
+    }
     lock.config = config;
     lock.remote_queue_depth = 0;
     drop(lock);

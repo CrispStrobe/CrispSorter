@@ -1,7 +1,12 @@
 // Explicit IPC/provider fixtures; native and model qualification are separate.
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 import type { ProjectEnvelope, WorkspaceCapabilities } from '../../src/lib/ocr/client';
 import type { ImportedDocument, OcrProject, RecognitionResult } from '../../src/lib/ocr/model';
+
+export async function openSearchPanel(scope: Page | Locator, selector: string) {
+    const details = scope.locator(selector).first();
+    if (await details.getAttribute('open') === null) await details.locator(':scope > summary').click();
+}
 
 export async function fixtures(page: Page) {
     await page.addInitScript(() => {

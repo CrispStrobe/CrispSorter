@@ -61,6 +61,19 @@ pub fn simple_tokenize(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Bare words suitable for optional ranking signals. Ranking hints must
+/// leave explicit operators, field constraints and patterns alone.
+pub fn plain_ranking_terms(query: &str) -> Vec<String> {
+    let words = query.split_whitespace().collect::<Vec<_>>();
+    if !(1..=8).contains(&words.len()) || words.iter().any(|word| {
+        !word.chars().all(char::is_alphanumeric)
+            || ["AND", "OR", "NOT"].iter().any(|operator| word.eq_ignore_ascii_case(operator))
+    }) {
+        return Vec::new();
+    }
+    simple_tokenize(query)
+}
+
 /// Fold a wildcard's literal text without losing its operators or changing
 /// scripts. RawTokenizer deliberately keeps the entire pattern together.
 pub fn fold_accents(text: &str) -> String {
@@ -346,13 +359,32 @@ pub fn translate(
     fields: &SearchFields,
 ) -> Result<Box<dyn Query>> {
     let expr = parse_query(query, fields)?;
-    compile(
+    let required = compile(
         &expr,
         fields,
         searcher,
         None,
         &mut ExpansionBudget::default(),
-    )
+    )?;
+    // Preserve the Boolean match set. Ordered, contiguous mentions are a
+    // ranking signal for simple multi-word queries, alongside term frequency.
+    let Expr::And(parts) = &expr else { return Ok(required) };
+    if plain_ranking_terms(query).len() != parts.len() {
+        return Ok(required);
+    }
+    let words = analyzed_tokens(query);
+    if words.len() != parts.len() {
+        return Ok(required);
+    }
+    let phrase = union(
+        fields.weighted().into_iter().map(|(field, weight)| {
+            boosted(sequence_query(&terms_for(field, &words)), 0.75 * weight)
+        }).collect(),
+    );
+    Ok(Box::new(BooleanQuery::new(vec![
+        (Occur::Must, required),
+        (Occur::Should, phrase),
+    ])))
 }
 
 fn parse_query(query: &str, fields: &SearchFields) -> Result<Expr> {
@@ -1021,4 +1053,34 @@ pub fn fuzzify_query(query: &str) -> String {
         (word.chars().count() >= 4 && word.chars().all(char::is_alphabetic))
             .then(|| format!("{word}~1"))
     })
+}
+
+#[cfg(test)]
+mod ranking_tests {
+    use super::*;
+    use tantivy::collector::{Count, TopDocs};
+    use tantivy::schema::{Schema, TEXT};
+    use tantivy::{doc, Index, TantivyDocument};
+
+    #[test]
+    fn adjacent_terms_rank_first_without_excluding_separated_terms() -> Result<()> {
+        let mut schema = Schema::builder();
+        let title = schema.add_text_field("title", TEXT);
+        let headings = schema.add_text_field("headings", TEXT);
+        let body = schema.add_text_field("body", TEXT);
+        let fields = SearchFields { title, headings, body, body_translated: None };
+        let index = Index::create_in_ram(schema.build());
+        let mut writer = index.writer::<TantivyDocument>(15_000_000)?;
+        writer.add_document(doc!(body => "meeting summary before lunch"))?;
+        writer.add_document(doc!(body => "meeting before lunch summary"))?;
+        writer.add_document(doc!(body => "meeting before lunch today"))?;
+        writer.commit()?;
+        let searcher = index.reader()?.searcher();
+        let query = translate("meeting summary", &searcher, &fields)?;
+        assert_eq!(searcher.search(&query, &Count)?, 2);
+        let hits = searcher.search(&query, &TopDocs::with_limit(2))?;
+        assert!(hits[0].0 > hits[1].0);
+        assert_eq!(hits[0].1.doc_id, 0);
+        Ok(())
+    }
 }

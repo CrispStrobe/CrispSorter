@@ -86,6 +86,8 @@
     import { modelDownloadLabel, type ModelDownloadProgress } from '$lib/ocr/client';
     import AutomationPanel from './AutomationPanel.svelte';
     import SyncPairPanel from './SyncPairPanel.svelte';
+    import IndexManager from './IndexManager.svelte';
+    import { indexSettingsCopy } from '../index/settingsCopy';
     import WallabagImport from './WallabagImport.svelte';
     import { fetch } from '@tauri-apps/plugin-http';
     import { loadWebLLM, unloadWebLLM, getWebLLMLoadedModel, WEBLLM_MODELS } from '../llm/webllm';
@@ -168,7 +170,7 @@
 
     let providers = $state<LLMProvider[]>(JSON.parse(JSON.stringify(DEFAULT_PROVIDERS)));
     /** A section to open, e.g. 'security' from the secret-store banner. */
-    let { section = null }: { section?: string | null } = $props();
+    let { section = null, openLibrary }: { section?: string | null; openLibrary: () => void } = $props();
     let selectedProviderId = $state('global');
     $effect(() => { if (section) selectedProviderId = section; });
     let selectedProvider = $derived(providers.find(p => p.id === selectedProviderId) || providers[0]);
@@ -769,11 +771,19 @@
         embedderBackend: 'onnx' | 'gguf';
         device:   'auto' | 'cpu' | 'metal' | 'cuda';
         createdAt: number;
+        useVector?: boolean;
+        registryModel?: string;
+        matryoshkaDim?: number;
+        cloudSync?: [boolean, boolean, boolean, boolean];
+        directoryMode?: 'existing';
     }
+    let indexCopy = $derived(indexSettingsCopy[i18n.lang]);
+    let indexManagerReady = $state(false);
+    let indexManagerStats = $state<{ doc_count: number; total_rows: number } | null>(null);
+    let indexFolderPicking = $state(false);
+    let selectedCatalogId = $state<string | null>(null);
     let catalogs       = $state<Catalog[]>([]);
     let activeCatalogId = $state<string | null>(null);
-    let renamingCatalogId = $state<string | null>(null);
-    let renameDraft    = $state('');
 
     // Which UI model values have a GGUF counterpart in CrispEmbed. Kept in
     // sync with `EmbedderModel::gguf_registry_name()` on the Rust side.
@@ -1039,6 +1049,11 @@
             embedderBackend: indexEmbedderBackend,
             device: indexDevice,
             createdAt: Date.now(),
+            useVector: indexUseVector,
+            registryModel: indexEmbedderModelName,
+            matryoshkaDim: indexMatryoshkaDim,
+            cloudSync: [indexCloudBackupPushManifests, indexCloudBackupPushEmbeddings,
+                indexCloudBackupPullManifests, indexCloudBackupPullFullText],
         };
     }
 
@@ -1049,10 +1064,16 @@
         indexDataDir         = c.dataDir;
         indexSearchMode      = c.mode;
         indexBackendType     = c.backend;
+        if (indexRemoteUrl !== (c.remoteUrl ?? '')) indexRemoteApiKey = '';
         indexRemoteUrl       = c.remoteUrl ?? '';
         indexEmbedderModel   = c.embedderModel;
         indexEmbedderBackend = c.embedderBackend;
         indexDevice          = c.device;
+        indexUseVector       = c.useVector ?? c.mode !== 'text';
+        indexEmbedderModelName = c.registryModel ?? '';
+        indexMatryoshkaDim = c.matryoshkaDim ?? 0;
+        [indexCloudBackupPushManifests, indexCloudBackupPushEmbeddings,
+            indexCloudBackupPullManifests, indexCloudBackupPullFullText] = c.cloudSync ?? [false, false, false, false];
     }
 
     async function persistCatalogs() {
@@ -1060,62 +1081,103 @@
         await saveSetting('activeCatalogId', activeCatalogId);
     }
 
-    async function createCatalogFromCurrent() {
-        // Default name derived from data-dir basename or a sequence number.
-        const base = (indexDataDir || '').replace(/[\\/]$/, '').split(/[\\/]/).pop() || 'catalog';
+    function makeCatalog(dataDir: string): Catalog {
+        const base = dataDir.replace(/[\\/]$/, '').split(/[\\/]/).pop() || 'Index';
         let name = base;
         let n = 2;
-        while (catalogs.some(c => c.name === name)) {
-            name = `${base}-${n++}`;
-        }
-        const cat = liveSettingsAsCatalog(name);
-        catalogs = [...catalogs, cat];
-        activeCatalogId = cat.id;
+        while (catalogs.some(c => c.name === name)) name = `${base}-${n++}`;
+        return { ...liveSettingsAsCatalog(name), dataDir };
+    }
+
+    function catalogByPath(path: string): Catalog | undefined {
+        const comparable = (dir: string) => {
+            const normalized = dir.replace(/[\\/]$/, '');
+            return /^[a-z]:|^\\\\/i.test(normalized) ? normalized.replaceAll('\\', '/').toLowerCase() : normalized;
+        };
+        return catalogs.find(c => c.backend !== 'remote' && comparable(c.dataDir) === comparable(path));
+    }
+
+    async function rememberCurrentIndex() {
+        const catalog = catalogByPath(indexDataDir) ?? makeCatalog(indexDataDir);
+        if (!catalogs.some(c => c.id === catalog.id)) catalogs = [...catalogs, catalog];
+        activeCatalogId = catalog.id;
+        selectedCatalogId = catalog.id;
         await persistCatalogs();
     }
 
     async function deleteCatalog(id: string) {
-        if (!confirm(`Catalog "${catalogs.find(c => c.id === id)?.name ?? id}" entfernen? (Index-Daten bleiben auf der Festplatte.)`)) return;
+        if (!confirm(indexCopy.remove)) return;
         catalogs = catalogs.filter(c => c.id !== id);
-        if (activeCatalogId === id) activeCatalogId = catalogs[0]?.id ?? null;
+        if (activeCatalogId === id) activeCatalogId = null;
+        if (selectedCatalogId === id) selectedCatalogId = activeCatalogId ?? catalogs[0]?.id ?? null;
         await persistCatalogs();
     }
 
-    function startRename(id: string) {
-        renamingCatalogId = id;
-        renameDraft = catalogs.find(c => c.id === id)?.name ?? '';
+    async function renameCatalog(id: string, name: string) {
+        catalogs = catalogs.map(c => c.id === id ? { ...c, name } : c);
+        await persistCatalogs();
     }
 
-    async function commitRename() {
-        if (!renamingCatalogId || !renameDraft.trim()) {
-            renamingCatalogId = null;
-            return;
+    async function openCatalog(catalog: Catalog, mode?: 'existing' | 'new') {
+        if (indexStatus === 'loading') return;
+        const previous = liveSettingsAsCatalog('');
+        const previousEnabled = indexEnabled;
+        const previousKey = indexRemoteApiKey;
+        const wasReady = indexManagerReady;
+        indexEnabled = true;
+        loadCatalogIntoInputs(catalog);
+        if (!await applyIndexConfig(catalog, mode)) {
+            loadCatalogIntoInputs(previous);
+            indexEnabled = previousEnabled;
+            indexRemoteApiKey = previousKey;
+            indexManagerReady = wasReady;
         }
-        catalogs = catalogs.map(c =>
-            c.id === renamingCatalogId ? { ...c, name: renameDraft.trim() } : c
-        );
-        renamingCatalogId = null;
+    }
+
+    async function addCatalog(mode: 'existing' | 'new') {
+        if (indexFolderPicking || indexStatus === 'loading') return;
+        indexFolderPicking = true;
+        try {
+            const title = mode === 'existing' ? indexCopy.chooseExisting : indexCopy.chooseNew;
+            const path = await openDialog({ title, directory: true, multiple: false });
+            if (typeof path !== 'string') return;
+            const saved = catalogByPath(path);
+            if (saved && mode === 'existing') {
+                selectedCatalogId = saved.id;
+                if (saved.id !== activeCatalogId || !indexManagerReady) await openCatalog(saved, 'existing');
+                return;
+            }
+            const catalog: Catalog = {
+                ...makeCatalog(path), backend: 'local', mode: 'text', useVector: false,
+                remoteUrl: '', registryModel: '', matryoshkaDim: 0,
+                cloudSync: [false, false, false, false], directoryMode: 'existing',
+            };
+            await openCatalog(catalog, mode);
+        } catch (error) {
+            indexStatus = 'error';
+            indexStatusMsg = String(error);
+        } finally {
+            indexFolderPicking = false;
+        }
+    }
+
+    async function recordOpenedCatalog(catalog?: Catalog) {
+        const previous = catalog ?? catalogs.find(c => c.id === activeCatalogId);
+        if (!previous) return;
+        const entry = { ...previous, ...liveSettingsAsCatalog(previous.name, previous.id),
+            createdAt: previous.createdAt, directoryMode: previous.dataDir === indexDataDir ? previous.directoryMode : undefined };
+        catalogs = catalogs.some(c => c.id === entry.id)
+            ? catalogs.map(c => c.id === entry.id ? entry : c)
+            : [...catalogs, entry];
+        activeCatalogId = entry.id;
+        selectedCatalogId = entry.id;
         await persistCatalogs();
     }
 
-    async function selectCatalog(id: string) {
-        const c = catalogs.find(c => c.id === id);
-        if (!c) return;
-        activeCatalogId = id;
-        loadCatalogIntoInputs(c);
-        await persistCatalogs();
+    async function updateIndexManagerStats() {
+        indexManagerStats = indexManagerReady ? await invoke<{ doc_count: number; total_rows: number }>('index_stats').catch(() => null) : null;
     }
 
-    /** Persist current inputs back to the active catalog (silent). */
-    async function syncActiveCatalogFromInputs() {
-        if (!activeCatalogId) return;
-        catalogs = catalogs.map(c =>
-            c.id === activeCatalogId
-                ? { ...liveSettingsAsCatalog(c.name, c.id), createdAt: c.createdAt }
-                : c
-        );
-        await saveSetting('catalogs', $state.snapshot(catalogs));
-    }
 
     /** Ask the backend for the approximate first-run download size of the
      *  currently-selected embedder + engine combination, so the UI shows
@@ -1424,6 +1486,7 @@
         indexDataDir       = await getSetting('indexDataDir', '');
         catalogs           = (await getSetting('catalogs', [])) as Catalog[];
         activeCatalogId    = await getSetting('activeCatalogId', null);
+        selectedCatalogId = activeCatalogId;
         const declinedArr  = (await getSetting('nonCommercialDeclined', [])) as string[];
         nonCommercialDeclined = new Set(declinedArr ?? []);
         const acceptedArr  = (await getSetting('acceptedModelLicenses', [])) as string[];
@@ -1459,7 +1522,11 @@
         // Check if index is already initialized (e.g. after navigating back to Settings)
         try {
             const ready = await invoke<boolean>('index_is_ready');
-            if (ready) indexStatus = 'ok';
+            indexManagerReady = ready;
+            if (ready) {
+                indexStatus = 'ok';
+                await updateIndexManagerStats();
+            }
         } catch { /* command not available */ }
 
         licensesLoading = true;
@@ -1772,13 +1839,21 @@
         await saveSetting('mlxModels', $state.snapshot(mlxModels));
         await saveSetting('mlxPort', mlxPort);
         await saveSetting('llamacppPort', llamacppPort);
-        // Search Index
+        if (!await persistFileAssociations()) throw new Error(fileAssociationsError || 'File associations could not be saved.');
+        await persistIndexSettings();
+        llmClient.noThinking = noThinking;
+        llmClient.llamacppPort = llamacppPort;
+        llmClient.mlxPort = mlxPort;
+        i18n.setLanguage(currentLanguage);
+        return providerReceipt;
+    }
+
+    async function persistIndexSettings() {
         await saveSetting('indexEnabled',       indexEnabled);
         await saveSetting('indexSearchMode',    indexSearchMode);
         await saveSetting('indexBackendType',   indexBackendType);
         await saveSetting('indexRemoteUrl',     indexRemoteUrl);
         await saveSetting('indexRemoteApiKey',  indexRemoteApiKey);
-        if (!await persistFileAssociations()) throw new Error(fileAssociationsError || 'File associations could not be saved.');
         await saveSetting('indexEmbedderModel', indexEmbedderModel);
         await saveSetting('indexEmbedderBackend', indexEmbedderBackend);
         await saveSetting('indexDevice',        indexDevice);
@@ -1825,11 +1900,6 @@
         await saveSetting('cloudBackupPartitionMax',        cloudBackupPartitionMax);
         await saveSetting('cloudBackupPartitionDepth',      cloudBackupPartitionDepth);
         await saveSetting('indexDataDir',       indexDataDir);
-        llmClient.noThinking = noThinking;
-        llmClient.llamacppPort = llamacppPort;
-        llmClient.mlxPort = mlxPort;
-        i18n.setLanguage(currentLanguage);
-        return providerReceipt;
     }
 
     // ── Round-robin helpers ──────────────────────────────────────────────────
@@ -1920,20 +1990,18 @@
         return { auto: 'auto', cpu: 'cpu', metal: 'metal', cuda: 'cuda' }[d] ?? 'auto';
     }
 
-    async function applyIndexConfig() {
+    async function applyIndexConfig(catalog?: Catalog, directoryMode?: 'existing' | 'new') {
+        if (indexStatus === 'loading') return false;
+        let applied = false;
         const operation = beginOperation('settings.save');
         indexStatus       = 'loading';
         indexStatusMsg    = '';
-        indexInitProgress = 'Konfiguration wird gespeichert …';
-        indexInitPct      = 0;
+        indexInitProgress = indexCopy.saving;
+        indexInitPct = 0;
         try {
-            await saveSettingsSilent();
-            await syncActiveCatalogFromInputs();
-            // Push config to backend.
-            await invoke('index_set_config', {
-                config: {
+            const config = {
                     enabled:          indexEnabled,
-                    mode:             indexModeToRust(indexSearchMode),
+                    mode:             indexModeToRust(indexUseVector ? indexSearchMode : 'text'),
                     backend_type:     indexBackendToRust(indexBackendType),
                     remote_url:       indexRemoteUrl || null,
                     remote_api_key:   indexRemoteApiKey || null,
@@ -1998,27 +2066,42 @@
                     local_skeleton_only: indexSkeletonOnly,
                     // Stage X — registry-driven model override (empty = use enum dropdown).
                     embedder_model_name: indexEmbedderModelName.trim() || null,
-                }
-            });
-            await invoke('proxy_set_password', { password: indexProxyPassword });
-            indexProxyPassword = '';
-            indexProxyStatus = 'Proxy settings saved; password remains in the OS keychain.';
-            await invoke('sync_set_conflict_policy', { policy: indexConflictPolicy });
-            if (indexEnabled) {
-                indexInitProgress = 'Starte Index-Initialisierung …';
-                indexInitPct      = 2;
-                const dataDir = indexDataDir || await invoke<string>('get_app_data_dir').catch(() => '');
-                await invoke('index_init', { dataDir });
+            };
+            if (indexProxyPassword) {
+                await invoke('proxy_set_password', { password: indexProxyPassword });
+                indexProxyPassword = '';
             }
+            if (indexEnabled) {
+                indexInitProgress = indexCopy.opening;
+                indexInitPct = 2;
+                const dataDir = indexDataDir || await invoke<string>('get_app_data_dir');
+                await invoke('index_init', { dataDir, config, directoryMode });
+            } else {
+                await invoke('index_set_config', { config });
+            }
+            applied = true;
+            indexManagerReady = indexEnabled;
+            await recordOpenedCatalog(catalog);
+            await persistIndexSettings();
+            await updateIndexManagerStats();
+            await invoke('sync_set_conflict_policy', { policy: indexConflictPolicy });
             indexStatus       = 'ok';
             indexInitProgress = '';
             indexInitPct      = 100;
             operation.complete({ saved: true });
-        } catch(e: any) {
-            operation.fail(e, { saved: false });
-            indexStatus       = 'error';
-            indexStatusMsg    = String(e);
+            return true;
+        } catch (error) {
+            operation.fail(error, { saved: false });
+            indexStatus = 'error';
+            const message = String(error);
+            indexStatusMsg = ({
+                invalid_index_directory: indexCopy.invalid,
+                existing_index_not_found: indexCopy.missing,
+                new_index_directory_not_empty: indexCopy.notEmpty,
+                index_ingest_pending: indexCopy.indexing,
+            })[message] ?? message;
             indexInitProgress = '';
+            return applied;
         }
     }
 
@@ -4243,104 +4326,44 @@
                 </div>
             </div>
 
-            <p style="color:#a1a1aa; font-size:0.85rem; margin-bottom:16px;">{i18n.t.settings.index.hint}</p>
-            <CrispEmbedServiceSettings />
+            {#snippet indexHelp(text: string)}
+                <details class="index-hint">
+                    <summary title={indexCopy.information} aria-label={indexCopy.information}><Info size={16} /></summary>
+                    <p>{text}</p>
+                </details>
+            {/snippet}
 
-            <SyncPairPanel />
-            <WallabagImport />
+            <IndexManager entries={catalogs} activeId={activeCatalogId} selectedId={selectedCatalogId}
+                busy={indexStatus === 'loading' || indexFolderPicking} ready={indexManagerReady}
+                location={indexDataDir} stats={indexManagerStats}
+                onSelect={(id) => selectedCatalogId = id}
+                onOpen={(id) => {
+                    const catalog = catalogs.find(entry => entry.id === id);
+                    if (catalog && (id !== activeCatalogId || !indexManagerReady)) void openCatalog(catalog, catalog.directoryMode);
+                }}
+                onAdd={addCatalog} onRename={renameCatalog} onRemove={deleteCatalog} onSearch={openLibrary} />
 
-            <!-- Enable toggle -->
-            <div class="section-card">
-                <label style="display:flex; align-items:center; gap:10px; cursor:pointer;">
-                    <input type="checkbox" bind:checked={indexEnabled} />
-                    <span><strong>{i18n.t.settings.index.enabled}</strong></span>
-                </label>
-                <p class="hint">{i18n.t.settings.index.enabled_hint}</p>
-            </div>
-
-            <!-- Vector capabilities master switch -->
-            <div class="section-card">
-                <label style="display:flex; align-items:center; gap:10px; cursor:pointer;">
-                    <input type="checkbox" bind:checked={indexUseVector} />
-                    <span><strong>{i18n.t.settings.index.use_vector}</strong></span>
-                </label>
-                <p class="hint">{i18n.t.settings.index.use_vector_hint}</p>
-            </div>
-
-            <!-- Hide every embedder-related option when vectors are off,
-                 since none of those settings has any effect in that mode. -->
-            {#if !indexUseVector}
-                <div class="section-card" style="border-color:#3b82f6; background:#1e3a8a14;">
-                    <p class="hint" style="margin:0;">
-                        {i18n.t.settings.index.no_vector_active}
-                    </p>
-                </div>
-            {/if}
-
-            <!-- Catalogs (named bundles of the settings below) -->
-            <div class="section-card">
-                <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
-                    <label style="margin:0;"><HardDrive size={16} /> Kataloge</label>
-                    <button class="action-btn small" onclick={createCatalogFromCurrent}>
-                        <Plus size={13} /> Aktuelle Einstellungen als Katalog speichern
-                    </button>
-                </div>
-                <p class="hint" style="margin-bottom:12px;">
-                    Ein Katalog bündelt Daten-Verzeichnis, Embedder-Modell, Modus und Backend unter einem Namen — so können verschiedene Bibliotheken (z. B. „Theologie", „Musik-PDFs") parallel verwaltet und schnell umgeschaltet werden.
-                </p>
-                {#if catalogs.length === 0}
-                    <p class="hint" style="font-style:italic; color:#52525b;">Noch kein Katalog gespeichert. Konfiguriere die Felder unten und drücke „Aktuelle Einstellungen als Katalog speichern".</p>
-                {:else}
-                    <div class="catalog-list">
-                        {#each catalogs as cat (cat.id)}
-                            <div class="catalog-row" class:active={cat.id === activeCatalogId}>
-                                <input type="radio" name="active-catalog" value={cat.id}
-                                    checked={cat.id === activeCatalogId}
-                                    onchange={() => selectCatalog(cat.id)} />
-                                {#if renamingCatalogId === cat.id}
-                                    <input class="catalog-rename-input" bind:value={renameDraft}
-                                        onkeydown={e => { if (e.key === 'Enter') commitRename(); if (e.key === 'Escape') renamingCatalogId = null; }}
-                                        onblur={commitRename} />
-                                {:else}
-                                    <button class="catalog-name" onclick={() => selectCatalog(cat.id)}>
-                                        <strong>{cat.name}</strong>
-                                    </button>
-                                {/if}
-                                <span class="catalog-meta">
-                                    {cat.embedderModel} · {cat.mode} · {cat.backend}
-                                    {#if cat.dataDir}· {cat.dataDir}{/if}
-                                </span>
-                                <div class="catalog-actions">
-                                    <button class="icon-btn" onclick={() => startRename(cat.id)} title="Umbenennen">
-                                        <Edit size={13} />
-                                    </button>
-                                    <button class="icon-btn danger" onclick={() => deleteCatalog(cat.id)} title="Entfernen">
-                                        <Trash2 size={13} />
-                                    </button>
-                                </div>
-                            </div>
-                        {/each}
+            <details class="index-section" open>
+                <summary>{indexCopy.storage}</summary>
+                <div class="index-section-body">
+                    <div class="section-card compact-index-controls">
+                        <label><input type="checkbox" bind:checked={indexEnabled} /> {i18n.t.settings.index.enabled}</label>
+                        {@render indexHelp(i18n.t.settings.index.enabled_hint)}
+                        <label>
+                            <input type="checkbox" bind:checked={indexUseVector}
+                                onchange={(event) => { if (!event.currentTarget.checked) indexSearchMode = 'text'; }} />
+                            {i18n.t.settings.index.use_vector}
+                        </label>
+                        {@render indexHelp(indexUseVector ? i18n.t.settings.index.use_vector_hint : indexCopy.lexical)}
                     </div>
-                {/if}
-            </div>
-
             <!-- Search mode -->
             <div class="section-card">
                 <label for="index-mode-select"><Brain size={16} /> {i18n.t.settings.index.search_mode}</label>
                 <select id="index-mode-select" bind:value={indexSearchMode} class="styled-select">
-                    <option value="hybrid">{i18n.t.settings.index.mode_hybrid}</option>
+                    <option value="hybrid" disabled={!indexUseVector}>{i18n.t.settings.index.mode_hybrid}</option>
                     <option value="text">{i18n.t.settings.index.mode_text}</option>
-                    <option value="vector">{i18n.t.settings.index.mode_vector}</option>
+                    <option value="vector" disabled={!indexUseVector}>{i18n.t.settings.index.mode_vector}</option>
                 </select>
-            </div>
-
-            <div class="section-card">
-                <label for="file-associations"><Code size={16} /> File associations</label>
-                <p class="hint">Optional JSON overrides: extension → viewer kind (`text`, `pdf`, `image`, `docx`, `epub`, `html`, `csv`, or `fallback`).</p>
-                <textarea id="file-associations" rows="5" bind:value={fileAssociationsJson}
-                    spellcheck="false" placeholder={'{\n  "log": "text"\n}'}></textarea>
-                {#if fileAssociationsError}<p class="error">{fileAssociationsError}</p>{/if}
-                <button class="action-btn small" onclick={persistFileAssociations}>Save file associations</button>
             </div>
 
             <!-- Backend -->
@@ -4371,18 +4394,80 @@
                     <option value="client">{i18n.t.settings.index.embedder_location_client}</option>
                     <option value="server">{i18n.t.settings.index.embedder_location_server}</option>
                 </select>
-                <p class="hint">{i18n.t.settings.index.embedder_location_hint}</p>
+                {@render indexHelp(i18n.t.settings.index.embedder_location_hint)}
             </div>
             {/if}
             {/if}
 
+            <!-- Data directory -->
+            {#if indexBackendType === 'local' || indexBackendType === 'hybrid'}
+            <div class="section-card">
+                <label for="index-data-dir"><FolderOpen size={16} /> {i18n.t.settings.index.data_dir}</label>
+                <div class="input-with-action">
+                    <input id="index-data-dir" type="text" bind:value={indexDataDir}
+                        placeholder={i18n.t.settings.index.data_dir_placeholder} />
+                    <button class="action-btn small" onclick={pickIndexDataDir}>{i18n.t.settings.browse}</button>
+                </div>
+                {@render indexHelp(i18n.t.settings.index.data_dir_hint)}
+            </div>
+            {/if}
+
+            <!-- Apply button + status -->
+            <div class="section-card">
+                <button class="save-btn" onclick={() => applyIndexConfig()}
+                    disabled={indexStatus === 'loading' || indexFolderPicking}>
+                    {#if indexStatus === 'loading'}<Loader2 size={16} class="spin" /> {i18n.t.settings.index.status_loading}
+                    {:else}<Play size={16} /> {indexCopy.save}{/if}
+                </button>
+                {@render indexHelp(!indexUseVector ? indexCopy.lexical
+                    : modelDownloadMb > 0 ? indexCopy.embeddingSize(modelDownloadMb) : indexCopy.embedding)}
+
+                {#if indexStatus === 'loading' && indexInitProgress}
+                    <div class="init-progress-wrap">
+                        <p class="init-progress-label"><Loader2 size={13} class="spin" /> {indexInitProgress}</p>
+                        <!-- Step-level bar (5% / 40% / 70% / 90% / 100%). -->
+                        <div class="init-progress-bar">
+                            <div class="init-progress-fill" style="width:{indexInitPct}%"></div>
+                        </div>
+                        {#if indexUseVector && indexDownloadProgress}
+                            <!-- Bytes-level download bar (advances once per MB). -->
+                            <p class="init-progress-label" style="margin-top:8px;">
+                                {indexDownloadProgress.repo}/{indexDownloadProgress.file}
+                                — {(indexDownloadProgress.bytes_done / 1024 / 1024).toFixed(1)} /
+                                {(indexDownloadProgress.bytes_total / 1024 / 1024).toFixed(1)} MB
+                                ({indexDownloadProgress.pct}%)
+                            </p>
+                            <div class="init-progress-bar">
+                                <div class="init-progress-fill" style="width:{indexDownloadProgress.pct}%"></div>
+                            </div>
+                        {/if}
+
+                    </div>
+                {:else if indexStatus === 'ok'}
+                    <p style="color:#22c55e; margin-top:8px; font-size:0.85rem;"><CheckCircle2 size={14} /> {indexCopy.ready}</p>
+                {:else if indexStatus === 'error'}
+                    <p role="alert" style="color:#ef4444; margin-top:8px; font-size:0.85rem;"><AlertCircle size={14} /> {indexStatusMsg}</p>
+                {/if}
+            </div>
+
+                    {#if indexManagerReady && !activeCatalogId}
+                        <button type="button" class="action-btn small" disabled={indexStatus === 'loading'}
+                            onclick={rememberCurrentIndex}><Plus size={14} /> {indexCopy.current}</button>
+                    {/if}
+                </div>
+            </details>
+
+            {#if indexUseVector}
+            <details class="index-section">
+                <summary>{indexCopy.models}</summary>
+                <div class="index-section-body">
             <!-- Inference engine FIRST so the model dropdown below can filter
                  to what's actually runnable on the chosen engine. -->
             <div class="section-card">
-                <label for="index-backend-select">
+                <label for="index-engine">
                     <Cpu size={14} /> {i18n.t.settings.index.backend_engine}
                 </label>
-                <div class="toggle-group" id="index-backend-select" style="margin-top:4px;">
+                <div class="toggle-group" id="index-engine" style="margin-top:4px;">
                     <button
                         class="toggle-btn"
                         class:active={indexEmbedderBackend === 'onnx'}
@@ -4529,6 +4614,112 @@
                     <p class="hint">{i18n.t.settings.index.matryoshka_hint}</p>
                 {/if}
 
+            </div>
+            <!-- Compute device — options depend on the selected engine.
+                 ONNX (FastEmbed) supports Auto/CPU/Metal/CUDA via ORT
+                 execution providers. GGUF (CrispEmbed) is bound at compile
+                 time to ONE GPU backend (the `crispembed-{vulkan,cuda,metal}`
+                 feature) plus CPU; we surface only what's actually linked. -->
+            <div class="section-card">
+                <label for="index-device-select"><Zap size={16} /> {i18n.t.settings.index.device}</label>
+                {#if indexEmbedderBackend === 'onnx'}
+                    <select id="index-device-select" bind:value={indexDevice} class="styled-select">
+                        <option value="auto">{i18n.t.settings.index.device_auto}</option>
+                        <option value="cpu">{i18n.t.settings.index.device_cpu}</option>
+                        {#if !$caps.mobile && isMacOS}<option value="metal">{i18n.t.settings.index.device_metal}</option>{/if}
+                        {#if !$caps.mobile}<option value="cuda">{i18n.t.settings.index.device_cuda}</option>{/if}
+                    </select>
+                    {#if $caps.mobile}
+                        <p class="hint">ONNX embeddings run on this device's CPU. Desktop GPU preferences use CPU here.</p>
+                    {/if}
+                {:else}
+                    <!-- GGUF: CPU is always available; the linked GPU
+                         backend (or `null` if CrispEmbed itself is off) is
+                         the second option. -->
+                    <select id="index-device-select" bind:value={indexDevice} class="styled-select">
+                        <option value="cpu">CPU</option>
+                        {#if crispEmbedGpu === 'vulkan'}<option value="auto">Vulkan (linked)</option>{/if}
+                        {#if crispEmbedGpu === 'cuda'}<option value="cuda">CUDA (linked)</option>{/if}
+                        {#if crispEmbedGpu === 'metal'}<option value="metal">Metal (linked)</option>{/if}
+                    </select>
+                    <p class="hint" style="margin-top:6px;">
+                        {#if crispEmbedGpu && crispEmbedGpu !== 'cpu'}
+                            {@html i18n.t.crispembed_engine_built
+                                .replace('{backend}', crispEmbedGpu)
+                                .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+                                .replace(/`([^`]+)`/g, '<code>$1</code>')}
+                        {:else}
+                            {@html i18n.t.crispembed_engine_built_cpu
+                                .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+                                .replace(/`([^`]+)`/g, '<code>$1</code>')}
+                        {/if}
+                    </p>
+                {/if}
+            </div>
+
+            <!-- Reranker (cross-encoder, GGUF-only via CrispEmbed) -->
+            <div class="section-card">
+                <label for="index-reranker-select"><Cpu size={16} /> {i18n.t.settings.index.reranker_model}</label>
+                <select id="index-reranker-select" bind:value={indexRerankerModel} onchange={(e) => handleRerankerChange(e, 'main')} class="styled-select">
+                    <option value="">{i18n.t.settings.index.reranker_off}</option>
+                    <option value="bge_v2_m3">{i18n.t.settings.index.reranker_bge_v2_m3}</option>
+                    <option value="bge_base">{i18n.t.settings.index.reranker_bge_base}</option>
+                    <option value="jina_v2_multi">{i18n.t.settings.index.reranker_jina_v2_multi}</option>
+                </select>
+                {#if indexRerankerModel}
+                    <label for="index-reranker-topn" style="margin-top:10px;">
+                        {i18n.t.settings.index.reranker_top_n}
+                    </label>
+                    <input id="index-reranker-topn" type="number" min="5" max="200" step="5"
+                        bind:value={indexRerankerTopN} />
+                    <p class="hint">{i18n.t.settings.index.reranker_hint}</p>
+                {:else}
+                    <!-- Bi-encoder fallback (P13.5 follow-up): only visible
+                         when no dedicated cross-encoder is selected.  Reuses
+                         the loaded dense embedder for cosine-similarity
+                         reranking — zero extra disk / RAM. -->
+                    <label for="index-bi-encoder-rerank" style="margin-top:10px; display:flex; align-items:center; gap:8px; cursor:pointer;">
+                        <input id="index-bi-encoder-rerank" type="checkbox"
+                            bind:checked={indexUseEmbedderAsReranker} />
+                        <span>{i18n.t.settings.index.use_embedder_as_reranker ?? 'Use loaded embedder as bi-encoder reranker'}</span>
+                    </label>
+                    {#if indexUseEmbedderAsReranker}
+                        <label for="index-bi-encoder-topn" style="margin-top:6px;">
+                            {i18n.t.settings.index.reranker_top_n}
+                        </label>
+                        <input id="index-bi-encoder-topn" type="number" min="5" max="200" step="5"
+                            bind:value={indexRerankerTopN} />
+                    {/if}
+                    <p class="hint">
+                        {i18n.t.settings.index.use_embedder_as_reranker_hint ??
+                         'Re-scores top-N hybrid hits by cosine similarity against the query, using the dense embedder you already loaded. Faster than a cross-encoder, less accurate per pair — good middle ground when you have not installed a dedicated reranker GGUF.'}
+                    </p>
+                {/if}
+            </div>
+
+            <!-- Stage Z — Multilingual reranker (CJK/Arabic/Cyrillic auto-routing) -->
+            <div class="section-card">
+                <label for="index-reranker-multi-select">
+                    <Cpu size={16} /> {i18n.t.settings.index.reranker_multilingual_label}
+                </label>
+                <select id="index-reranker-multi-select" bind:value={indexRerankerModelMultilingual} onchange={(e) => handleRerankerChange(e, 'multi')} class="styled-select">
+                    <option value="">{i18n.t.settings.index.reranker_off}</option>
+                    <option value="bge_v2_m3">{i18n.t.settings.index.reranker_bge_v2_m3}</option>
+                    <option value="bge_base">{i18n.t.settings.index.reranker_bge_base}</option>
+                    <option value="jina_v2_multi">{i18n.t.settings.index.reranker_jina_v2_multi}</option>
+                </select>
+                <p class="hint" style="margin-top:6px;">{i18n.t.settings.index.reranker_multilingual_hint}</p>
+            </div>
+
+
+                </div>
+            </details>
+
+            {/if}
+            <details class="index-section">
+                <summary>{indexCopy.extraction}</summary>
+                <div class="index-section-body">
+<div class="section-card">
                 <!-- P13.5 follow-up: index-time translation target.
                      When set, every extracted document goes through
                      CLD3 text-LID + m2m100 MT at ingest, with the
@@ -4685,30 +4876,97 @@
                 </p>
             </div>
 
-            <!-- PLAN P36.13 / App Review 5.1.2(i): "You must clearly disclose
-                 where personal data will be shared with third parties,
-                 including with third-party AI, and obtain explicit permission
-                 before doing so." The dialog obtains it; this is where it can
-                 be reviewed and taken back. -->
+            <!-- P19 — GLiNER named-entity recognition (GGUF-only via CrispEmbed) -->
             <div class="section-card">
-                <label><Server size={16} /> {i18n.t.consent?.third_party_ai_settings ?? 'Third-party AI providers you have allowed'}</label>
-                <p class="hint">{i18n.t.consent?.third_party_ai_settings_hint ?? ''}</p>
-                {#if consentedProviders.length === 0}
-                    <p class="hint">{i18n.t.consent?.third_party_ai_none ?? 'None yet.'}</p>
+                <label for="index-ner-enabled" style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                    <input id="index-ner-enabled" type="checkbox"
+                        bind:checked={indexNerEnabled}
+                        disabled={!crispEmbedCompiledIn} />
+                    <Cpu size={16} /> <span>{i18n.t.settings.index.ner_enabled}</span>
+                </label>
+                {#if !crispEmbedCompiledIn}
+                    <p class="hint">{i18n.t.settings.index.ner_requires_crispembed}</p>
                 {:else}
-                    <ul class="consented-list">
-                        {#each consentedProviders as providerId (providerId)}
-                            <li>
-                                <span>{providerDisplayName(providerId)}</span>
-                                <button onclick={() => revokeProviderConsent(providerId)}>
-                                    {i18n.t.consent?.third_party_ai_revoke ?? 'Revoke'}
-                                </button>
-                            </li>
-                        {/each}
-                    </ul>
+                    <p class="hint">{i18n.t.settings.index.ner_enabled_hint}</p>
+                {/if}
+                {#if indexNerEnabled && crispEmbedCompiledIn}
+                    <label for="index-ner-model" style="margin-top:10px;">{i18n.t.settings.index.ner_model}</label>
+                    <select id="index-ner-model" bind:value={indexNerModel}
+                        onchange={handleNerModelChange} class="styled-select">
+                        <option value="sauerkraut-gliner-lfm">{i18n.t.settings.index.ner_model_sauerkraut}</option>
+                        <option value="gliner-deberta">{i18n.t.settings.index.ner_model_deberta}</option>
+                    </select>
+
+                    <label for="index-ner-labels" style="margin-top:10px;">{i18n.t.settings.index.ner_labels}</label>
+                    <textarea id="index-ner-labels" rows="2" bind:value={indexNerLabels}
+                        placeholder={i18n.t.settings.index.ner_labels_placeholder}></textarea>
+                    <p class="hint">{i18n.t.settings.index.ner_labels_hint}</p>
+
+                    <label for="index-ner-threshold" style="margin-top:10px;">
+                        {i18n.t.settings.index.ner_threshold} ({Number(indexNerThreshold).toFixed(2)})
+                    </label>
+                    <input id="index-ner-threshold" type="range" min="0" max="1" step="0.05"
+                        bind:value={indexNerThreshold} style="width:100%;" />
+
+                    <label for="index-ner-max-entities" style="margin-top:10px;">{i18n.t.settings.index.ner_max_entities}</label>
+                    <input id="index-ner-max-entities" type="number" min="0" max="200" step="5"
+                        bind:value={indexNerMaxEntities} />
+
+                    <label for="index-ner-max-chars" style="margin-top:10px;">{i18n.t.settings.index.ner_max_chars}</label>
+                    <input id="index-ner-max-chars" type="number" min="0" step="1000"
+                        bind:value={indexNerMaxChars} />
+                    <p class="hint">{i18n.t.settings.index.ner_hint}</p>
                 {/if}
             </div>
 
+
+                </div>
+            </details>
+
+            <details class="index-section">
+                <summary>{indexCopy.maintenance}</summary>
+                <div class="index-section-body">
+            {#if indexUseVector}
+            <!-- IVF-PQ build -->
+            <div class="section-card">
+                <label><Code size={16} /> {i18n.t.settings.index.build_ivf}</label>
+                {@render indexHelp(i18n.t.settings.index.build_ivf_hint)}
+                <button class="action-btn secondary" onclick={buildIvfPq}
+                    disabled={indexIvfRunning || indexStatus !== 'ok'}>
+                    {#if indexIvfRunning}<Loader2 size={14} class="spin" />{/if}
+                    {i18n.t.settings.index.build_ivf}
+                </button>
+            </div>
+
+            {/if}
+            <!-- Scalar index (parent_dir BTree) -->
+            <div class="section-card">
+                <label><Code size={16} /> {i18n.t.settings.index.build_scalar}</label>
+                {@render indexHelp(i18n.t.settings.index.build_scalar_hint)}
+                <button class="action-btn secondary" onclick={buildScalarIndex}
+                    disabled={indexScalarRunning || indexStatus !== 'ok'}>
+                    {#if indexScalarRunning}<Loader2 size={14} class="spin" />{/if}
+                    {i18n.t.settings.index.build_scalar}
+                </button>
+            </div>
+
+
+                </div>
+            </details>
+
+            <details class="index-section">
+                <summary>{indexCopy.integrations}</summary>
+                <div class="index-section-body">
+                    <WallabagImport />
+                    <SyncPairPanel />
+                    <CrispEmbedServiceSettings />
+
+                </div>
+            </details>
+
+            <details class="index-section">
+                <summary>{indexCopy.sync}</summary>
+                <div class="index-section-body">
             <!-- P13.7 Step 5 — cloud-backup HTTP sync.  Talks to a
                  FastAPI module on a VPS that owns the same
                  catalog DB vps_worker.py manages.  URL +
@@ -5167,143 +5425,20 @@
             </div>
             {/if}
 
-            <!-- Compute device — options depend on the selected engine.
-                 ONNX (FastEmbed) supports Auto/CPU/Metal/CUDA via ORT
-                 execution providers. GGUF (CrispEmbed) is bound at compile
-                 time to ONE GPU backend (the `crispembed-{vulkan,cuda,metal}`
-                 feature) plus CPU; we surface only what's actually linked. -->
+
+                </div>
+            </details>
+
+            <details class="index-section">
+                <summary>{indexCopy.advanced}</summary>
+                <div class="index-section-body">
             <div class="section-card">
-                <label for="index-device-select"><Zap size={16} /> {i18n.t.settings.index.device}</label>
-                {#if indexEmbedderBackend === 'onnx'}
-                    <select id="index-device-select" bind:value={indexDevice} class="styled-select">
-                        <option value="auto">{i18n.t.settings.index.device_auto}</option>
-                        <option value="cpu">{i18n.t.settings.index.device_cpu}</option>
-                        {#if !$caps.mobile && isMacOS}<option value="metal">{i18n.t.settings.index.device_metal}</option>{/if}
-                        {#if !$caps.mobile}<option value="cuda">{i18n.t.settings.index.device_cuda}</option>{/if}
-                    </select>
-                    {#if $caps.mobile}
-                        <p class="hint">ONNX embeddings run on this device's CPU. Desktop GPU preferences use CPU here.</p>
-                    {/if}
-                {:else}
-                    <!-- GGUF: CPU is always available; the linked GPU
-                         backend (or `null` if CrispEmbed itself is off) is
-                         the second option. -->
-                    <select id="index-device-select" bind:value={indexDevice} class="styled-select">
-                        <option value="cpu">CPU</option>
-                        {#if crispEmbedGpu === 'vulkan'}<option value="auto">Vulkan (linked)</option>{/if}
-                        {#if crispEmbedGpu === 'cuda'}<option value="cuda">CUDA (linked)</option>{/if}
-                        {#if crispEmbedGpu === 'metal'}<option value="metal">Metal (linked)</option>{/if}
-                    </select>
-                    <p class="hint" style="margin-top:6px;">
-                        {#if crispEmbedGpu && crispEmbedGpu !== 'cpu'}
-                            {@html i18n.t.crispembed_engine_built
-                                .replace('{backend}', crispEmbedGpu)
-                                .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-                                .replace(/`([^`]+)`/g, '<code>$1</code>')}
-                        {:else}
-                            {@html i18n.t.crispembed_engine_built_cpu
-                                .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-                                .replace(/`([^`]+)`/g, '<code>$1</code>')}
-                        {/if}
-                    </p>
-                {/if}
-            </div>
-
-            <!-- Reranker (cross-encoder, GGUF-only via CrispEmbed) -->
-            <div class="section-card">
-                <label for="index-reranker-select"><Cpu size={16} /> {i18n.t.settings.index.reranker_model}</label>
-                <select id="index-reranker-select" bind:value={indexRerankerModel} onchange={(e) => handleRerankerChange(e, 'main')} class="styled-select">
-                    <option value="">{i18n.t.settings.index.reranker_off}</option>
-                    <option value="bge_v2_m3">{i18n.t.settings.index.reranker_bge_v2_m3}</option>
-                    <option value="bge_base">{i18n.t.settings.index.reranker_bge_base}</option>
-                    <option value="jina_v2_multi">{i18n.t.settings.index.reranker_jina_v2_multi}</option>
-                </select>
-                {#if indexRerankerModel}
-                    <label for="index-reranker-topn" style="margin-top:10px;">
-                        {i18n.t.settings.index.reranker_top_n}
-                    </label>
-                    <input id="index-reranker-topn" type="number" min="5" max="200" step="5"
-                        bind:value={indexRerankerTopN} />
-                    <p class="hint">{i18n.t.settings.index.reranker_hint}</p>
-                {:else}
-                    <!-- Bi-encoder fallback (P13.5 follow-up): only visible
-                         when no dedicated cross-encoder is selected.  Reuses
-                         the loaded dense embedder for cosine-similarity
-                         reranking — zero extra disk / RAM. -->
-                    <label for="index-bi-encoder-rerank" style="margin-top:10px; display:flex; align-items:center; gap:8px; cursor:pointer;">
-                        <input id="index-bi-encoder-rerank" type="checkbox"
-                            bind:checked={indexUseEmbedderAsReranker} />
-                        <span>{i18n.t.settings.index.use_embedder_as_reranker ?? 'Use loaded embedder as bi-encoder reranker'}</span>
-                    </label>
-                    {#if indexUseEmbedderAsReranker}
-                        <label for="index-bi-encoder-topn" style="margin-top:6px;">
-                            {i18n.t.settings.index.reranker_top_n}
-                        </label>
-                        <input id="index-bi-encoder-topn" type="number" min="5" max="200" step="5"
-                            bind:value={indexRerankerTopN} />
-                    {/if}
-                    <p class="hint">
-                        {i18n.t.settings.index.use_embedder_as_reranker_hint ??
-                         'Re-scores top-N hybrid hits by cosine similarity against the query, using the dense embedder you already loaded. Faster than a cross-encoder, less accurate per pair — good middle ground when you have not installed a dedicated reranker GGUF.'}
-                    </p>
-                {/if}
-            </div>
-
-            <!-- Stage Z — Multilingual reranker (CJK/Arabic/Cyrillic auto-routing) -->
-            <div class="section-card">
-                <label for="index-reranker-multi-select">
-                    <Cpu size={16} /> {i18n.t.settings.index.reranker_multilingual_label}
-                </label>
-                <select id="index-reranker-multi-select" bind:value={indexRerankerModelMultilingual} onchange={(e) => handleRerankerChange(e, 'multi')} class="styled-select">
-                    <option value="">{i18n.t.settings.index.reranker_off}</option>
-                    <option value="bge_v2_m3">{i18n.t.settings.index.reranker_bge_v2_m3}</option>
-                    <option value="bge_base">{i18n.t.settings.index.reranker_bge_base}</option>
-                    <option value="jina_v2_multi">{i18n.t.settings.index.reranker_jina_v2_multi}</option>
-                </select>
-                <p class="hint" style="margin-top:6px;">{i18n.t.settings.index.reranker_multilingual_hint}</p>
-            </div>
-
-            <!-- P19 — GLiNER named-entity recognition (GGUF-only via CrispEmbed) -->
-            <div class="section-card">
-                <label for="index-ner-enabled" style="display:flex; align-items:center; gap:8px; cursor:pointer;">
-                    <input id="index-ner-enabled" type="checkbox"
-                        bind:checked={indexNerEnabled}
-                        disabled={!crispEmbedCompiledIn} />
-                    <Cpu size={16} /> <span>{i18n.t.settings.index.ner_enabled}</span>
-                </label>
-                {#if !crispEmbedCompiledIn}
-                    <p class="hint">{i18n.t.settings.index.ner_requires_crispembed}</p>
-                {:else}
-                    <p class="hint">{i18n.t.settings.index.ner_enabled_hint}</p>
-                {/if}
-                {#if indexNerEnabled && crispEmbedCompiledIn}
-                    <label for="index-ner-model" style="margin-top:10px;">{i18n.t.settings.index.ner_model}</label>
-                    <select id="index-ner-model" bind:value={indexNerModel}
-                        onchange={handleNerModelChange} class="styled-select">
-                        <option value="sauerkraut-gliner-lfm">{i18n.t.settings.index.ner_model_sauerkraut}</option>
-                        <option value="gliner-deberta">{i18n.t.settings.index.ner_model_deberta}</option>
-                    </select>
-
-                    <label for="index-ner-labels" style="margin-top:10px;">{i18n.t.settings.index.ner_labels}</label>
-                    <textarea id="index-ner-labels" rows="2" bind:value={indexNerLabels}
-                        placeholder={i18n.t.settings.index.ner_labels_placeholder}></textarea>
-                    <p class="hint">{i18n.t.settings.index.ner_labels_hint}</p>
-
-                    <label for="index-ner-threshold" style="margin-top:10px;">
-                        {i18n.t.settings.index.ner_threshold} ({Number(indexNerThreshold).toFixed(2)})
-                    </label>
-                    <input id="index-ner-threshold" type="range" min="0" max="1" step="0.05"
-                        bind:value={indexNerThreshold} style="width:100%;" />
-
-                    <label for="index-ner-max-entities" style="margin-top:10px;">{i18n.t.settings.index.ner_max_entities}</label>
-                    <input id="index-ner-max-entities" type="number" min="0" max="200" step="5"
-                        bind:value={indexNerMaxEntities} />
-
-                    <label for="index-ner-max-chars" style="margin-top:10px;">{i18n.t.settings.index.ner_max_chars}</label>
-                    <input id="index-ner-max-chars" type="number" min="0" step="1000"
-                        bind:value={indexNerMaxChars} />
-                    <p class="hint">{i18n.t.settings.index.ner_hint}</p>
-                {/if}
+                <label for="file-associations"><Code size={16} /> {indexCopy.fileAssociations}</label>
+                {@render indexHelp(indexCopy.associationHelp)}
+                <textarea id="file-associations" rows="5" bind:value={fileAssociationsJson}
+                    spellcheck="false" placeholder={'{\n  "log": "text"\n}'}></textarea>
+                {#if fileAssociationsError}<p class="error">{fileAssociationsError}</p>{/if}
+                <button class="action-btn small" onclick={persistFileAssociations}>{indexCopy.saveAssociations}</button>
             </div>
 
             <!-- Model cache directory (shared by ONNX + GGUF + reranker downloads) -->
@@ -5320,13 +5455,13 @@
             </div>
 
             <div class="section-card">
-                <label for="index-proxy-url">Network proxy</label>
+                <label for="index-proxy-url">{indexCopy.networkProxy}</label>
                 <input id="index-proxy-url" type="url" bind:value={indexProxyUrl}
                     placeholder="http://proxy.example:8080 or socks5h://127.0.0.1:9050" />
                 <input id="index-proxy-username" type="text" bind:value={indexProxyUsername}
-                    placeholder="Proxy username (optional)" style="margin-top:6px;" />
+                    placeholder={indexCopy.proxyUsername} style="margin-top:6px;" />
                 <input id="index-proxy-password" type="password" bind:value={indexProxyPassword}
-                    placeholder="Proxy password (stored in OS keychain)" style="margin-top:6px;" />
+                    placeholder={indexCopy.proxyPassword} style="margin-top:6px;" />
                 <div style="display:flex; gap:6px; margin-top:8px;">
                     <button class="action-btn small" onclick={async () => {
                         try {
@@ -5341,90 +5476,39 @@
                             }
                             indexProxyStatus = await invoke<string>('proxy_test_connection');
                         } catch (e) { indexProxyStatus = `Proxy test failed: ${e}`; }
-                    }}>Test connection</button>
+                    }}>{indexCopy.proxyTest}</button>
                 </div>
-                <p class="hint">Supports HTTP(S), SOCKS5, and SOCKS5H. The password is never written to settings or logs.</p>
+                {@render indexHelp(indexCopy.proxyHelp)}
                 {#if indexProxyStatus}<p class="hint">{indexProxyStatus}</p>{/if}
             </div>
 
-            <!-- Data directory -->
-            {#if indexBackendType === 'local' || indexBackendType === 'hybrid'}
+            <!-- PLAN P36.13 / App Review 5.1.2(i): "You must clearly disclose
+                 where personal data will be shared with third parties,
+                 including with third-party AI, and obtain explicit permission
+                 before doing so." The dialog obtains it; this is where it can
+                 be reviewed and taken back. -->
             <div class="section-card">
-                <label for="index-data-dir"><FolderOpen size={16} /> {i18n.t.settings.index.data_dir}</label>
-                <div class="input-with-action">
-                    <input id="index-data-dir" type="text" bind:value={indexDataDir}
-                        placeholder={i18n.t.settings.index.data_dir_placeholder} />
-                    <button class="action-btn small" onclick={pickIndexDataDir}>{i18n.t.settings.browse}</button>
-                </div>
-                <p class="hint">{i18n.t.settings.index.data_dir_hint}</p>
-            </div>
-            {/if}
-
-            <!-- Apply button + status -->
-            <div class="section-card">
-                <button class="save-btn" onclick={applyIndexConfig}
-                    disabled={indexStatus === 'loading'}>
-                    {#if indexStatus === 'loading'}<Loader2 size={16} class="spin" /> {i18n.t.settings.index.status_loading}
-                    {:else}<Play size={16} /> {i18n.t.settings.index.apply}{/if}
-                </button>
-                <p class="hint">
-                    Saves config and initializes the index.
-                    {#if modelDownloadMb > 0}
-                        First run downloads the embedder model (~{modelDownloadMb} MB).
-                    {:else}
-                        First run downloads the embedder model.
-                    {/if}
-                </p>
-
-                {#if indexStatus === 'loading' && indexInitProgress}
-                    <div class="init-progress-wrap">
-                        <p class="init-progress-label"><Loader2 size={13} class="spin" /> {indexInitProgress}</p>
-                        <!-- Step-level bar (5% / 40% / 70% / 90% / 100%). -->
-                        <div class="init-progress-bar">
-                            <div class="init-progress-fill" style="width:{indexInitPct}%"></div>
-                        </div>
-                        {#if indexDownloadProgress}
-                            <!-- Bytes-level download bar (advances once per MB). -->
-                            <p class="init-progress-label" style="margin-top:8px;">
-                                {indexDownloadProgress.repo}/{indexDownloadProgress.file}
-                                — {(indexDownloadProgress.bytes_done / 1024 / 1024).toFixed(1)} /
-                                {(indexDownloadProgress.bytes_total / 1024 / 1024).toFixed(1)} MB
-                                ({indexDownloadProgress.pct}%)
-                            </p>
-                            <div class="init-progress-bar">
-                                <div class="init-progress-fill" style="width:{indexDownloadProgress.pct}%"></div>
-                            </div>
-                        {/if}
-                        <p class="init-progress-note">{i18n.t.settings.index.init_progress_note}</p>
-                    </div>
-                {:else if indexStatus === 'ok'}
-                    <p style="color:#22c55e; margin-top:8px; font-size:0.85rem;"><CheckCircle2 size={14} /> {i18n.t.settings.index.status_ok}</p>
-                {:else if indexStatus === 'error'}
-                    <p style="color:#ef4444; margin-top:8px; font-size:0.85rem;"><AlertCircle size={14} /> {indexStatusMsg}</p>
+                <label><Server size={16} /> {i18n.t.consent?.third_party_ai_settings ?? 'Third-party AI providers you have allowed'}</label>
+                <p class="hint">{i18n.t.consent?.third_party_ai_settings_hint ?? ''}</p>
+                {#if consentedProviders.length === 0}
+                    <p class="hint">{i18n.t.consent?.third_party_ai_none ?? 'None yet.'}</p>
+                {:else}
+                    <ul class="consented-list">
+                        {#each consentedProviders as providerId (providerId)}
+                            <li>
+                                <span>{providerDisplayName(providerId)}</span>
+                                <button onclick={() => revokeProviderConsent(providerId)}>
+                                    {i18n.t.consent?.third_party_ai_revoke ?? 'Revoke'}
+                                </button>
+                            </li>
+                        {/each}
+                    </ul>
                 {/if}
             </div>
 
-            <!-- IVF-PQ build -->
-            <div class="section-card">
-                <label><Code size={16} /> {i18n.t.settings.index.build_ivf}</label>
-                <p class="hint">{i18n.t.settings.index.build_ivf_hint}</p>
-                <button class="action-btn secondary" onclick={buildIvfPq}
-                    disabled={indexIvfRunning || indexStatus !== 'ok'}>
-                    {#if indexIvfRunning}<Loader2 size={14} class="spin" />{/if}
-                    {i18n.t.settings.index.build_ivf}
-                </button>
-            </div>
 
-            <!-- Scalar index (parent_dir BTree) -->
-            <div class="section-card">
-                <label><Code size={16} /> {i18n.t.settings.index.build_scalar}</label>
-                <p class="hint">{i18n.t.settings.index.build_scalar_hint}</p>
-                <button class="action-btn secondary" onclick={buildScalarIndex}
-                    disabled={indexScalarRunning || indexStatus !== 'ok'}>
-                    {#if indexScalarRunning}<Loader2 size={14} class="spin" />{/if}
-                    {i18n.t.settings.index.build_scalar}
-                </button>
-            </div>
+                </div>
+            </details>
 
         {:else if selectedProviderId === 'about'}
             <div class="header">
@@ -6443,6 +6527,18 @@
 {/if}
 
 <style>
+
+    .index-section { border: 1px solid #3f3f46; border-radius: 8px; background: #18181b; margin-bottom: .65rem; }
+    .index-section > summary { cursor: pointer; color: #e4e4e7; font-weight: 600; font-size: .88rem; padding: .7rem .85rem; }
+    .index-section-body { padding: 0 .7rem .7rem; }
+    .index-section-body > .section-card { margin-bottom: .55rem; }
+    .compact-index-controls { display: flex; align-items: start; gap: .4rem .65rem; flex-wrap: wrap; }
+    .compact-index-controls label { display: inline-flex; align-items: center; gap: .4rem; margin: 0; }
+    .compact-index-controls input { margin: 0; }
+    .index-hint { display: inline-block; margin: .2rem .35rem; color: #a1a1aa; position: relative; vertical-align: middle; }
+    .index-hint summary { display: flex; align-items: center; cursor: pointer; list-style: none; }
+    .index-hint p { margin: .35rem 0 0; max-width: 35rem; font-size: .8rem; }
+
     .settings-persistence-error { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; padding: 12px; border: 1px solid #7f1d1d; border-radius: 7px; color: #fecaca; background: #2d1111; font-size: 0.85rem; }
     .settings-persistence-error span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 

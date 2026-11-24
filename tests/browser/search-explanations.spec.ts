@@ -1,6 +1,6 @@
 // Browser transport/rendering contracts; native suites qualify query matching.
 import { expect, test, type Page } from '@playwright/test';
-import { fixtures } from './fixtures';
+import { fixtures, openSearchPanel } from './fixtures';
 
 const query = 'warranty~2 AND "carbon dioxide"';
 
@@ -8,6 +8,7 @@ async function inspect(page: Page, mode = 'Full text', text = query) {
     await page.getByRole('button', { name: mode, exact: true }).click();
     await page.getByRole('textbox', { name: 'Search indexed documents' }).fill(text);
     await page.locator('.search-btn').click();
+    await openSearchPanel(page.locator('.result-card'), '.document-details');
     await page.getByTitle('Inspect indexed passage', { exact: true }).click();
 }
 
@@ -172,13 +173,15 @@ for (const retrieval of ['image', 'similarity'] as const) {
                 return original(command, args, options);
             };
         });
+        if (retrieval === 'image') await openSearchPanel(page, '.query-options');
         await page.getByTitle(retrieval === 'image'
-            ? 'Search by image similarity (ViT + omni embeddings)' : 'Find similar documents', { exact: true }).click();
+            ? 'Search similar images' : 'Find similar documents', { exact: true }).click();
         await expect.poll(() => page.evaluate(command => (window as any).__fixtureCalls.filter((call: any) => call.command === command).length,
             retrieval === 'image' ? 'index_search_by_image' : 'index_find_similar')).toBe(1);
         await expect(page.locator('.search-btn')).toBeEnabled();
         await expect(page.locator('.result-card')).toHaveCount(1);
         await expect(page.locator('.result-card .chunk-preview mark')).toHaveCount(0);
+        await openSearchPanel(page.locator('.result-card'), '.document-details');
         await page.getByTitle('Inspect indexed passage', { exact: true }).click();
         await expect(passage.locator('.passage-text')).toContainText('😀 warrantee carbon dioxide.');
         await expect(passage.getByRole('region', { name: 'Query evidence', exact: true })).toHaveCount(0);

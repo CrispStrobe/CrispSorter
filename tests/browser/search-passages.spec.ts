@@ -1,6 +1,6 @@
 // Interaction contracts for bounded stored text; native tests qualify actual data.
 import { test, expect } from '@playwright/test';
-import { fixtures } from './fixtures';
+import { fixtures, openSearchPanel } from './fixtures';
 
 test.beforeEach(async ({ page }) => {
     await fixtures(page);
@@ -28,7 +28,9 @@ test.beforeEach(async ({ page }) => {
 });
 
 test('builds a literal ordered proximity query and keeps incomplete conditions visible', async ({ page }) => {
+    await openSearchPanel(page, '.query-options');
     await page.getByText('Query help, builder, and indexed words', { exact: true }).click();
+    await openSearchPanel(page, '.query-options');
     const builder = page.getByRole('region', { name: 'Query builder' });
     await builder.getByLabel('First word or phrase', { exact: true }).fill('net income');
     await expect(builder.getByRole('button', { name: 'Use this query' })).toBeDisabled();
@@ -44,6 +46,7 @@ test('builds a literal ordered proximity query and keeps incomplete conditions v
 test('navigates all stored chunks, keeps find options and reports refreshed source evidence', async ({ page }, testInfo) => {
     await page.getByRole('textbox', { name: 'Search indexed documents' }).fill('war');
     await page.locator('.search-btn').click();
+    await openSearchPanel(page.locator('.result-card'), '.document-details');
     await page.getByTitle('Inspect indexed passage', { exact: true }).click();
     const passage = page.getByRole('region', { name: 'Indexed passage', exact: true });
     await expect(passage).toContainText('Passage 1 / 2');
@@ -76,6 +79,7 @@ test('does not imply a truncated occurrence count when exactly one thousand matc
     });
     await page.getByRole('textbox', { name: 'Search indexed documents' }).fill('war');
     await page.locator('.search-btn').click();
+    await openSearchPanel(page.locator('.result-card'), '.document-details');
     await page.getByTitle('Inspect indexed passage', { exact: true }).click();
     const navigation = page.getByRole('group', { name: 'Text occurrence navigation', exact: true });
     await expect(navigation).toContainText('1 / 1000');

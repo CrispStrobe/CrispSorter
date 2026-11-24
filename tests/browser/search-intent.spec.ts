@@ -1,10 +1,11 @@
 // Query intent is explicit in UI/IPC; native contracts qualify actual retrieval.
 import { expect, test, type Page } from '@playwright/test';
-import { fixtures } from './fixtures';
+import { fixtures, openSearchPanel } from './fixtures';
 
 async function openSearch(page: Page) {
     await page.getByRole('button', { name: 'Library', exact: true }).first().click();
     await page.locator('.tab-bar').getByRole('button', { name: 'Search', exact: true }).click();
+    await openSearchPanel(page, '.query-options');
     await expect(page.getByRole('combobox', { name: 'Query interpretation', exact: true })).toBeVisible();
 }
 
@@ -49,6 +50,7 @@ test('sends natural language unchanged and marks results stale when interpretati
     await openSearch(page);
     const interpretation = page.getByRole('combobox', { name: 'Query interpretation', exact: true });
     await page.getByRole('button', { name: 'Full text', exact: true }).click();
+    await openSearchPanel(page, '.query-options');
     await interpretation.selectOption('natural');
     await page.getByRole('textbox', { name: 'Search indexed documents' }).fill('Does carbon dioxide increase crop yields?');
     await expect(page.locator('.search-help').filter({ hasText: 'Words and punctuation are treated as ordinary text.' })).toBeVisible();
@@ -57,6 +59,7 @@ test('sends natural language unchanged and marks results stale when interpretati
         query: 'Does carbon dioxide increase crop yields?', mode: 'text', searchFilters: { query_intent: 'natural' },
     });
     await expect(page.locator('.result-card')).toHaveCount(1);
+    await openSearchPanel(page, '.query-options');
     await interpretation.selectOption('advanced');
     await expect(page.getByText('Search options changed. Search again to update the results.', { exact: true })).toBeVisible();
     await expect(page.locator('.result-card')).toHaveCount(1);
@@ -70,12 +73,17 @@ test('saves distinct query interpretations and restores the complete selected se
     const interpretation = page.getByRole('combobox', { name: 'Query interpretation', exact: true });
     await page.getByRole('textbox', { name: 'Search indexed documents' }).fill('carbon AND dioxide');
     await page.getByRole('button', { name: 'Full text', exact: true }).click();
+    await openSearchPanel(page, '.query-options');
     await interpretation.selectOption('natural');
+    await openSearchPanel(page, '.query-options');
     await page.getByRole('button', { name: 'Save this search', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Save this search', exact: true })).toBeEnabled();
+    await openSearchPanel(page, '.query-options');
     await interpretation.selectOption('advanced');
+    await openSearchPanel(page, '.query-options');
     await page.getByRole('button', { name: 'Save this search', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Save this search', exact: true })).toBeEnabled();
+    await openSearchPanel(page, '.query-options');
     await page.getByRole('button', { name: 'Saved searches', exact: true }).click();
     await expect(page.locator('.saved-dropdown .saved-name')).toHaveCount(2);
     await page.locator('.saved-dropdown .saved-name').first().click();
@@ -93,13 +101,18 @@ test('keeps legacy bookmarks strict and query-builder syntax explicitly advanced
     });
     await openSearch(page);
     const interpretation = page.getByRole('combobox', { name: 'Query interpretation', exact: true });
+    await openSearchPanel(page, '.query-options');
     await interpretation.selectOption('natural');
+    await openSearchPanel(page, '.query-options');
     await page.getByRole('button', { name: 'Saved searches', exact: true }).click();
     await page.locator('.saved-dropdown .saved-name').filter({ hasText: 'Legacy expression' }).click();
     await expect(interpretation).toHaveValue('advanced');
     await expect.poll(() => lastSearch(page)).toMatchObject({ searchFilters: { query_intent: 'advanced' } });
+    await openSearchPanel(page, '.query-options');
     await interpretation.selectOption('natural');
+    await openSearchPanel(page, '.query-options');
     await page.getByText('Query help, builder, and indexed words', { exact: true }).click();
+    await openSearchPanel(page, '.query-options');
     const builder = page.getByRole('region', { name: 'Query builder', exact: true });
     await builder.getByLabel('Exact phrase', { exact: true }).fill('carbon dioxide');
     await builder.getByRole('button', { name: 'Use this query', exact: true }).click();
@@ -112,6 +125,7 @@ test('keeps legacy bookmarks strict and query-builder syntax explicitly advanced
 test('disables lexical interpretation in Semantic mode and restores its selection on return', async ({ page }) => {
     await openSearch(page);
     const interpretation = page.getByRole('combobox', { name: 'Query interpretation', exact: true });
+    await openSearchPanel(page, '.query-options');
     await interpretation.selectOption('natural');
     await page.getByRole('button', { name: 'Semantic', exact: true }).click();
     await expect(interpretation).toBeDisabled();
@@ -123,12 +137,13 @@ test('disables lexical interpretation in Semantic mode and restores its selectio
 test('makes the All sources guard actionable from Semantic while preserving selected-index semantic search', async ({ page }) => {
     await openSearch(page);
     const interpretation = page.getByRole('combobox', { name: 'Query interpretation', exact: true });
+    await openSearchPanel(page, '.query-options');
     await interpretation.selectOption('natural');
     await page.getByRole('button', { name: 'Semantic', exact: true }).click();
     await expect(interpretation).toBeDisabled();
     await expect(interpretation).toHaveValue('natural');
     await page.getByRole('textbox', { name: 'Search indexed documents' }).fill('carbon dioxide');
-    const allSources = page.getByTitle('Search all backends (local + cloud-backup + CrispLens) with RRF merge', { exact: true });
+    const allSources = page.getByTitle('Search all configured services', { exact: true });
     const federationCalls = () => page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) => call.command === 'sync_federated_search'));
     await allSources.click();
     await expect(page.locator('.fed-results .error')).toContainText('For All sources (Alle), first select Full text or Hybrid, then choose Advanced syntax. Use Search for semantic retrieval in the selected index.');
@@ -146,6 +161,7 @@ test('makes the All sources guard actionable from Semantic while preserving sele
 
     await page.getByRole('button', { name: 'Full text', exact: true }).click();
     await expect(interpretation).toBeEnabled();
+    await openSearchPanel(page, '.query-options');
     await interpretation.selectOption('advanced');
     await allSources.click();
     await expect.poll(federationCalls).toHaveLength(1);
@@ -159,10 +175,11 @@ for (const mode of ['Full text', 'Hybrid']) {
         await openSearch(page);
         await page.getByRole('button', { name: mode, exact: true }).click();
         const interpretation = page.getByRole('combobox', { name: 'Query interpretation', exact: true });
+        await openSearchPanel(page, '.query-options');
         await interpretation.selectOption('natural');
         await page.getByRole('textbox', { name: 'Search indexed documents' }).fill('carbon AND dioxide');
-        const cloud = page.getByTitle('Search the cloud-backup VPS over HTTPS', { exact: true });
-        const allSources = page.getByTitle('Search all backends (local + cloud-backup + CrispLens) with RRF merge', { exact: true });
+        const cloud = page.getByTitle('Search cloud backup', { exact: true });
+        const allSources = page.getByTitle('Search all configured services', { exact: true });
         const searchCalls = () => page.evaluate(() => (window as any).__fixtureCalls.filter((call: any) =>
             call.command === 'index_search' || call.command === 'sync_cb_v2_search' || call.command === 'sync_federated_search').map((call: any) => call.command));
         await cloud.click();
@@ -173,6 +190,7 @@ for (const mode of ['Full text', 'Hybrid']) {
         await expect(allSources).toBeEnabled();
         expect(await searchCalls()).toEqual([]);
 
+        await openSearchPanel(page, '.query-options');
         await interpretation.selectOption('advanced');
         await cloud.click();
         await expect.poll(searchCalls).toEqual(['sync_cb_v2_search']);
