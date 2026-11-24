@@ -32,10 +32,12 @@ and Tantivy remain covered by the durable intent. The writer re-verifies source
 content under its lease. PDFium document lifetimes are serialized and the
 preparation queue remains concurrent. Supported settings are
 `--prepare-jobs`, `--text-batch-size` and `--source-verify-jobs`. The defaults
-are four preparers, two source verification readers and 128 documents per
+are four preparers, one source verification reader and 128 documents per
 commit with a 16 MiB text cap. Source verification supports one to four
 readers. All checks complete under the writer lease before recording a write
-intent. A failed check preserves the prior index. A 256-document batch took
+intent. The full network-folder trial favored one reader, so use more only
+after measuring the storage path. A failed check preserves the prior index.
+A 256-document batch took
 0.71 s on the small text fixture. The Windows CLI contract and 58 targeted
 ingest tests passed. One direct Tantivy test setup hit an intermittent Windows
 file-open error and passed on rerun.

@@ -51,7 +51,7 @@ impl Default for IngestConfig {
             chunk_stride: 200,
             batch_size: 32,
             text_only: false,
-            source_verify_jobs: 2,
+            source_verify_jobs: 1,
         }
     }
 }
@@ -1601,11 +1601,14 @@ mod tests {
     }
 
     async fn test_indexes() -> (tempfile::TempDir, Arc<FtsIndex>, Arc<LocalIndex>, IngestPipeline) {
+        test_indexes_with_config(IngestConfig { text_only: true, ..Default::default() }).await
+    }
+
+    async fn test_indexes_with_config(config: IngestConfig) -> (tempfile::TempDir, Arc<FtsIndex>, Arc<LocalIndex>, IngestPipeline) {
         let dir = tempfile::tempdir().unwrap();
         let fts = Arc::new(FtsIndex::open_or_create(&dir.path().join("fts")).unwrap());
         let local = Arc::new(LocalIndex::open_or_create(dir.path(), 4).await.unwrap());
-        let pipeline = IngestPipeline::new(fts.clone(), local.clone(), None,
-            IngestConfig { text_only: true, ..Default::default() });
+        let pipeline = IngestPipeline::new(fts.clone(), local.clone(), None, config);
         (dir, fts, local, pipeline)
     }
 
@@ -2655,7 +2658,9 @@ mod tests {
 
     #[tokio::test]
     async fn changed_file_aborts_a_parallel_verified_batch() {
-        let (directory, fts, local, pipeline) = test_indexes().await;
+        let (directory, fts, local, pipeline) = test_indexes_with_config(IngestConfig {
+            text_only: true, source_verify_jobs: 2, ..Default::default()
+        }).await;
         let mut originals = Vec::new();
         for name in ["one", "two", "three"] {
             let path = directory.path().join(format!("{name}.txt"));
