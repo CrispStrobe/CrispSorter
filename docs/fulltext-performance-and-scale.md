@@ -18,6 +18,7 @@ for both sides of each comparison.
 | 512 synthetic text files, already using the batched writer | 6.37 s | 0.94 s with the optimized pipeline |
 | Same synthetic text files, refresh | 9.04 s | 1.16 s |
 | 30 PDFs, full indexing with PDFium on both sides | 5.51 s | 4.81 s |
+| 320 text fixtures with 64 interleaved whitespace-only files | 17.97 s | 0.80 s |
 
 PDFium recovered searchable text in 27 of 30 PDFs, compared with 22 for the
 Rust parser. Page counts and blank-page positions agreed on all 25 files both
@@ -35,6 +36,12 @@ and 128 documents per commit with a 16 MiB text cap. A 256-document batch took
 0.71 s on the small text fixture. The Windows CLI contract and 58 targeted
 ingest tests passed. One direct Tantivy test setup hit an intermittent Windows
 file-open error and passed on rerun.
+
+The interleaved-text fixture uses four preparers and a 128-document commit
+limit. Both builds indexed 256 files. The optimized build skipped the 64
+empty inputs before the commit queue and reduced commits from 64 to two.
+The end-to-end Windows CLI contract also passed with interleaved empty
+inputs and an incremental text update.
 
 ### Native PDF extractor comparison
 
