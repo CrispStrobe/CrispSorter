@@ -139,7 +139,7 @@ test('OCR persistence failures surface on Save All while index settings can be a
         };
     });
     const settings = page.locator('.settings-container');
-    await settings.getByRole('button', { name: 'Save All', exact: true }).click();
+    await settings.locator('.header').getByRole('button', { name: 'Save All', exact: true }).click();
     await expect(page.locator('.settings-container')).toContainText('Fixture OCR settings persistence failed');
     expect(await page.evaluate(() => (window as any).__indexInitializationCalls)).toBe(0);
     expect(messages.some(message => message.includes('settings.ocr phase=failed'))).toBe(true);

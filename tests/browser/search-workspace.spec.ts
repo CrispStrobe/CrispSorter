@@ -166,6 +166,7 @@ test('bookmarks restore sort, compact layout, report format, display tags and pr
     await page.locator('.saved-dropdown .saved-name').first().click();
     await expect(page.locator('.result-card')).toHaveCount(2);
     await expect(page.locator('.result-card').first()).toHaveAttribute('data-document-id', 'a');
+    await openSearchPanel(page, '.result-inspection');
     await expect(page.getByLabel('Compact results', { exact: true })).toBeChecked();
     await expect(page.getByRole('combobox', { name: 'Report format', exact: true })).toHaveValue('json');
     await expect(page.getByRole('combobox', { name: 'Sort results', exact: true })).toHaveValue('year-desc');
@@ -283,6 +284,7 @@ test('loading a larger returned window keeps current presentation and exact requ
     await expect(more).toBeEnabled();
     await more.click();
     await expect.poll(() => lastSearch(page)).toMatchObject({ query: 'warranty', limit: 50 });
+    await openSearchPanel(page, '.result-inspection');
     await expect(page.getByRole('combobox', { name: 'Sort results', exact: true })).toHaveValue('filename');
     await expect(page.getByLabel('Compact results', { exact: true })).toBeChecked();
     await expect(page.locator('.search-window-note')).toContainText('Requested limit 50');

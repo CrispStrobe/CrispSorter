@@ -158,7 +158,7 @@ test('phone preview fills the results area and returns to the selected expanded 
     await expectWithinWidth(value, preview);
     await expectNoHorizontalOverflow(fields);
     const approve = fields.getByRole('button', { name: 'Approve value', exact: true });
-    await approve.scrollIntoViewIfNeeded();
+    await approve.evaluate(element => element.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' }));
     await expect(approve).toBeInViewport({ ratio: 1 });
     await expectWithinWidth(approve, preview);
     await expect(close).toBeInViewport({ ratio: 1 });

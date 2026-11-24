@@ -243,7 +243,7 @@
     }
 
     function onWindowKey(event: KeyboardEvent) {
-        if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'f'
+        if (event.ctrlKey !== event.metaKey && event.shiftKey && !event.altKey && event.key.toLowerCase() === 'f'
             && !event.defaultPrevented && !event.isComposing
             && !document.querySelector('dialog[open], [aria-modal="true"]')) {
             event.preventDefault();

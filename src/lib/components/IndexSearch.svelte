@@ -108,7 +108,14 @@
 
     let query       = $state('');
     let searchRoot = $state<HTMLDivElement>();
+    let { searchRequest = 0 }: { searchRequest?: number } = $props();
     let queryInput = $state<HTMLInputElement>();
+    $effect(() => {
+        if (searchRequest > 0) {
+            queryInput?.focus();
+            queryInput?.select();
+        }
+    });
     let mode        = $state<'hybrid' | 'text' | 'vector'>('hybrid');
     let activeIndexName = $state('');
     let queryIntent = $state<'advanced' | 'natural'>('advanced');
@@ -950,10 +957,6 @@
     function handleWorkspaceKeydown(event: KeyboardEvent) {
         if (event.defaultPrevented || event.isComposing || !searchRoot?.contains(event.target as Node)) return;
         const target = event.target as HTMLElement;
-        // Ctrl/⌘ K belongs to the application's quick navigation palette.
-        if (event.ctrlKey !== event.metaKey && event.shiftKey && !event.altKey && event.key.toLowerCase() === 'f') {
-            event.preventDefault(); queryInput?.focus(); queryInput?.select(); return;
-        }
         if (event.key === 'Escape') {
             if (showSavedDropdown || showHistory) {
                 showSavedDropdown = false; showHistory = false;
