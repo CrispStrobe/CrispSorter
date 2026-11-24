@@ -1,36 +1,40 @@
 {
-  "version": "0.17.20",
-  "source_commit": "d842065436fddae00a89bbc89db56b92293a1b23",
+  "version": "0.17.21",
+  "source_commit": "e93b58b89dfcf1919097360812c3e40a42b5fe81",
   "ggml_commit": "3a27b6c665b191cb230be367db5c52d81dd3e2ac",
-  "release_url": "https://github.com/CrispStrobe/CrispEmbed/releases/tag/v0.17.20",
+  "release_url": "https://github.com/CrispStrobe/CrispEmbed/releases/tag/v0.17.21",
   "assets": {
     "crispembed-android-arm64-v8a.tar.gz": {
-      "sha256": "caaf6c2b78c2113a803f7affc5d93cbe871b952bd77ffde71c4e574b049b7f90",
-      "bytes": 34487895
+      "sha256": "5c858370b2fac57c5cfd5499e088dfd721f11606eb5485e464ef2576f358df47",
+      "bytes": 34484619
     },
     "crispembed-android-armeabi-v7a.tar.gz": {
-      "sha256": "833e78b6378773b99acc9f2b4b717c240b40161a73045726a6110827d84ba5ba",
-      "bytes": 32475192
+      "sha256": "e365a51f7e07407aa698adaf137e75d4a10b9a8e2d65a145855894b1bf048d8f",
+      "bytes": 32476097
     },
     "crispembed-ios-arm64.tar.gz": {
-      "sha256": "c0a4603c7e735a9de988c6cf7773f207ca3e46d96de19f1ab6148aea32542c3c",
-      "bytes": 7255485
+      "sha256": "a40953699f588ce7cb884a21324cc001218fe6cf328dca6051bd9a4cf87db7a3",
+      "bytes": 7256726
     },
     "crispembed-linux-arm64.tar.gz": {
-      "sha256": "eece879b08ca405d5b5ce432dc264202d0e01f45dad3fba28d8f077769db85b0",
-      "bytes": 16614576
+      "sha256": "9a5cc21bea65c23ed34797620f99b7d12517329a7e0eb1bb594416cfc4eff50a",
+      "bytes": 16614799
     },
     "crispembed-linux-x86_64.tar.gz": {
-      "sha256": "996f94f576e3a4fe8832119e952900d46d33cb2e4a56f011cb213b680e387d23",
-      "bytes": 19109686
+      "sha256": "23be24dc94ab00f34ca2e1f406c54ea477de4aeedf138a6c63460c609a92d09e",
+      "bytes": 19113253
     },
     "crispembed-macos-arm64.tar.gz": {
-      "sha256": "cd1c55a4042b974795ef1a16e854c5fba301a7688ac1c2258503314567f21a34",
-      "bytes": 14615954
+      "sha256": "2a8bdbcb199ecd128de72bc84947a457435c20946969da6f0e3780822b6cf14d",
+      "bytes": 14617271
+    },
+    "crispembed-windows-x86_64-vulkan.zip": {
+      "sha256": "0ced92b53b4041be83f18d42c221b0c86a70d18ca182b4984a05ef7534eaf917",
+      "bytes": 28745390
     },
     "crispembed-windows-x86_64.zip": {
-      "sha256": "2a61c9246d46ce7ae0c6b220b975d7b7782708469995df9c7a764dc502efa621",
-      "bytes": 12706450
+      "sha256": "49dd1ad4cf05acb6bf58c2390fb1f21af8225c3d61cfa2ef88d7806e997a4619",
+      "bytes": 12708203
     }
   }
 }
