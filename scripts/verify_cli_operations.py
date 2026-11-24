@@ -150,7 +150,7 @@ def verify(executable: Path) -> None:
             copy.write_bytes(original)
         inputs = [*sources, *pdfs]
         ingest_args = [
-            "index", "ingest", "--text-only", "--text-batch-size", "32",
+            "index", "ingest", "--text-only", "--text-batch-size", "32", "--source-verify-jobs", "2",
             "--data-dir", str(data),
             *(str(path) for path in [*inputs[:4], blank, *inputs[4:22], whitespace, *inputs[22:]]),
         ]
@@ -166,6 +166,9 @@ def verify(executable: Path) -> None:
         commits = [event for event in operations(indexed.stderr)
                    if event["operation"] == "index.write_batch" and event["phase"] == "completed"]
         assert len(commits) == 2, commits
+        source_reads = [event for event in operations(indexed.stderr)
+                        if event["operation"] == "index.write_batch" and event.get("stage") == "verified_source_hashes"]
+        assert len(source_reads) == 2 and all(event["context"]["readers"] == 2 for event in source_reads), source_reads
         assert "2 errors" in indexed.stderr and blank.name in indexed.stderr and whitespace.name in indexed.stderr
 
         list_args = ["--format", "json", "index", "list", "--data-dir", str(data)]

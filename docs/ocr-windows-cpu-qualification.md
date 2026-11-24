@@ -93,3 +93,47 @@ unavailable. With the embedded source-DPI probe, the current range is
 bounded 300 DPI retry. Apply a production default after real scan
 transcriptions and CUDA and Metal tests. See
 [the pinned model registry](https://github.com/CrispStrobe/CrispEmbed/blob/d842065436fddae00a89bbc89db56b92293a1b23/examples/cli/model_mgr.cpp).
+
+## Recognition evidence and selective resolution
+
+With `--log-verbosity debug`, whole-page CrispEmbed runs with review diagnostics
+and system Tesseract runs record `recognition_quality` in the page operation.
+The record carries the PDF page number, engine, scoring unit, count of scored
+units, mean and lower-tail score. A missing score is reported as null. The
+log carries numeric summaries and engine identifiers. CrispEmbed's review
+snapshot marks the source of each score, and system Tesseract contributes
+word scores from its TSV output. OCRS and the current Paddle integration
+return text without recognition evidence to this extraction path. Some
+embedded vision models expose generation-token scores, whose units and
+calibration differ from Tesseract word or line scores.
+
+The Tesseract and tiny detector profile's dense page improved from **26.4%**
+word error at 200 DPI to **6.9%** at 300 DPI. Its 200 DPI mean recognition score
+was **0.885**, higher than the other three pages, which had lower word error.
+A page mean alone would miss that retry. Compare the lower tail, detected
+region coverage, text yield, layout and language on a labeled sample before
+choosing a threshold for a specific engine and profile.
+
+On the same four layouts and the two-worker configuration, 200, 300 and
+400 DPI took 2.35, 3.31 and 4.15 s/page median and produced 17.28%, 7.08%
+and 5.10% word error. Mean decoded grayscale rasters occupied 3.87, 8.70
+and 15.47 MB. Start a retry evaluation at 300 DPI. Use 400 DPI for a second
+qualification tier when source detail and page size justify its pixel cost.
+Automatic retries require a validated policy.
+
+The pinned CrispEmbed PP-OCRv6 legacy response put detector scores above
+0.95 in the recognition field while tiny returned scrambled text. The
+typed review snapshot already labels that value as detection. On five
+identical generated line crops, the official Paddle tiny ONNX export read
+four exactly and missed one character on the fifth. CrispEmbed tiny failed
+all five at F32, F16 and head-only Q8. The small ONNX and small GGUF both read
+all five exactly. See [the official tiny ONNX export](https://huggingface.co/PaddlePaddle/PP-OCRv6_tiny_rec_onnx/tree/2612ab37152ae0a677521bae4e1e3d4fb4cf7c30)
+and [the native review schema](https://github.com/CrispStrobe/CrispEmbed/blob/d842065436fddae00a89bbc89db56b92293a1b23/docs/ocr-review-snapshot.md).
+
+The CrispEmbed correction preserves horizontal resolution at two backbone
+downsampling stages. The patched scalar and GGML CPU recognizers read all
+five lines exactly with the shipped tiny weights. Windows Vulkan still failed
+the line checks on both tiny and small, so the correction routes recognition
+to CPU on that backend and verified both tiers again. The CrispSorter runtime
+pin needs a new qualified CrispEmbed build to pick up these source changes.
+[CrispEmbed fix and regression fixture](https://github.com/CrispStrobe/CrispEmbed/pull/273).
