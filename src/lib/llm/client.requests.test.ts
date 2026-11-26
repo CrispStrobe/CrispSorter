@@ -23,6 +23,19 @@ beforeEach(() => {
 });
 
 describe('provider connection request routing', () => {
+    it('migrates known Nebius hosts for model discovery and generation without replacing a custom route', async () => {
+        const client = new LLMClient();
+        await client.fetchModels('nebius', 'key', 'https://api.studio.nebius.ai/v1/');
+        await client.query('nebius', 'model', 'test', 'key', 0.3, undefined, undefined, 'https://api.studio.nebius.com/v1');
+        await client.query('nebius', 'model', 'test', 'key', 0.3, undefined, undefined, 'https://custom.example/nebius/v1');
+        expect(mocks.fetch.mock.calls.map(call => call[0])).toEqual([
+            'https://api.tokenfactory.nebius.com/v1/models',
+            'https://api.tokenfactory.nebius.com/v1/chat/completions',
+            'https://custom.example/nebius/v1/chat/completions',
+        ]);
+        expect(mocks.consent).toHaveBeenCalledWith('nebius', 'https://api.tokenfactory.nebius.com/v1');
+    });
+
     it('tests the captured configured endpoint and uses the same endpoint for consent', async () => {
         const client = new LLMClient();
         await expect(client.query('openai', 'custom-model', 'test', 'captured-key', 0.3,
