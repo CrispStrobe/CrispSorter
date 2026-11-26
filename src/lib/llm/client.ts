@@ -23,12 +23,13 @@ export interface LLMProvider {
 export function normalizeProviderBase(providerId: string, base: string): string {
     const trimmed = base.replace(/\/+$/, '');
     if (providerId === 'google' && /generativelanguage\.googleapis\.com\/v1beta$/.test(trimmed)) return `${trimmed}/openai`;
+    if (/^https:\/\/api\.studio\.nebius\.(?:ai|com)\/v1$/.test(trimmed)) return 'https://api.tokenfactory.nebius.com/v1';
     return trimmed;
 }
 
 export const OPENAI_COMPATIBLE = {
     'openai': 'https://api.openai.com/v1',
-    'nebius': 'https://api.studio.nebius.ai/v1',
+    'nebius': 'https://api.tokenfactory.nebius.com/v1',
     'scaleway': 'https://api.scaleway.ai/v1',
     'openrouter': 'https://openrouter.ai/api/v1',
     'mistral': 'https://api.mistral.ai/v1',
@@ -55,7 +56,7 @@ export const DEFAULT_PROVIDERS: LLMProvider[] = [
     { id: 'openrouter', name: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', apiKey: '', models: [], selectedModel: '', isConfigured: false },
     { id: 'mistral', name: 'Mistral', baseUrl: 'https://api.mistral.ai/v1', apiKey: '', models: [], selectedModel: '', isConfigured: false },
     { id: 'openai', name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', apiKey: '', models: [], selectedModel: '', isConfigured: false },
-    { id: 'nebius', name: 'Nebius', baseUrl: 'https://api.studio.nebius.ai/v1', apiKey: '', models: [], selectedModel: '', isConfigured: false },
+    { id: 'nebius', name: 'Nebius', baseUrl: 'https://api.tokenfactory.nebius.com/v1', apiKey: '', models: [], selectedModel: '', isConfigured: false },
     { id: 'scaleway', name: 'Scaleway', baseUrl: 'https://api.scaleway.ai/v1', apiKey: '', models: [], selectedModel: '', isConfigured: false },
     { id: 'anthropic', name: 'Anthropic', baseUrl: 'https://api.anthropic.com/v1', apiKey: '', models: [], selectedModel: '', isConfigured: false },
     { id: 'google', name: 'Google (Gemini)', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', apiKey: '', models: [], selectedModel: '', isConfigured: false },

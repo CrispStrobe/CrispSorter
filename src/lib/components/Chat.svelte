@@ -24,6 +24,7 @@
     import 'deep-chat';
     import { logInfo, logWarn } from '../log';
     import { beginOperation } from '../operationLog';
+    import { recordChatAnswer, markedChatCopy, exportChatAnswers, type GeneratedChatAnswer } from '../chat/provenance';
 
     // Global KaTeX for Deep Chat
     if (typeof window !== 'undefined') {
@@ -50,6 +51,9 @@
     let evidenceRounds = $state<{ question: string; sources: EvidenceSource[]; tokens: number; cited: string[]; warning: string }[]>([]);
     let viewedSource = $state<EvidenceSource | null>(null);
     let citationWarning = $state('');
+    let generatedAnswers = $state<GeneratedChatAnswer[]>([]);
+    let chatGeneration = 0;
+    let exportStatus = $state('');
 
     // Derived Context Info
     const filteredContextItems = $derived.by(() => {
@@ -191,15 +195,21 @@
         // Question, passages, prompt and answer stay out of the log: the
         // receipt carries source/citation counts and timing only.
         const operation = beginOperation('chat.request');
+        const requestGeneration = chatGeneration;
+        const requestProviderId = activeProviderId;
+        const requestProvider = providers.find(p => p.id === requestProviderId) || providers[0];
+        const requestApiKey = requestProvider?.apiKey;
+        const requestBaseUrl = requestProvider?.baseUrl;
         try {
             const userMsg = body.messages[body.messages.length - 1].text;
             // For browser-based engines, fall back to the loaded model even if selectedModel is empty
             let effectiveModel = selectedModel;
-            if (activeProviderId === 'webllm') effectiveModel = getWebLLMLoadedModel() || selectedModel;
-            else if (activeProviderId === 'ort') effectiveModel = getORTLoadedModel() || selectedModel;
-            if (!activeProviderId || !effectiveModel) {
-                const noModelMsg = activeProviderId === 'webllm' ? 'WebLLM: no model loaded — open Settings and click Load.'
-                    : activeProviderId === 'ort' ? 'ORT: no model loaded — open Settings and click Load.'
+            if (requestProviderId === 'webllm') effectiveModel = getWebLLMLoadedModel() || selectedModel;
+            else if (requestProviderId === 'ort') effectiveModel = getORTLoadedModel() || selectedModel;
+            const requestModel = effectiveModel;
+            if (!requestProviderId || !requestModel) {
+                const noModelMsg = requestProviderId === 'webllm' ? 'WebLLM: no model loaded — open Settings and click Load.'
+                    : requestProviderId === 'ort' ? 'ORT: no model loaded — open Settings and click Load.'
                     : 'No engine selected.';
                 operation.fail();
                 return signals.onResponse({ error: noModelMsg });
@@ -228,6 +238,7 @@
                     })));
                     candidates = retrieveSelected(userMsg, documents);
                 }
+                if (requestGeneration !== chatGeneration) { operation.cancel(); return signals.onResponse({ text: '' }); }
                 evidence = buildEvidenceContext(userMsg, systemInstruction, candidates, llmContextLimit);
                 operation.stage('analyzing', { count: evidence.sources.length });
                 if (!evidence.sources.length) {
@@ -237,8 +248,9 @@
                 prompt = evidence.prompt;
             }
 
-            const activeProv = providers.find(p => p.id === activeProviderId) || providers[0];
-            const responseText = await llmClient.query(activeProviderId, effectiveModel, prompt, activeProv.apiKey, llmTemperature, undefined, evidence?.responseTokens);
+            if (requestGeneration !== chatGeneration) { operation.cancel(); return signals.onResponse({ text: '' }); }
+            const responseText = await llmClient.query(requestProviderId, requestModel, prompt, requestApiKey, llmTemperature, undefined, evidence?.responseTokens, requestBaseUrl);
+            if (requestGeneration !== chatGeneration) { operation.cancel(); return signals.onResponse({ text: '' }); }
             if (evidence) {
                 const audit = auditCitations(responseText, evidence.sources);
                 citationWarning = audit.warning;
@@ -251,11 +263,49 @@
                 .replace(/\\\(([\s\S]*?)\\\)/g, (m, f) => `$${f.trim()}$`)
                 .replace(/(^|\n)\[([\s\S]*?)\]($|\n)/g, (m, pre, f, post) => /^S\d+$/.test(f.trim()) ? m : `${pre}\n$$\n${f.trim()}\n$$\n${post}`);
 
+            // Only successful model responses get a generated record. Built-in
+            // notices and the user's questions are not synthetic answers.
+            if (fixedText.trim()) generatedAnswers = [...generatedAnswers, recordChatAnswer(fixedText, requestProviderId, requestModel)];
             signals.onResponse({ text: fixedText });
             operation.complete({ count: evidence?.sources.length ?? 0, warnings: evidence && citationWarning ? 1 : 0 });
         } catch (error: any) {
+            if (requestGeneration !== chatGeneration) { operation.cancel(); return signals.onResponse({ text: '' }); }
             operation.fail(error);
             signals.onResponse({ error: error.message });
+        }
+    }
+
+    async function copyGeneratedAnswer(answer: GeneratedChatAnswer) {
+        try {
+            await navigator.clipboard.writeText(markedChatCopy(answer));
+            exportStatus = i18n.t.aiDisclosure.copySucceeded;
+        } catch {
+            exportStatus = i18n.t.aiDisclosure.copyFailed;
+        }
+    }
+
+    async function saveGeneratedAnswers() {
+        exportStatus = '';
+        try {
+            const content = exportChatAnswers(generatedAnswers);
+            if ('__TAURI_INTERNALS__' in window) {
+                const { save } = await import('@tauri-apps/plugin-dialog');
+                const { writeTextFile } = await import('@tauri-apps/plugin-fs');
+                const path = await save({ defaultPath: 'crisp-sorter-ai-answers.json', filters: [{ name: 'JSON', extensions: ['json'] }] });
+                if (!path) return;
+                await writeTextFile(path, content);
+            } else {
+                const url = URL.createObjectURL(new Blob([content], { type: 'application/json' }));
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = 'crisp-sorter-ai-answers.json';
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
+            }
+        } catch {
+            exportStatus = i18n.t.aiDisclosure.exportFailed;
         }
     }
 
@@ -265,6 +315,9 @@
     }
 
     function clearChat() {
+        chatGeneration++;
+        generatedAnswers = [];
+        exportStatus = '';
         evidenceRounds = [];
         viewedSource = null;
         citationWarning = '';
@@ -656,6 +709,20 @@
             {#if evidenceScope !== 'conversation'}<span>Answers use retrieved passages with source references.</span>{/if}
         </div>
         {#if citationWarning}<p class="asr-error" role="alert">{citationWarning}</p>{/if}
+        {#if generatedAnswers.length}
+            <details class="evidence-panel">
+                <summary>{i18n.t.aiDisclosure.answerRecords} ({generatedAnswers.length})</summary>
+                <p>{i18n.t.aiDisclosure.copyExportHint}</p>
+                {#each generatedAnswers as answer, index}
+                    <div class="answer-record">
+                        <span>{i18n.t.aiDisclosure.badge} #{index + 1} · {answer.provenance.provider}</span>
+                        <button onclick={() => copyGeneratedAnswer(answer)}>{i18n.t.aiDisclosure.copyMarked}</button>
+                    </div>
+                {/each}
+                <button onclick={saveGeneratedAnswers}>{i18n.t.aiDisclosure.exportRecords}</button>
+            </details>
+        {/if}
+        {#if exportStatus}<p class="export-status" role="status">{exportStatus}</p>{/if}
         {#if evidenceRounds.length}
             <details class="evidence-panel" open>
                 <summary>Sources by question</summary>
@@ -704,6 +771,8 @@
     .evidence-viewer p { padding: 0 12px; font-size: 0.8rem; color: #a1a1aa; }
     .evidence-viewer blockquote { margin: 8px 12px; padding: 8px; max-height: 180px; overflow: auto; white-space: pre-wrap; font-size: 0.85rem; border-left: 3px solid #60a5fa; }
     @media (max-width: 700px) { .evidence-viewer { position: absolute; inset: 0; width: 100%; z-index: 20; } }
+    .answer-record { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 6px 0; }
+    .export-status { padding: 0 12px; font-size: 0.8rem; color: #a1a1aa; }
     .chat-container { display: flex; height: 100%; width: 100%; background: #09090b; position: relative; overflow: hidden; }
     .chat-sidebar { width: 260px; background: #18181b; border-right: 1px solid #27272a; display: flex; flex-direction: column; transition: width 0.3s ease; position: relative; flex-shrink: 0; }
     .chat-sidebar.collapsed { width: 0; border-right: none; }

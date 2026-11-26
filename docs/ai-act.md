@@ -142,7 +142,7 @@ picked up again. Its design notes have been moved out of the public repository,
 since publishing a design for something deliberately not built invites people to
 rely on it.
 
-### 2. Synthetic text — marked in the UI, not yet in exports
+### 2. Synthetic text — UI disclosure and portable export records
 
 Chat answers, summaries and machine translation are synthetic text. As of
 2026-08-01 they are labelled: one shared `AiGeneratedBadge` component (rather
@@ -173,9 +173,27 @@ A stamping failure is logged rather than propagated: it must not discard a
 translation the user waited for, but it is loud, because a quietly unmarked
 artifact is the outcome to avoid.
 
-**Still open:** chat answers the user copies out, and ASR/OCR exports — the
-latter deliberately, since transcription and OCR render real input rather than
-generate content.
+**Chat output records (2026-11-26).** Successful model answers now have an
+individual origin record alongside the chat. “Copy with AI label” appends a
+readable disclosure without changing the model response in the conversation.
+The JSON export keeps each answer and its `ai-generated` assertion together,
+with operation, configured provider connection, generation time and a
+`requested_model` identifier where it can be shared without exposing a local
+path. The connection identifies the configured adapter, not an independently
+verified upstream provider; requested models can be aliases and do not prove
+which model a gateway served. User questions, retrieved documents,
+API keys and built-in “no sources” messages are not added to these records.
+Records stay in memory until the user copies or exports them; clearing the chat
+clears them, including results of an earlier request that completes after the
+clear. The recording step keeps the displayed answer intact; it adds no
+watermark characters or transformations to the existing rendering pipeline.
+
+This is an application-authored provenance record, not a cryptographic proof,
+a statistical watermark or a claim of regulatory compliance. Ordinary text
+selection can omit the label; editing or copying only the content from a JSON
+record can separate it from its assertion. Existing transcription/OCR exports
+are unchanged; whether a transformation generates new content depends on the
+actual operation, not merely on its use of an AI model.
 
 The Art 50 carve-out for AI performing "an assistive function for standard
 editing" without substantially altering input data is arguable for translation

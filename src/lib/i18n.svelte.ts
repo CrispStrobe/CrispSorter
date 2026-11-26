@@ -18,6 +18,14 @@ export const translations = {
         },
         aiDisclosure: {
             badge: 'AI-generated',
+            answerRecords: 'AI answer records',
+            copyMarked: 'Copy with AI label',
+            exportRecords: 'Export answers with provenance (JSON)',
+            copyExportHint: 'These actions keep an AI label with each answer. Ordinary text selection may omit it. Records are app-authored, not signed credentials or a robust watermark.',
+            copySucceeded: 'Copied with AI label.',
+            copyFailed: 'Could not copy. Export the answer record instead.',
+            exportFailed: 'Could not save the answer records.',
+
             tooltip: 'Produced by an AI model. Machine translation, metadata suggestions and chat answers can be wrong or incomplete — check anything that matters.',
             speechMarked: 'Synthesised speech carries a machine-readable watermark.',
             watermarkedArtifact:
@@ -1341,6 +1349,14 @@ export const translations = {
         },
         aiDisclosure: {
             badge: 'KI-generiert',
+            answerRecords: 'KI-Antwortnachweise',
+            copyMarked: 'Mit KI-Hinweis kopieren',
+            exportRecords: 'Antworten mit Herkunftsnachweis exportieren (JSON)',
+            copyExportHint: 'Diese Aktionen bewahren den KI-Hinweis bei jeder Antwort. Beim normalen Markieren von Text kann er fehlen. Die Nachweise stammen aus der App; sie sind weder signierte Credentials noch robuste Wasserzeichen.',
+            copySucceeded: 'Mit KI-Hinweis kopiert.',
+            copyFailed: 'Kopieren fehlgeschlagen. Stattdessen den Antwortnachweis exportieren.',
+            exportFailed: 'Die Antwortnachweise konnten nicht gespeichert werden.',
+
             tooltip: 'Von einem KI-Modell erzeugt. Maschinelle Übersetzungen, Metadaten-Vorschläge und Chat-Antworten können falsch oder unvollständig sein — Wichtiges bitte prüfen.',
             speechMarked: 'Synthetische Sprache enthält ein maschinenlesbares Wasserzeichen.',
             watermarkedArtifact:
